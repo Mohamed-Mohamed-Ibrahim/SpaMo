@@ -8,7 +8,12 @@ from PIL import Image
 from transformers import VideoMAEModel, VideoMAEImageProcessor
 
 import sys
-sys.path.append('./')
+# Get the absolute path to the parent directory
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, parent_dir)
+
+print(f"Added to path: {parent_dir}")  # Debug line
 
 from utils.helpers import sliding_window_for_list, read_video, get_img_list
 
@@ -128,8 +133,8 @@ def get_iterator(args, mode):
 def main():
     parser = get_parser()
     args = parser.parse_args()
-
-    mode = ["dev", "test", "train"]
+    # removed dev and train modes
+    mode = ["test"]
     for m in mode:
         ds_name = osp.split(args.anno_root)[-1]
         fname = f'mae_feat_{ds_name}'
