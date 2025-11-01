@@ -38,6 +38,7 @@ class FlanT5SLT(AbstractSLT):
         frame_sample_rate: int = 1, 
         prompt: str = '',
         input_size: int = 1024,
+        pose_input_size: int = 33*3,
         fusion_mode: str = 'joint',
         inter_hidden: int = 768,
         max_frame_len: int = 1024,
@@ -60,6 +61,7 @@ class FlanT5SLT(AbstractSLT):
         
         # Configuration parameters
         self.input_size = input_size
+        self.pose_input_size = pose_input_size
         self.prompt = prompt
         self.model_name = model_name
         self.frame_sample_rate = frame_sample_rate
@@ -163,6 +165,8 @@ class FlanT5SLT(AbstractSLT):
         # Load the vision projectors
         self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
+        # Pose projector: default pose size is 33 keypoints * 3 coords = 99
+        self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
         # Load the temporal encoder
@@ -255,10 +259,11 @@ class FlanT5SLT(AbstractSLT):
         """
         # Determine which visual features to use based on fusion mode
         if self.fusion_mode in ['joint']:
-            spatial = spatiotemporal = True
+            spatial = spatiotemporal = pose = True
         else:
             spatial = self.fusion_mode == 'spatial'
             spatiotemporal = self.fusion_mode == 'spatiotemporal'
+            pose = self.fusion_mode == 'pose'
 
         # Process spatial features if needed
         if spatial:
@@ -272,27 +277,44 @@ class FlanT5SLT(AbstractSLT):
             spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
             spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
         
+        # Process pose features if needed
+        if pose:
+            # pose_values should be a list of [T, pose_input_size] tensors
+            pose_values = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in samples.get('pose_values', [])]
+            if len(pose_values) > 0:
+                pose_padded = pad_sequence(pose_values, batch_first=True)
+            else:
+                pose_padded = torch.zeros((len(samples['pixel_values']), 1, self.pose_input_size), device=self.device)
+            pose_outputs = self.pose_proj(pose_padded)
+            pose_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
+        
         # Combine features for joint mode
         if self.fusion_mode == 'joint':
             bs = spatial_outputs.shape[0]
             spatial_length = spatial_mask.sum(1)
             spatiotemporal_length = spatiotemporal_mask.sum(1)
-            new_length = spatial_length + spatiotemporal_length
-            
-            # Concatenate spatial and spatiotemporal features for each sample
+            pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
+            new_length = spatial_length + spatiotemporal_length + pose_length
+
+            # Concatenate spatial, spatiotemporal and pose features for each sample
             joint_outputs = []
             for i in range(bs):
-                valid_spatial_output = spatial_outputs[i, :spatial_length[i], :]
-                valid_spatiotemporal_output = spatiotemporal_outputs[i, :spatiotemporal_length[i], :]
-                concat_sample = torch.cat((valid_spatial_output, valid_spatiotemporal_output), dim=0)
+                parts = []
+                if spatial:
+                    parts.append(spatial_outputs[i, :spatial_length[i], :])
+                if spatiotemporal:
+                    parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
+                if pose:
+                    parts.append(pose_outputs[i, :pose_length[i], :])
+                concat_sample = torch.cat(parts, dim=0)
                 joint_outputs.append(concat_sample)
             joint_outputs = pad_sequence(joint_outputs, batch_first=True)
-            
+
             # Apply temporal encoder
             visual_conv_outputs = self.temporal_encoder(
                 joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
             )
-            
+
             visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
             visual_masks = create_mask(
                 seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
@@ -312,6 +334,16 @@ class FlanT5SLT(AbstractSLT):
             elif spatiotemporal:
                 visual_outputs = spatiotemporal_outputs
                 visual_masks = spatiotemporal_mask
+            elif pose:
+                # For pose-only mode, run temporal encoder on pose features
+                pose_conv_outputs = self.temporal_encoder(
+                    pose_outputs.permute(0,2,1), torch.tensor(samples['num_frames'], device=self.device)
+                )
+                visual_outputs = pose_conv_outputs['visual_feat'].permute(1,0,2)
+                visual_masks = create_mask(
+                    seq_lengths=pose_conv_outputs['feat_len'].to(torch.int).tolist(), 
+                    device=self.device
+                )
             else:
                 raise NotImplementedError("Invalid fusion mode")
         
@@ -323,62 +355,81 @@ class FlanT5SLT(AbstractSLT):
         
         Args:
             batch: Raw batch from dataloader
-            
+
         Returns:
             Processed inputs dictionary
         """
         pixel_values, glor_values, masks, ids = [], [], [], []
+        pose_values = []
         texts, glosses = [], []
         num_frames, glor_lengths, langs = [], [], []
         ex_lang_translations = []
-        
+
         max_frame_len = self.max_frame_len
 
         for sample in batch:
-            if sample['pixel_value'].shape[0] != 0:
-                # Calculate number of frames after sampling
-                nframe = math.ceil(sample['num_frames'] / self.frame_sample_rate)
-                pval = sample['pixel_value'][::self.frame_sample_rate]
+            # Only include samples that have pixel values (dataset requires spatial or spatiotemporal)
+            if sample.get('pixel_value') is None or sample['pixel_value'].shape[0] == 0:
+                continue
 
-                # Collect metadata
-                ids.append(sample['id'])
-                texts.append(sample['text'].lower())
-                glosses.append(sample['gloss'])
-                langs.append(sample['lang'])
-                
+            # Calculate number of frames after sampling
+            nframe = math.ceil(sample['num_frames'] / self.frame_sample_rate)
+            pval = sample['pixel_value'][::self.frame_sample_rate]
+
+            # Collect metadata
+            ids.append(sample['id'])
+            texts.append(sample['text'].lower())
+            glosses.append(sample['gloss'])
+            langs.append(sample['lang'])
+
+            _ex_lang_trans = []
+            if 'en_text' in sample and 'text' in sample:
                 _ex_lang_trans = [
-                    f"{sample['en_text']}={sample['text']}",
-                    f"{sample['fr_text']}={sample['text']}",
-                    f"{sample['es_text']}={sample['text']}"
+                    f"{sample.get('en_text','')}={sample['text']}",
+                    f"{sample.get('fr_text','')}={sample['text']}",
+                    f"{sample.get('es_text','')}={sample['text']}"
                 ]
-                _ex_lang_trans = _ex_lang_trans[:self.num_in_context]
-                ex_lang_translations.append(' '.join(_ex_lang_trans))
-                
-                # Handle too long sequences with random cropping
-                if nframe > max_frame_len:
-                    nframe = max_frame_len
-                    start_index = random.randint(0, pval.size(0) - max_frame_len)
-                    pval = pval[start_index:start_index + max_frame_len]
-                
-                # Store processed visual features
-                num_frames.append(nframe)
-                pixel_values.append(pval)
-                
-                # Process glor values if available
-                if sample['glor_value'] is not None:
-                    if isinstance(sample['glor_value'], list):
-                        glor_values.append(torch.cat(sample['glor_value'], dim=0))
-                        glor_lengths.append(sum(len(g) for g in sample['glor_value']))
-                    else:
-                        glor_values.append(sample['glor_value'])
-                        glor_lengths.append(len(sample['glor_value']))
-        
+            _ex_lang_trans = _ex_lang_trans[:self.num_in_context]
+            ex_lang_translations.append(' '.join(_ex_lang_trans))
+
+            # Handle too long sequences with random cropping
+            if nframe > max_frame_len:
+                nframe = max_frame_len
+                start_index = random.randint(0, pval.size(0) - max_frame_len)
+                pval = pval[start_index:start_index + max_frame_len]
+
+            # Store processed visual features
+            num_frames.append(nframe)
+            pixel_values.append(pval)
+
+            # Process pose values if available: reshape to [T, kp*3]
+            if 'pose_value' in sample and sample['pose_value'] is not None and sample['pose_value'].numel() != 0:
+                pose_arr = sample['pose_value'][::self.frame_sample_rate]
+                # ensure 2D [T, D]
+                if pose_arr.dim() == 3:
+                    pose_arr = pose_arr.view(pose_arr.shape[0], -1)
+                # crop if too long
+                if pose_arr.size(0) > max_frame_len:
+                    start_index = random.randint(0, pose_arr.size(0) - max_frame_len)
+                    pose_arr = pose_arr[start_index:start_index + max_frame_len]
+                pose_values.append(pose_arr)
+
+            # Process glor values if available
+            if sample.get('glor_value') is not None:
+                if isinstance(sample['glor_value'], list):
+                    glor_values.append(torch.cat(sample['glor_value'], dim=0))
+                    glor_lengths.append(sum(len(g) for g in sample['glor_value']))
+                else:
+                    glor_values.append(sample['glor_value'])
+                    glor_lengths.append(len(sample['glor_value']))
+
         ex_lang_translations = derangement(ex_lang_translations)
-        
+
         # Return structured dictionary
         return {
             'pixel_values': pixel_values,
             'glor_values': glor_values,
+            'pose_values': pose_values,
             'bool_mask_pos': masks,
             'ids': ids,
             'text': texts,
