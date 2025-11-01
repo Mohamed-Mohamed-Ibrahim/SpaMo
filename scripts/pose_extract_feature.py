@@ -77,10 +77,6 @@ def get_parser():
 
 def main():
     args = get_parser().parse_args()
-    if mp is None:
-        print('MediaPipe is required for pose extraction. Exiting.')
-        sys.exit(1)
-
     # follow other feature scripts style: create a subfolder per mode inside pose_root
     for mode in args.modes:
         save_dir = osp.join(args.pose_root, mode)
