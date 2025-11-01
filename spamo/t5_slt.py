@@ -14,7 +14,7 @@ from peft import LoraConfig, get_peft_model, TaskType
 
 from spamo.tconv import TemporalConv
 from utils.helpers import create_mask, derangement
-from spamo.mm_projector import build_vision_projector
+from spamo.mm_projector import build_vision_projector, AdaptiveFusionWithProjection
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.asb import AbstractSLT
@@ -167,6 +167,24 @@ class FlanT5SLT(AbstractSLT):
         
         # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+        
+        # Calculate minimum sequence length required for temporal encoder
+        # For conv_type=2: ['K5', "P2", 'K5', "P2"]
+        # Minimum: need at least 16 frames to avoid pooling issues
+        # Calculation: 5 (K5) -> P2 needs 2 -> 5 (K5) -> P2 needs 2 -> minimum 16
+        self.min_temporal_length = 16  # Conservative minimum for conv_type=2
+        
+        # Initialize adaptive fusion if fusion_mode is 'adaptive'
+        if self.fusion_mode == 'adaptive':
+            # Use AdaptiveFusionWithProjection to fuse before temporal encoding
+            # This allows learning stream-specific projections optimized for fusion
+            self.adaptive_fusion = AdaptiveFusionWithProjection(
+                input_size_1=self.inter_hidden,  # Spatial features after spatio_proj
+                input_size_2=self.inter_hidden,  # Spatiotemporal features after spatiotemp_proj
+                hidden_size=self.inter_hidden    # Common dimension for fusion
+            )
+        else:
+            self.adaptive_fusion = None
 
         # if self.cross_modal_align:
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
@@ -254,7 +272,7 @@ class FlanT5SLT(AbstractSLT):
             Tuple of (visual_outputs, visual_masks)
         """
         # Determine which visual features to use based on fusion mode
-        if self.fusion_mode in ['joint']:
+        if self.fusion_mode in ['joint', 'adaptive']:
             spatial = spatiotemporal = True
         else:
             spatial = self.fusion_mode == 'spatial'
@@ -296,6 +314,99 @@ class FlanT5SLT(AbstractSLT):
             visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
             visual_masks = create_mask(
                 seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
+                device=self.device
+            )
+        
+        # Adaptive fusion mode: fuse features BEFORE temporal encoding
+        # This approach learns to combine streams early, then applies temporal encoding on fused features
+        # Benefits: temporal encoder operates on semantically richer fused representation
+        elif self.fusion_mode == 'adaptive':
+            bs = spatial_outputs.shape[0]
+            spatial_length = spatial_mask.sum(1).cpu().tolist()
+            spatiotemporal_length = spatiotemporal_mask.sum(1).cpu().tolist()
+            
+            # Align sequences to same length for adaptive fusion (before temporal encoding)
+            # Use the minimum length for each sample to ensure both streams have valid features
+            aligned_outputs = []
+            aligned_lengths = []
+            
+            for i in range(bs):
+                s_len = int(spatial_length[i])
+                st_len = int(spatiotemporal_length[i])
+                
+                # Check if either sequence is empty
+                if s_len == 0 or st_len == 0:
+                    # Fallback: use whichever stream has frames, or create dummy features
+                    if s_len > 0:
+                        # Use spatial features only
+                        s_feat = spatial_outputs[i, :s_len, :]
+                        # Create dummy spatiotemporal features with same shape
+                        st_feat = torch.zeros_like(s_feat)
+                        aligned_len = s_len
+                    elif st_len > 0:
+                        # Use spatiotemporal features only
+                        st_feat = spatiotemporal_outputs[i, :st_len, :]
+                        # Create dummy spatial features with same shape
+                        s_feat = torch.zeros_like(st_feat)
+                        aligned_len = st_len
+                    else:
+                        # Both are empty - create dummy features (shouldn't happen, but safety check)
+                        aligned_len = 1
+                        dummy_feat = torch.zeros(1, self.inter_hidden, device=self.device, dtype=spatial_outputs.dtype)
+                        s_feat = dummy_feat
+                        st_feat = dummy_feat
+                else:
+                    # Both sequences have frames - use minimum length for alignment
+                    aligned_len = min(s_len, st_len)
+                    # Extract aligned features (take first aligned_len frames from each)
+                    s_feat = spatial_outputs[i, :aligned_len, :]  # [aligned_len, D]
+                    st_feat = spatiotemporal_outputs[i, :aligned_len, :]  # [aligned_len, D]
+                
+                # Ensure minimum length required for temporal encoder
+                # If sequence is too short, repeat the last frame to pad it
+                if aligned_len < self.min_temporal_length:
+                    # Repeat the last frame to reach minimum length
+                    if aligned_len == 0:
+                        # Create dummy features
+                        dummy_feat = torch.zeros(self.min_temporal_length, self.inter_hidden, 
+                                                device=self.device, dtype=spatial_outputs.dtype)
+                        s_feat = dummy_feat
+                        st_feat = dummy_feat
+                        aligned_len = self.min_temporal_length
+                    else:
+                        # Repeat frames to reach minimum length
+                        n_repeats = self.min_temporal_length - aligned_len
+                        # Use last frame and repeat it
+                        last_frame_s = s_feat[-1:, :].repeat(n_repeats, 1)  # [n_repeats, D]
+                        last_frame_st = st_feat[-1:, :].repeat(n_repeats, 1)  # [n_repeats, D]
+                        s_feat = torch.cat([s_feat, last_frame_s], dim=0)  # [min_length, D]
+                        st_feat = torch.cat([st_feat, last_frame_st], dim=0)  # [min_length, D]
+                        aligned_len = self.min_temporal_length
+                
+                aligned_lengths.append(aligned_len)
+                
+                # Apply adaptive fusion BEFORE temporal encoding
+                # This learns stream-specific projections and per-timestep weights λ₁, λ₂
+                # fused = proj_1(input_1) + proj_2(input_2) + λ₁×proj_1(input_1) + λ₂×proj_2(input_2)
+                fused_feat = self.adaptive_fusion(
+                    s_feat.unsqueeze(0),  # [1, aligned_len, D]
+                    st_feat.unsqueeze(0)  # [1, aligned_len, D]
+                )
+                aligned_outputs.append(fused_feat.squeeze(0))  # [aligned_len, D]
+            
+            # Pad to same length for batch processing
+            fused_outputs = pad_sequence(aligned_outputs, batch_first=True)  # [B, max_len, D]
+            
+            # Apply temporal encoder on the fused features
+            # Ensure all lengths are at least minimum required (already enforced above, but safety check)
+            valid_lengths = [max(length, self.min_temporal_length) for length in aligned_lengths]
+            visual_conv_outputs = self.temporal_encoder(
+                fused_outputs.permute(0,2,1), torch.tensor(valid_lengths, device=self.device)
+            )
+            
+            visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)  # [B, T', D]
+            visual_masks = create_mask(
+                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
                 device=self.device
             ) 
         else:
