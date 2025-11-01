@@ -279,14 +279,19 @@ class FlanT5SLT(AbstractSLT):
         
         # Process pose features if needed
         if pose:
-            # pose_values should be a list of [T, pose_input_size] tensors
-            pose_values = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in samples.get('pose_values', [])]
-            if len(pose_values) > 0:
-                pose_padded = pad_sequence(pose_values, batch_first=True)
+            # pose_values should be a list of [T, pose_input_size] tensors (cpu tensors from get_inputs)
+            raw_pose_values = samples.get('pose_values', [])
+            pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in raw_pose_values]
+            if len(pose_values_local) > 0:
+                # pad and move to device; ensure float dtype
+                pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.device).float()
+                pose_lengths = [int(p.size(0)) for p in pose_values_local]
             else:
-                pose_padded = torch.zeros((len(samples['pixel_values']), 1, self.pose_input_size), device=self.device)
+                B = len(samples['pixel_values'])
+                pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=torch.float32)
+                pose_lengths = [0] * B
             pose_outputs = self.pose_proj(pose_padded)
-            pose_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
+            pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
         
         # Combine features for joint mode
         if self.fusion_mode == 'joint':
@@ -336,8 +341,9 @@ class FlanT5SLT(AbstractSLT):
                 visual_masks = spatiotemporal_mask
             elif pose:
                 # For pose-only mode, run temporal encoder on pose features
+                # use actual pose lengths computed earlier
                 pose_conv_outputs = self.temporal_encoder(
-                    pose_outputs.permute(0,2,1), torch.tensor(samples['num_frames'], device=self.device)
+                    pose_outputs.permute(0,2,1), torch.tensor(pose_lengths, device=self.device)
                 )
                 visual_outputs = pose_conv_outputs['visual_feat'].permute(1,0,2)
                 visual_masks = create_mask(
