@@ -9,21 +9,6 @@ import numpy as np
 import cv2
 from tqdm import tqdm
 
-def ensure_mediapipe():
-    try:
-        import mediapipe as mp
-        return mp
-    except Exception:
-        print('mediapipe not found. Attempting to install via pip...')
-        import subprocess
-        try:
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'mediapipe'])
-            import mediapipe as mp
-            return mp
-        except Exception as e:
-            print('Failed to install mediapipe. Please install it manually (pip install mediapipe). Error:', e)
-            return None
-
 
 def get_video_path(video_root, fileid):
     # try common extensions
@@ -92,7 +77,6 @@ def get_parser():
 
 def main():
     args = get_parser().parse_args()
-    mp = ensure_mediapipe()
     if mp is None:
         print('MediaPipe is required for pose extraction. Exiting.')
         sys.exit(1)
