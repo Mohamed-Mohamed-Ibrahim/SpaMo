@@ -6,8 +6,8 @@ model:
     monitor: val/bleu4
     model_name: google/flan-t5-xl
     cache_dir: /data3/models
-    inter_hidden: 768
-    input_size: 2048
+    inter_hidden: 768         # Hidden size for the intermediate layers
+    input_size: 2048          # Input size for the vision projector
     beam_size: 5
     max_frame_len: 512
     max_txt_len: 64
@@ -19,10 +19,10 @@ model:
     lora_dropout: 0.1
     fusion_mode: joint
     warm_up_steps: 0
-    cross_modal_align: true
-    combined_loss: true
+    cross_modal_align: true   # Enable contrastive visual-text alignment
+    combined_loss: true       # Combine translation + contrastive losses
     alpha: 1.0
-    use_in_context: true
+    use_in_context: true      # Use in-context learning with examples
     num_in_context: 3
 
 lightning:

@@ -36,6 +36,10 @@ def build_vision_projector(mm_projector_type='linear', mm_hidden_size=512, hidde
     if mm_projector_type == 'linear':
         return nn.Linear(mm_hidden_size, hidden_size)
 
+    # # Extract digit
+    # mlp_gelu_match.group(0)  # Full match: "mlp2x_gelu"
+    # mlp_gelu_match.group(1)  # First captured group: "2" (the digit)
+    # if mlp_gelu_match: is truthy when it's a Match object, falsy when None
     mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', mm_projector_type)
     if mlp_gelu_match:
         mlp_depth = int(mlp_gelu_match.group(1)) if mlp_gelu_match.group(1).isdigit() else mlp_depth
