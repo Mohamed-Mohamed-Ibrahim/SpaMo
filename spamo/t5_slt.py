@@ -275,11 +275,12 @@ class FlanT5SLT(AbstractSLT):
         # Combine features for joint mode
         if self.fusion_mode == 'joint':
             bs = spatial_outputs.shape[0]
-            spatial_length = spatial_mask.sum(1)
-            spatiotemporal_length = spatiotemporal_mask.sum(1)
+            spatial_length = spatial_mask.sum(1)                # actual (non-padded) number of spatial frames per sample
+            spatiotemporal_length = spatiotemporal_mask.sum(1)  # actual (non-padded) number of spatiotemporal frames per sample
             new_length = spatial_length + spatiotemporal_length
             
             # Concatenate spatial and spatiotemporal features for each sample
+            # valid (non-padded) 
             joint_outputs = []
             for i in range(bs):
                 valid_spatial_output = spatial_outputs[i, :spatial_length[i], :]
@@ -287,7 +288,7 @@ class FlanT5SLT(AbstractSLT):
                 concat_sample = torch.cat((valid_spatial_output, valid_spatiotemporal_output), dim=0)
                 joint_outputs.append(concat_sample)
             joint_outputs = pad_sequence(joint_outputs, batch_first=True)
-            
+
             # Apply temporal encoder
             visual_conv_outputs = self.temporal_encoder(
                 joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
