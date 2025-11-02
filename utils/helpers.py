@@ -64,6 +64,8 @@ def create_mask(seq_lengths: list, device="cpu"):
         torch.Tensor: A mask tensor.
     """
     max_len = max(seq_lengths)
+    # [None, :] -> reshaped to [1, max_len] instead of [max_len]
+    # [:, None] -> reshaped to [len(seq_lengths), 1] instead of [len(seq_lengths)]
     mask = torch.arange(max_len, device=device)[None, :] < torch.tensor(seq_lengths, device=device)[:, None]
     return mask.to(torch.bool)
 
