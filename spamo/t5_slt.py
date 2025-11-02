@@ -319,7 +319,7 @@ class FlanT5SLT(AbstractSLT):
         return visual_outputs, visual_masks
 
     def get_inputs(self, batch: List) -> Dict:
-        """
+        """ Not done
         Process batch inputs into a structured dictionary.
         
         Args:
@@ -391,7 +391,7 @@ class FlanT5SLT(AbstractSLT):
         }
 
     def visual_textual_align(self, visual_outputs: torch.Tensor, visual_masks: torch.Tensor, samples: Dict) -> torch.Tensor:
-        """
+        """ Not done
         Calculate visual-textual alignment loss.
         
         Args:
@@ -431,7 +431,7 @@ class FlanT5SLT(AbstractSLT):
         return loss
 
     def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
-        """
+        """ Not done
         Shared logic for training, validation and testing steps.
         
         Args:
