@@ -377,16 +377,16 @@ class FlanT5SLT(AbstractSLT):
         
         # Return structured dictionary
         return {
-            'pixel_values': pixel_values,
-            'glor_values': glor_values,
-            'bool_mask_pos': masks,
-            'ids': ids,
-            'text': texts,
-            'ex_lang_trans': ex_lang_translations,
-            'gloss': glosses,
-            'lang': langs,
-            'num_frames': num_frames,
-            'glor_lengths': glor_lengths,
+            'pixel_values': pixel_values,      # List of spatial feature tensors
+            'glor_values': glor_values,          # List of spatiotemporal feature tensors
+            'bool_mask_pos': masks,             # Position masks (currently empty)
+            'ids': ids,                         # Sample IDs
+            'text': texts,                      # Target translations (lowercased)
+            'ex_lang_trans': ex_lang_translations,  # In-context examples
+            'gloss': glosses,                   # Gloss annotations
+            'lang': langs,                      # Language information
+            'num_frames': num_frames,           # Frame counts per sample
+            'glor_lengths': glor_lengths,       # Spatiotemporal feature lengths
         }
 
     def visual_textual_align(self, visual_outputs: torch.Tensor, visual_masks: torch.Tensor, samples: Dict) -> torch.Tensor:
