@@ -660,11 +660,19 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
 
     def configure_optimizers(self):
+        # Only optimize parameters that require gradients. This avoids DDP warnings
+        # about ignored parameters when many parameters are frozen (e.g., with LoRA or
+        # explicit freezing). It also produces a smaller optimizer state.
+        trainable_params = [p for p in self.parameters() if p.requires_grad]
+        if len(trainable_params) == 0:
+            # Defensive: if no parameters are trainable, raise early to avoid silent failure
+            raise RuntimeError("No trainable parameters found in the model. Check freezing/LoRA setup.")
+
         optimizer = torch.optim.AdamW(
-            self.parameters(), 
-            lr=self.lr, 
-            eps=1e-8, 
-            weight_decay=0.01, 
+            trainable_params,
+            lr=self.lr,
+            eps=1e-8,
+            weight_decay=0.01,
             betas=(0.9, 0.98)
         )
         
@@ -692,6 +700,16 @@ class FlanT5SLT(AbstractSLT):
             num_warmup_steps=warmup_steps,
             num_training_steps=total_steps,
         )
+
+        # log parameter counts for debugging DDP issues
+        try:
+            total = sum(p.numel() for p in self.parameters())
+            trainable = sum(p.numel() for p in trainable_params)
+            self.log('model/total_params', float(total), prog_bar=False)
+            self.log('model/trainable_params', float(trainable), prog_bar=False)
+        except Exception:
+            # logging may not be available at construction time in some contexts
+            pass
 
         return {
             "optimizer": optimizer,
