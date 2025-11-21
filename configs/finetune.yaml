@@ -23,7 +23,7 @@ model:
     combined_loss: true
     alpha: 1.0
     use_in_context: true
-    num_in_context: 3
+    num_in_context: 2
 
 lightning:
   callback:
