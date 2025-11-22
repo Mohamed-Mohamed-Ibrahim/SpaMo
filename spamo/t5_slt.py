@@ -253,6 +253,9 @@ class FlanT5SLT(AbstractSLT):
         Returns:
             Tuple of (visual_outputs, visual_masks)
         """
+        print("=" * 80)
+        print("[prepare_visual_inputs] START")
+        print("=" * 80)
         print(f"[prepare_visual_inputs] fusion_mode: {self.fusion_mode}")
         
         # Determine which visual features to use based on fusion mode
@@ -263,9 +266,12 @@ class FlanT5SLT(AbstractSLT):
             spatiotemporal = self.fusion_mode == 'spatiotemporal'
         
         print(f"[prepare_visual_inputs] spatial: {spatial}, spatiotemporal: {spatiotemporal}")
+        print("-" * 80)
 
         # Process spatial features if needed
         if spatial:
+            print("[prepare_visual_inputs] Processing SPATIAL features")
+            print("-" * 80)
             print(f"[prepare_visual_inputs] samples['pixel_values'] length: {len(samples['pixel_values'])}")
             if len(samples['pixel_values']) > 0:
                 print(f"[prepare_visual_inputs] samples['pixel_values'][0] shape: {samples['pixel_values'][0].shape}")
@@ -275,9 +281,12 @@ class FlanT5SLT(AbstractSLT):
             print(f"[prepare_visual_inputs] spatial_outputs shape: {spatial_outputs.shape}")
             spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
             print(f"[prepare_visual_inputs] spatial_mask shape: {spatial_mask.shape}")
+            print("-" * 80)
         
         # Process spatiotemporal features if needed
         if spatiotemporal:
+            print("[prepare_visual_inputs] Processing SPATIOTEMPORAL features")
+            print("-" * 80)
             print(f"[prepare_visual_inputs] samples['glor_values'] length: {len(samples['glor_values'])}")
             if len(samples['glor_values']) > 0:
                 print(f"[prepare_visual_inputs] samples['glor_values'][0] shape: {samples['glor_values'][0].shape}")
@@ -287,9 +296,12 @@ class FlanT5SLT(AbstractSLT):
             print(f"[prepare_visual_inputs] spatiotemporal_outputs (after proj) shape: {spatiotemporal_outputs.shape}")
             spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
             print(f"[prepare_visual_inputs] spatiotemporal_mask shape: {spatiotemporal_mask.shape}")
+            print("-" * 80)
         
         # Combine features for joint mode
         if self.fusion_mode == 'joint':
+            print("[prepare_visual_inputs] JOINT MODE - Combining features")
+            print("=" * 80)
             bs = spatial_outputs.shape[0]
             print(f"[prepare_visual_inputs] joint mode - batch size: {bs}")
             spatial_length = spatial_mask.sum(1)
@@ -298,8 +310,11 @@ class FlanT5SLT(AbstractSLT):
             print(f"[prepare_visual_inputs] spatiotemporal_length shape: {spatiotemporal_length.shape}, values: {spatiotemporal_length}")
             new_length = spatial_length + spatiotemporal_length
             print(f"[prepare_visual_inputs] new_length shape: {new_length.shape}, values: {new_length}")
+            print("-" * 80)
             
             # Concatenate spatial and spatiotemporal features for each sample
+            print("[prepare_visual_inputs] Concatenating features per sample")
+            print("-" * 80)
             joint_outputs = []
             for i in range(bs):
                 valid_spatial_output = spatial_outputs[i, :spatial_length[i], :]
@@ -311,8 +326,11 @@ class FlanT5SLT(AbstractSLT):
                 joint_outputs.append(concat_sample)
             joint_outputs = pad_sequence(joint_outputs, batch_first=True)
             print(f"[prepare_visual_inputs] joint_outputs shape: {joint_outputs.shape}")
+            print("-" * 80)
             
             # Apply temporal encoder
+            print("[prepare_visual_inputs] Applying temporal encoder")
+            print("-" * 80)
             joint_outputs_permuted = joint_outputs.permute(0,2,1)
             print(f"[prepare_visual_inputs] joint_outputs_permuted shape: {joint_outputs_permuted.shape}")
             new_length_tensor = torch.tensor(new_length.tolist(), device=self.device)
@@ -336,7 +354,9 @@ class FlanT5SLT(AbstractSLT):
         else:
             # Use single feature type
             if spatial:
-                print("[prepare_visual_inputs] spatial mode only")
+                print("=" * 80)
+                print("[prepare_visual_inputs] SPATIAL MODE ONLY")
+                print("=" * 80)
                 spatial_outputs_permuted = spatial_outputs.permute(0,2,1)
                 print(f"[prepare_visual_inputs] spatial_outputs_permuted shape: {spatial_outputs_permuted.shape}")
                 num_frames_tensor = torch.tensor(samples['num_frames'], device=self.device)
@@ -357,7 +377,9 @@ class FlanT5SLT(AbstractSLT):
                 )
                 print(f"[prepare_visual_inputs] visual_masks shape: {visual_masks.shape}")
             elif spatiotemporal:
-                print("[prepare_visual_inputs] spatiotemporal mode only")
+                print("=" * 80)
+                print("[prepare_visual_inputs] SPATIOTEMPORAL MODE ONLY")
+                print("=" * 80)
                 visual_outputs = spatiotemporal_outputs
                 print(f"[prepare_visual_inputs] visual_outputs shape: {visual_outputs.shape}")
                 visual_masks = spatiotemporal_mask
@@ -365,7 +387,13 @@ class FlanT5SLT(AbstractSLT):
             else:
                 raise NotImplementedError("Invalid fusion mode")
         
-        print(f"[prepare_visual_inputs] FINAL - visual_outputs shape: {visual_outputs.shape}, visual_masks shape: {visual_masks.shape}")
+        print("=" * 80)
+        print("[prepare_visual_inputs] FINAL RESULTS")
+        print("=" * 80)
+        print(f"[prepare_visual_inputs] visual_outputs shape: {visual_outputs.shape}, visual_masks shape: {visual_masks.shape}")
+        print("=" * 80)
+        print("[prepare_visual_inputs] END")
+        print("=" * 80)
         return visual_outputs, visual_masks
 
     def get_inputs(self, batch: List) -> Dict:
