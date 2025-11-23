@@ -4,9 +4,9 @@ model:
   params:     
     lr: 6.0e-4
     monitor: val/bleu4
-    model_name: google/flan-t5-small
+    model_name: google/flan-t5-base
     cache_dir: /data3/models
-    inter_hidden: 512
+    inter_hidden: 768
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
