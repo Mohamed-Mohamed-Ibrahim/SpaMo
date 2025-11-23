@@ -2,7 +2,7 @@ model:
   target: spamo.t5_slt.FlanT5SLT
   
   params:     
-    lr: 6.0e-4
+    lr: 6.0e-5
     monitor: val/bleu4
     model_name: google/flan-t5-base
     cache_dir: /data3/models
@@ -36,7 +36,7 @@ lightning:
     accumulate_grad_batches: 2
     accelerator: gpu
     devices: 2
-    max_epochs: 80
+    max_epochs: 50
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 2
     precision: bf16
