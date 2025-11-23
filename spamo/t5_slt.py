@@ -320,91 +320,97 @@ class FlanT5SLT(AbstractSLT):
         # Adaptive fusion mode: fuse features BEFORE temporal encoding
         # This approach learns to combine streams early, then applies temporal encoding on fused features
         # Benefits: temporal encoder operates on semantically richer fused representation
+        # Adaptive fusion mode: Hybrid approach
+        # Concatenates: [Spatial Stream, Spatiotemporal Stream, Adaptively Fused Stream]
         elif self.fusion_mode == 'adaptive':
             bs = spatial_outputs.shape[0]
             spatial_length = spatial_mask.sum(1).cpu().tolist()
             spatiotemporal_length = spatiotemporal_mask.sum(1).cpu().tolist()
             
-            # Align sequences to same length for adaptive fusion (before temporal encoding)
-            # Use the minimum length for each sample to ensure both streams have valid features
-            aligned_outputs = []
-            aligned_lengths = []
+            hybrid_outputs = []
+            hybrid_lengths = []
             
             for i in range(bs):
+                # --- 1. JOINT LOGIC: Get full original sequences ---
                 s_len = int(spatial_length[i])
                 st_len = int(spatiotemporal_length[i])
                 
-                # Check if either sequence is empty
+                valid_spatial = spatial_outputs[i, :s_len, :]
+                valid_spatiotemporal = spatiotemporal_outputs[i, :st_len, :]
+
+                # --- 2. ADAPTIVE LOGIC: Align and Fuse ---
+                
+                # Determine alignment length (min length)
                 if s_len == 0 or st_len == 0:
-                    # Fallback: use whichever stream has frames, or create dummy features
+                    # Handle empty sequences for fusion inputs
                     if s_len > 0:
-                        # Use spatial features only
-                        s_feat = spatial_outputs[i, :s_len, :]
-                        # Create dummy spatiotemporal features with same shape
-                        st_feat = torch.zeros_like(s_feat)
+                        s_feat_in = valid_spatial
+                        st_feat_in = torch.zeros_like(s_feat_in)
                         aligned_len = s_len
                     elif st_len > 0:
-                        # Use spatiotemporal features only
-                        st_feat = spatiotemporal_outputs[i, :st_len, :]
-                        # Create dummy spatial features with same shape
-                        s_feat = torch.zeros_like(st_feat)
+                        st_feat_in = valid_spatiotemporal
+                        s_feat_in = torch.zeros_like(st_feat_in)
                         aligned_len = st_len
                     else:
-                        # Both are empty - create dummy features (shouldn't happen, but safety check)
+                        # Both empty
                         aligned_len = 1
-                        dummy_feat = torch.zeros(1, self.inter_hidden, device=self.device, dtype=spatial_outputs.dtype)
-                        s_feat = dummy_feat
-                        st_feat = dummy_feat
+                        dummy = torch.zeros(1, self.inter_hidden, device=self.device, dtype=spatial_outputs.dtype)
+                        s_feat_in = dummy
+                        st_feat_in = dummy
                 else:
-                    # Both sequences have frames - use minimum length for alignment
                     aligned_len = min(s_len, st_len)
-                    # Extract aligned features (take first aligned_len frames from each)
-                    s_feat = spatial_outputs[i, :aligned_len, :]  # [aligned_len, D]
-                    st_feat = spatiotemporal_outputs[i, :aligned_len, :]  # [aligned_len, D]
+                    s_feat_in = valid_spatial[:aligned_len, :]
+                    st_feat_in = valid_spatiotemporal[:aligned_len, :]
                 
-                # Ensure minimum length required for temporal encoder
-                # If sequence is too short, repeat the last frame to pad it
+                # Pad fusion inputs if they are too short (to satisfy temporal encoder requirements later)
+                final_fusion_len = aligned_len
                 if aligned_len < self.min_temporal_length:
-                    # Repeat the last frame to reach minimum length
                     if aligned_len == 0:
-                        # Create dummy features
-                        dummy_feat = torch.zeros(self.min_temporal_length, self.inter_hidden, 
-                                                device=self.device, dtype=spatial_outputs.dtype)
-                        s_feat = dummy_feat
-                        st_feat = dummy_feat
-                        aligned_len = self.min_temporal_length
+                        # Create dummy features if totally empty
+                        dummy = torch.zeros(self.min_temporal_length, self.inter_hidden, 
+                                          device=self.device, dtype=spatial_outputs.dtype)
+                        s_feat_in = dummy
+                        st_feat_in = dummy
+                        final_fusion_len = self.min_temporal_length
                     else:
-                        # Repeat frames to reach minimum length
+                        # Repeat last frame
                         n_repeats = self.min_temporal_length - aligned_len
-                        # Use last frame and repeat it
-                        last_frame_s = s_feat[-1:, :].repeat(n_repeats, 1)  # [n_repeats, D]
-                        last_frame_st = st_feat[-1:, :].repeat(n_repeats, 1)  # [n_repeats, D]
-                        s_feat = torch.cat([s_feat, last_frame_s], dim=0)  # [min_length, D]
-                        st_feat = torch.cat([st_feat, last_frame_st], dim=0)  # [min_length, D]
-                        aligned_len = self.min_temporal_length
-                
-                aligned_lengths.append(aligned_len)
-                
-                # Apply adaptive fusion BEFORE temporal encoding
-                # This learns stream-specific projections and per-timestep weights λ₁, λ₂
-                # fused = proj_1(input_1) + proj_2(input_2) + λ₁×proj_1(input_1) + λ₂×proj_2(input_2)
+                        last_s = s_feat_in[-1:, :].repeat(n_repeats, 1)
+                        last_st = st_feat_in[-1:, :].repeat(n_repeats, 1)
+                        s_feat_in = torch.cat([s_feat_in, last_s], dim=0)
+                        st_feat_in = torch.cat([st_feat_in, last_st], dim=0)
+                        final_fusion_len = self.min_temporal_length
+
+                # Apply Adaptive Fusion
                 fused_feat = self.adaptive_fusion(
-                    s_feat.unsqueeze(0),  # [1, aligned_len, D]
-                    st_feat.unsqueeze(0)  # [1, aligned_len, D]
-                )
-                aligned_outputs.append(fused_feat.squeeze(0))  # [aligned_len, D]
+                    s_feat_in.unsqueeze(0), 
+                    st_feat_in.unsqueeze(0)
+                ).squeeze(0) # [final_fusion_len, D]
+
+                # --- 3. HYBRID COMBINATION ---
+                # Concatenate: Spatial + Spatiotemporal + Fused
+                # This mimics Joint mode (dim=0 concatenation) but adds the fused features at the end
+                hybrid_sample = torch.cat((valid_spatial, valid_spatiotemporal, fused_feat), dim=0)
+                
+                hybrid_outputs.append(hybrid_sample)
+                
+                # Calculate new total length for the temporal encoder
+                total_len = s_len + st_len + final_fusion_len
+                hybrid_lengths.append(total_len)
             
             # Pad to same length for batch processing
-            fused_outputs = pad_sequence(aligned_outputs, batch_first=True)  # [B, max_len, D]
+            final_inputs = pad_sequence(hybrid_outputs, batch_first=True) # [B, Max_T, D]
             
-            # Apply temporal encoder on the fused features
-            # Ensure all lengths are at least minimum required (already enforced above, but safety check)
-            valid_lengths = [max(length, self.min_temporal_length) for length in aligned_lengths]
+            # Apply temporal encoder on the Hybrid (Joint + Fused) features
+            # We ensure min_temporal_length is met by the padding logic inside the loop
+            valid_lengths = [max(l, self.min_temporal_length) for l in hybrid_lengths]
+            
             visual_conv_outputs = self.temporal_encoder(
-                fused_outputs.permute(0,2,1), torch.tensor(valid_lengths, device=self.device)
+                final_inputs.permute(0, 2, 1), 
+                torch.tensor(valid_lengths, device=self.device)
             )
             
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)  # [B, T', D]
+            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
             visual_masks = create_mask(
                 seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
                 device=self.device
