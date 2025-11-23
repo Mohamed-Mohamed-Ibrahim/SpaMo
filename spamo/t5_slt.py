@@ -183,6 +183,7 @@ class FlanT5SLT(AbstractSLT):
                 input_size_2=self.inter_hidden,  # Spatiotemporal features after spatiotemp_proj
                 hidden_size=self.inter_hidden    # Common dimension for fusion
             )
+            self.cross_attn = nn.MultiheadAttention(embed_dim=self.inter_hidden, num_heads=4, batch_first=True)
         else:
             self.adaptive_fusion = None
 
@@ -325,85 +326,89 @@ class FlanT5SLT(AbstractSLT):
             spatial_length = spatial_mask.sum(1).cpu().tolist()
             spatiotemporal_length = spatiotemporal_mask.sum(1).cpu().tolist()
             
-            # Align sequences to same length for adaptive fusion (before temporal encoding)
-            # Use the minimum length for each sample to ensure both streams have valid features
-            aligned_outputs = []
-            aligned_lengths = []
+            hybrid_outputs = []
+            hybrid_lengths = []
             
             for i in range(bs):
                 s_len = int(spatial_length[i])
                 st_len = int(spatiotemporal_length[i])
                 
-                # Check if either sequence is empty
+                valid_spatial = spatial_outputs[i, :s_len, :]        # [s_len, D]
+                valid_spatiotemporal = spatiotemporal_outputs[i, :st_len, :] # [st_len, D]
+
+                # --- Handle Edge Cases ---
                 if s_len == 0 or st_len == 0:
-                    # Fallback: use whichever stream has frames, or create dummy features
+                    # [Fallback logic - standard]
                     if s_len > 0:
-                        # Use spatial features only
-                        s_feat = spatial_outputs[i, :s_len, :]
-                        # Create dummy spatiotemporal features with same shape
-                        st_feat = torch.zeros_like(s_feat)
                         aligned_len = s_len
+                        s_feat_in = valid_spatial
+                        st_feat_in = torch.zeros_like(s_feat_in)
                     elif st_len > 0:
-                        # Use spatiotemporal features only
-                        st_feat = spatiotemporal_outputs[i, :st_len, :]
-                        # Create dummy spatial features with same shape
-                        s_feat = torch.zeros_like(st_feat)
                         aligned_len = st_len
+                        st_feat_in = valid_spatiotemporal
+                        s_feat_in = torch.zeros_like(st_feat_in)
                     else:
-                        # Both are empty - create dummy features (shouldn't happen, but safety check)
                         aligned_len = 1
-                        dummy_feat = torch.zeros(1, self.inter_hidden, device=self.device, dtype=spatial_outputs.dtype)
-                        s_feat = dummy_feat
-                        st_feat = dummy_feat
+                        dummy = torch.zeros(1, self.inter_hidden, device=self.device, dtype=spatial_outputs.dtype)
+                        s_feat_in = dummy
+                        st_feat_in = dummy
                 else:
-                    # Both sequences have frames - use minimum length for alignment
-                    aligned_len = min(s_len, st_len)
-                    # Extract aligned features (take first aligned_len frames from each)
-                    s_feat = spatial_outputs[i, :aligned_len, :]  # [aligned_len, D]
-                    st_feat = spatiotemporal_outputs[i, :aligned_len, :]  # [aligned_len, D]
-                
-                # Ensure minimum length required for temporal encoder
-                # If sequence is too short, repeat the last frame to pad it
+                    # --- DYNAMIC COMPRESSION (CROSS-ATTENTION) ---
+                    # We want to compress Spatial (Long) -> Spatiotemporal (Short)
+                    aligned_len = st_len
+                    
+                    # Prepare Inputs for Attention
+                    # Query = Spatiotemporal (The target length we want)
+                    # Key/Value = Spatial (The source information)
+                    
+                    # Unsqueeze to add Batch dimension [1, Len, D] (since batch_first=True)
+                    query = valid_spatiotemporal.unsqueeze(0) # [1, st_len, D]
+                    key = valid_spatial.unsqueeze(0)          # [1, s_len, D]
+                    value = valid_spatial.unsqueeze(0)        # [1, s_len, D]
+                    
+                    # Apply Cross Attention
+                    # This calculates: which Spatial frames correspond to each Spatiotemporal frame?
+                    # Output shape will be same length as Query (st_len)
+                    attn_output, _ = self.cross_attn(query, key, value)
+                    
+                    # Remove batch dim
+                    s_feat_in = attn_output.squeeze(0) # [st_len, D]
+                    st_feat_in = valid_spatiotemporal  # [st_len, D]
+
+                # --- Adaptive Fusion ---
+                # Check min temporal length
+                final_fusion_len = aligned_len
                 if aligned_len < self.min_temporal_length:
-                    # Repeat the last frame to reach minimum length
                     if aligned_len == 0:
-                        # Create dummy features
-                        dummy_feat = torch.zeros(self.min_temporal_length, self.inter_hidden, 
-                                                device=self.device, dtype=spatial_outputs.dtype)
-                        s_feat = dummy_feat
-                        st_feat = dummy_feat
-                        aligned_len = self.min_temporal_length
+                        s_feat_in = torch.zeros(self.min_temporal_length, self.inter_hidden, device=self.device)
+                        st_feat_in = torch.zeros(self.min_temporal_length, self.inter_hidden, device=self.device)
+                        final_fusion_len = self.min_temporal_length
                     else:
-                        # Repeat frames to reach minimum length
                         n_repeats = self.min_temporal_length - aligned_len
-                        # Use last frame and repeat it
-                        last_frame_s = s_feat[-1:, :].repeat(n_repeats, 1)  # [n_repeats, D]
-                        last_frame_st = st_feat[-1:, :].repeat(n_repeats, 1)  # [n_repeats, D]
-                        s_feat = torch.cat([s_feat, last_frame_s], dim=0)  # [min_length, D]
-                        st_feat = torch.cat([st_feat, last_frame_st], dim=0)  # [min_length, D]
-                        aligned_len = self.min_temporal_length
-                
-                aligned_lengths.append(aligned_len)
-                
-                # Apply adaptive fusion BEFORE temporal encoding
-                # This learns stream-specific projections and per-timestep weights λ₁, λ₂
-                # fused = proj_1(input_1) + proj_2(input_2) + λ₁×proj_1(input_1) + λ₂×proj_2(input_2)
+                        s_feat_in = torch.cat([s_feat_in, s_feat_in[-1:].repeat(n_repeats,1)], dim=0)
+                        st_feat_in = torch.cat([st_feat_in, st_feat_in[-1:].repeat(n_repeats,1)], dim=0)
+                        final_fusion_len = self.min_temporal_length
+
+                # Fuse
                 fused_feat = self.adaptive_fusion(
-                    s_feat.unsqueeze(0),  # [1, aligned_len, D]
-                    st_feat.unsqueeze(0)  # [1, aligned_len, D]
-                )
-                aligned_outputs.append(fused_feat.squeeze(0))  # [aligned_len, D]
+                    s_feat_in.unsqueeze(0), 
+                    st_feat_in.unsqueeze(0)
+                ).squeeze(0) 
+
+                # --- HYBRID CONCATENATION ---
+                hybrid_sample = torch.cat((valid_spatial, valid_spatiotemporal, fused_feat), dim=0)
+                
+                hybrid_outputs.append(hybrid_sample)
+                hybrid_lengths.append(s_len + st_len + final_fusion_len)
+
+            # Pad and process batch
+            final_inputs = pad_sequence(hybrid_outputs, batch_first=True)
+            valid_lengths = [max(l, self.min_temporal_length) for l in hybrid_lengths]
             
-            # Pad to same length for batch processing
-            fused_outputs = pad_sequence(aligned_outputs, batch_first=True)  # [B, max_len, D]
-            
-            # Apply temporal encoder on the fused features
-            # Ensure all lengths are at least minimum required (already enforced above, but safety check)
-            valid_lengths = [max(length, self.min_temporal_length) for length in aligned_lengths]
             visual_conv_outputs = self.temporal_encoder(
-                fused_outputs.permute(0,2,1), torch.tensor(valid_lengths, device=self.device)
+                final_inputs.permute(0, 2, 1), 
+                torch.tensor(valid_lengths, device=self.device)
             )
-            
             visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)  # [B, T', D]
             visual_masks = create_mask(
                 seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
