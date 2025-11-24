@@ -378,16 +378,16 @@ class FlanT5SLT(AbstractSLT):
                 # --- Adaptive Fusion ---
                 # Check min temporal length
                 final_fusion_len = aligned_len
-                if aligned_len < self.min_temporal_length:
-                    if aligned_len == 0:
-                        s_feat_in = torch.zeros(self.min_temporal_length, self.inter_hidden, device=self.device)
-                        st_feat_in = torch.zeros(self.min_temporal_length, self.inter_hidden, device=self.device)
-                        final_fusion_len = self.min_temporal_length
-                    else:
-                        n_repeats = self.min_temporal_length - aligned_len
-                        s_feat_in = torch.cat([s_feat_in, s_feat_in[-1:].repeat(n_repeats,1)], dim=0)
-                        st_feat_in = torch.cat([st_feat_in, st_feat_in[-1:].repeat(n_repeats,1)], dim=0)
-                        final_fusion_len = self.min_temporal_length
+                # if aligned_len < self.min_temporal_length:
+                #     if aligned_len == 0:
+                #         s_feat_in = torch.zeros(self.min_temporal_length, self.inter_hidden, device=self.device)
+                #         st_feat_in = torch.zeros(self.min_temporal_length, self.inter_hidden, device=self.device)
+                #         final_fusion_len = self.min_temporal_length
+                #     else:
+                #         n_repeats = self.min_temporal_length - aligned_len
+                #         s_feat_in = torch.cat([s_feat_in, s_feat_in[-1:].repeat(n_repeats,1)], dim=0)
+                #         st_feat_in = torch.cat([st_feat_in, st_feat_in[-1:].repeat(n_repeats,1)], dim=0)
+                #         final_fusion_len = self.min_temporal_length
 
                 # Fuse
                 fused_feat = self.adaptive_fusion(
