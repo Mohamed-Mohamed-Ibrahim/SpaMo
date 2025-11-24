@@ -14,7 +14,7 @@ from peft import LoraConfig, get_peft_model, TaskType
 
 from spamo.tconv import TemporalConv
 from utils.helpers import create_mask, derangement
-from spamo.mm_projector import build_vision_projector, AdaptiveFusionWithProjection
+from spamo.mm_projector import build_vision_projector, AdaptiveFusion
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.asb import AbstractSLT
@@ -168,25 +168,14 @@ class FlanT5SLT(AbstractSLT):
         # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
         
-        # Calculate minimum sequence length required for temporal encoder
-        # For conv_type=2: ['K5', "P2", 'K5', "P2"]
-        # Minimum: need at least 16 frames to avoid pooling issues
-        # Calculation: 5 (K5) -> P2 needs 2 -> 5 (K5) -> P2 needs 2 -> minimum 16
-        self.min_temporal_length = 16  # Conservative minimum for conv_type=2
-        
         # Initialize adaptive fusion if fusion_mode is 'adaptive'
         if self.fusion_mode == 'adaptive':
-            # Use AdaptiveFusionWithProjection to fuse before temporal encoding
-            # This allows learning stream-specific projections optimized for fusion
-            self.adaptive_fusion = AdaptiveFusionWithProjection(
-                input_size_1=self.inter_hidden,  # Spatial features after spatio_proj
-                input_size_2=self.inter_hidden,  # Spatiotemporal features after spatiotemp_proj
-                hidden_size=self.inter_hidden    # Common dimension for fusion
+            self.adaptive_fusion = AdaptiveFusion(
+                input_size_1=self.inter_hidden, 
+                input_size_2=self.inter_hidden, 
+                output_size=2
             )
-            self.cross_attn = nn.MultiheadAttention(embed_dim=self.inter_hidden, num_heads=4, batch_first=True)
-        else:
-            self.adaptive_fusion = None
-
+            
         # if self.cross_modal_align:
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
@@ -318,83 +307,35 @@ class FlanT5SLT(AbstractSLT):
                 device=self.device
             )
         
-        # Adaptive fusion mode: fuse features BEFORE temporal encoding
-        # This approach learns to combine streams early, then applies temporal encoding on fused features
-        # Benefits: temporal encoder operates on semantically richer fused representation
-        # Adaptive fusion mode: Hybrid approach
-        # Concatenates: [Spatial Stream, Spatiotemporal Stream, Adaptively Fused Stream]
         elif self.fusion_mode == 'adaptive':
-            bs = spatial_outputs.shape[0]
             
-            # A. VECTORIZED ALIGNMENT
-            # Create padding mask for attention (True = Pad/Ignore)
-            # spatial_mask is 1 for Valid, 0 for Pad -> we want True for 0
-            key_padding_mask = (spatial_mask == 0)
+            # 1. Align Dimensions: Interpolate spatiotemporal (T_st) to match spatial (T_s) length
+            # Input shapes are (B, T, C). Interpolate expects (B, C, T)
+            if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
+                spatiotemporal_outputs = F.interpolate(
+                    spatiotemporal_outputs.permute(0, 2, 1), 
+                    size=spatial_outputs.shape[1], 
+                    mode='linear', 
+                    align_corners=False
+                ).permute(0, 2, 1)
 
-            # Query = Spatiotemporal (Short), Key/Value = Spatial (Long)
-            # attn_out: [B, ST_Len, D]
-            attn_out, _ = self.cross_attn(
-                query=spatiotemporal_outputs,
-                key=spatial_outputs,
-                value=spatial_outputs,
-                key_padding_mask=key_padding_mask
-            )
-            
-            # B. FUSION
-            # fuse(Aligned Spatial, Original Spatiotemporal) -> [B, ST_Len, D]
-            fused_batch = self.adaptive_fusion(attn_out, spatiotemporal_outputs)
-            
-            # C. ASSEMBLY (Handling jagged concatenation)
-            spatial_lens = spatial_mask.sum(1).cpu().long()
-            st_lens = spatiotemporal_mask.sum(1).cpu().long()
-            
-            hybrid_outputs = []
-            hybrid_lengths = []
-            
-            for i in range(bs):
-                s_len = spatial_lens[i].item()
-                st_len = st_lens[i].item()
-                
-                # Slice valid unpadded data
-                valid_spatial = spatial_outputs[i, :s_len, :]
-                valid_st = spatiotemporal_outputs[i, :st_len, :]
-                valid_fused = fused_batch[i, :st_len, :]
-                
-                # --- Edge Case Handling (Min Length) ---
-                final_fusion_len = st_len
-                # Fallback for empty/too short sequences
-                if s_len == 0 or st_len == 0:
-                     dummy_len = max(st_len, 1)
-                     valid_fused = torch.zeros(dummy_len, valid_spatial.size(-1), device=self.device)
-                     valid_st = valid_fused
-                     final_fusion_len = dummy_len
-                
-                if final_fusion_len < self.min_temporal_length:
-                    n_repeats = self.min_temporal_length - final_fusion_len
-                    valid_fused = torch.cat([valid_fused, valid_fused[-1:].repeat(n_repeats, 1)], dim=0)
-                    valid_st = torch.cat([valid_st, valid_st[-1:].repeat(n_repeats, 1)], dim=0)
-                    # Note: we usually don't extend valid_spatial here to preserve raw input, 
-                    # but if needed you can extend it too.
-                
-                # Stack: Spatial | Spatiotemporal | Fused
-                hybrid_sample = torch.cat((valid_spatial, valid_st, valid_fused), dim=0)
-                hybrid_outputs.append(hybrid_sample)
-                hybrid_lengths.append(hybrid_sample.size(0))
+            # 2. Apply Adaptive Fusion
+            # Returns (B, T, C)
+            fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs)
 
-            # D. TEMPORAL ENCODING
-            final_inputs = pad_sequence(hybrid_outputs, batch_first=True)
-            valid_lengths = torch.tensor(hybrid_lengths, device=self.device)
-            
+            # 3. Pass through Temporal Encoder
+            # TemporalConv expects (B, C, T) input
             visual_conv_outputs = self.temporal_encoder(
-                final_inputs.permute(0, 2, 1),
-                valid_lengths
+                fused_outputs.permute(0, 2, 1), 
+                torch.tensor(samples['num_frames'], device=self.device)
             )
-            
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
+
+            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
             visual_masks = create_mask(
-                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
+                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
                 device=self.device
             )
+
         else:
             # Use single feature type
             if spatial:
