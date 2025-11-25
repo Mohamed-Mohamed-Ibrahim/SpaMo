@@ -6,7 +6,7 @@ model:
     model_name: google/flan-t5-small
     cache_dir: /data3/models
     input_size: 2048
-    pose_input_size: 99
+    pose_input_size: 225
     inter_hidden: 512
     beam_size: 5
     max_frame_len: 512
