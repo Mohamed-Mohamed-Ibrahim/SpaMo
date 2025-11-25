@@ -149,9 +149,9 @@ class FlanT5SLT(AbstractSLT):
         self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
         
-        # Pose projector: CHANGED to MLP + LayerNorm for better feature alignment
+        # Pose projector: Changed 'mlp' to 'mlp2x_gelu' which is supported by your repo
         self.pose_proj = nn.Sequential(
-            build_vision_projector('mlp', self.pose_input_size, self.inter_hidden),
+            build_vision_projector('mlp2x_gelu', self.pose_input_size, self.inter_hidden),
             nn.LayerNorm(self.inter_hidden)
         )
 
@@ -271,7 +271,7 @@ class FlanT5SLT(AbstractSLT):
             raw_pose_values = samples.get('pose_values', [])
             pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in raw_pose_values]
             
-            # --- UPDATED: Ensure correct dtype to match model (bfloat16/float32) ---
+            # Ensure correct dtype to match model (bfloat16/float32)
             target_dtype = self.t5_model.dtype
             
             if len(pose_values_local) > 0:
