@@ -294,6 +294,11 @@ def main():
     if opt.fast_dev_run:
         trainer_config["fast_dev_run"] = True
     trainer_opt = argparse.Namespace(**trainer_config)
+    # If not explicitly set, enable DDP find-unused-parameters to avoid
+    # runtime errors when some model parameters are intentionally unused
+    # (e.g., when freezing the base model or using LoRA adapters).
+    if not hasattr(trainer_opt, 'strategy') or trainer_opt.strategy is None:
+        trainer_opt.strategy = 'ddp_find_unused_parameters_true'
     lightning_config.trainer = trainer_config
     
     # Instantiate data module

@@ -21,3 +21,4 @@ transformers==4.32.0
 wandb==0.16.0
 omegaconf
 rouge-score
+mediapipe==0.10.11

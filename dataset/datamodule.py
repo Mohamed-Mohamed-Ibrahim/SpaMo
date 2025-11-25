@@ -4,9 +4,10 @@ from utils.helpers import instantiate_from_config
 import os
 
 class DataModuleFromConfig(pl.LightningDataModule):
+
     def __init__(self, batch_size, train=None, validation=None, test=None, num_workers=None):
         super().__init__()
-
+        
         self.batch_size = batch_size
         self.dataset_configs = dict()
         self.num_workers = num_workers if num_workers is not None else batch_size * 2
