@@ -147,7 +147,7 @@ class FlanT5SLT(AbstractSLT):
 
         # Load the vision projectors
         self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
-        self.spatiotemp_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
+        self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
         
         # Pose projector: Changed 'mlp' to 'mlp2x_gelu' which is supported by your repo
         self.pose_proj = nn.Sequential(
