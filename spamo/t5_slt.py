@@ -93,24 +93,6 @@ class FlanT5SLT(AbstractSLT):
 
         self.set_container()
         
-    # def load_pretrained_weights(self, checkpoint_path: str) -> None:
-    #     """Load weights from a pretrained checkpoint."""
-    #     checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
-        
-    #     # Get model's state dict
-    #     model_state_dict = self.state_dict()
-    #     checkpoint_state_dict = checkpoint['state_dict']
-        
-    #     # Filter out mismatched keys
-    #     filtered_state_dict = {}
-    #     for k, v in checkpoint_state_dict.items():
-    #         if k in model_state_dict and v.size() == model_state_dict[k].size():
-    #             filtered_state_dict[k] = v
-        
-    #     # Load the filtered state dict
-    #     self.load_state_dict(filtered_state_dict)
-    #     print(f'Checkpoint loaded from {checkpoint_path}. Loaded {len(filtered_state_dict)}/{len(checkpoint_state_dict)} parameters.')
-    
     def load_pretrained_weights(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         self.load_state_dict(checkpoint['state_dict'])
@@ -166,8 +148,13 @@ class FlanT5SLT(AbstractSLT):
         # Load the vision projectors
         self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
-        # Pose projector: default pose size is 33 keypoints * 3 coords = 99
-        self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
+        
+        # Pose projector: CHANGED to MLP + LayerNorm for better feature alignment
+        self.pose_proj = nn.Sequential(
+            build_vision_projector('mlp', self.pose_input_size, self.inter_hidden),
+            nn.LayerNorm(self.inter_hidden)
+        )
+
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
         # Load the temporal encoder
@@ -283,14 +270,19 @@ class FlanT5SLT(AbstractSLT):
             # pose_values should be a list of [T, pose_input_size] tensors (cpu tensors from get_inputs)
             raw_pose_values = samples.get('pose_values', [])
             pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in raw_pose_values]
+            
+            # --- UPDATED: Ensure correct dtype to match model (bfloat16/float32) ---
+            target_dtype = self.t5_model.dtype
+            
             if len(pose_values_local) > 0:
-                # pad and move to device; ensure float dtype
-                pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.device).float()
+                # pad and move to device; ensure correct dtype
+                pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.device).to(target_dtype)
                 pose_lengths = [int(p.size(0)) for p in pose_values_local]
             else:
                 B = len(samples['pixel_values'])
-                pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=torch.float32)
+                pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=target_dtype)
                 pose_lengths = [0] * B
+                
             pose_outputs = self.pose_proj(pose_padded)
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
         
