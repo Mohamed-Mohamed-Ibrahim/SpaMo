@@ -30,14 +30,6 @@ lightning:
       target: pytorch_lightning.callbacks.LearningRateMonitor
       params:
         logging_interval: step
-    early_stopping:
-      target: pytorch_lightning.callbacks.EarlyStopping
-      params:
-        monitor: val/bleu4
-        min_delta: 0.00
-        patience: 10
-        verbose: true
-        mode: max
   trainer:
     strategy: ddp_find_unused_parameters_true
     accumulate_grad_batches: 8
