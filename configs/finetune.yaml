@@ -16,7 +16,7 @@ model:
     tuning_type: lora
     lora_r: 32
     lora_alpha: 64
-    lora_dropout: 0.1
+    lora_dropout: 0.3
     fusion_mode: joint
     warm_up_steps: 500
     cross_modal_align: true
