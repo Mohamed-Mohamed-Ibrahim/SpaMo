@@ -23,8 +23,26 @@ from transformers import get_cosine_schedule_with_warmup
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+class PoseGatingUnit(nn.Module):
+    """
+    A gating mechanism that filters noisy pose features.
+    It learns a sigmoid gate: Output = Input * Sigmoid(Linear(Input))
+    This allows the model to 'shut off' the pose stream if it's noisy.
+    """
+    def __init__(self, hidden_size, dropout_rate=0.3):
+        super().__init__()
+        self.gate_proj = nn.Linear(hidden_size, hidden_size)
+        self.norm = nn.LayerNorm(hidden_size)
+        self.dropout = nn.Dropout(dropout_rate)
 
-torch.set_float32_matmul_precision('high')
+    def forward(self, x):
+        # x: [Batch, Time, Hidden]
+        # Calculate a "relevance score" between 0 and 1 for each feature
+        gate = torch.sigmoid(self.gate_proj(x))
+        # Filter the information
+        x = x * gate
+        # Apply strong dropout and norm
+        return self.dropout(self.norm(x))
 
 
 class FlanT5SLT(AbstractSLT):
@@ -149,11 +167,13 @@ class FlanT5SLT(AbstractSLT):
         self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
         
-        # Pose projector: Changed 'mlp' to 'mlp2x_gelu' which is supported by your repo
-        self.pose_proj = nn.Sequential(
-            build_vision_projector('mlp2x_gelu', self.pose_input_size, self.inter_hidden),
-            nn.LayerNorm(self.inter_hidden)
-        )
+        # --- MODIFIED: Pose projector with Gating ---
+        # Using standard projection followed by gating unit for better noise filtering
+        self.pose_proj = build_vision_projector('mlp2x_gelu', self.pose_input_size, self.inter_hidden)
+        
+        # Add the Gating Unit to filter noise (Dropout set to 0.3 for regularization)
+        self.pose_gating = PoseGatingUnit(self.inter_hidden, dropout_rate=0.3)
+        # ---------------------------------------------
 
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
@@ -283,7 +303,11 @@ class FlanT5SLT(AbstractSLT):
                 pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=target_dtype)
                 pose_lengths = [0] * B
                 
+            # --- MODIFIED: Apply Projection AND Gating ---
             pose_outputs = self.pose_proj(pose_padded)
+            pose_outputs = self.pose_gating(pose_outputs)
+            # ---------------------------------------------
+            
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
         
         # Combine features for joint mode
@@ -404,13 +428,37 @@ class FlanT5SLT(AbstractSLT):
             # Process pose values if available: reshape to [T, kp*3]
             if 'pose_value' in sample and sample['pose_value'] is not None and sample['pose_value'].numel() != 0:
                 pose_arr = sample['pose_value'][::self.frame_sample_rate]
+                
                 # ensure 2D [T, D]
                 if pose_arr.dim() == 3:
                     pose_arr = pose_arr.view(pose_arr.shape[0], -1)
+                
+                # --- MODIFIED: Add Instance Normalization ---
+                # 1. Mask out zeros (missing keypoints) so they don't mess up the mean
+                # Assuming missing joints are exactly 0.0
+                mask = (pose_arr != 0).float()
+                
+                # 2. Calculate mean/std only on valid values
+                # Sum over sequence dim (dim=0) to center the motion, or normalize per frame?
+                # Typically for T5 sequences, centering the whole sequence per joint is safer.
+                mean = (pose_arr * mask).sum(dim=0, keepdim=True) / (mask.sum(dim=0, keepdim=True) + 1e-6)
+                
+                # 3. Center the data
+                pose_arr = pose_arr - mean
+                
+                # 4. Scale to unit variance (optional but recommended for T5)
+                std = (pose_arr * mask).std(dim=0, keepdim=True) + 1e-6
+                pose_arr = pose_arr / std
+                
+                # 5. Re-apply zero mask to keep missing joints as pure zeros
+                pose_arr = pose_arr * mask
+                # -------------------------------------------
+
                 # crop if too long
                 if pose_arr.size(0) > max_frame_len:
                     start_index = random.randint(0, pose_arr.size(0) - max_frame_len)
                     pose_arr = pose_arr[start_index:start_index + max_frame_len]
+                
                 pose_values.append(pose_arr)
 
             # Process glor values if available
