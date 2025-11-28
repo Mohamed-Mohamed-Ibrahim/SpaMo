@@ -308,6 +308,7 @@ class TemporalSignCLLoss(nn.Module):
             Loss scalar or None if no valid pairs
         """
         seq_len = sim_matrix.shape[0]
+        device = sim_matrix.device
         
         if pos_mask.sum() == 0:
             return None
@@ -322,19 +323,21 @@ class TemporalSignCLLoss(nn.Module):
             if len(pos_indices) == 0:
                 continue
             
-            # Get logits
+            # Get logits for this anchor
             logits = sim_matrix[i]  # [T]
-            pos_logits = logits[pos_indices]
+            pos_logits = logits[pos_indices]  # [num_pos]
             
-            # Create labels: 0 for positives, 1+ for negatives
-            all_logits = torch.cat([pos_logits.unsqueeze(0), logits.unsqueeze(0)], dim=0)
+            # Compute NT-Xent loss properly
+            # Numerator: mean of exponentials of positive similarities
+            pos_exp = torch.exp(pos_logits)  # [num_pos]
+            pos_exp_sum = pos_exp.sum()
             
-            # Compute softmax over positives
-            pos_exp = torch.exp(pos_logits)
-            pos_sum = pos_exp.sum()
-            neg_exp = torch.exp(logits).sum() - pos_exp.sum()
+            # Denominator: sum of exponentials of all similarities
+            all_exp_sum = torch.exp(logits).sum()
             
-            frame_loss = -torch.log(pos_sum / (pos_sum + neg_exp + 1e-8))
+            # NT-Xent loss = -log(pos_mean / (pos_mean + neg_mean))
+            # Which is: -log(pos_sum / all_sum)
+            frame_loss = -torch.log(pos_exp_sum / (all_exp_sum + 1e-8))
             loss += frame_loss
             valid_count += 1
         
