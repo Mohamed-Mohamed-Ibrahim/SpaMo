@@ -177,7 +177,8 @@ class FlanT5SLT(AbstractSLT):
             self.adaptive_fusion = AdaptiveFusion(
                 input_size_1=self.inter_hidden, 
                 input_size_2=self.inter_hidden, 
-                output_size=2
+                input_size_3=self.inter_hidden, 
+                output_size=3
             )
             
         # if self.cross_modal_align:
@@ -348,7 +349,7 @@ class FlanT5SLT(AbstractSLT):
 
             # 2. Apply Adaptive Fusion
             # Returns (B, T, C)
-            fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs)
+            fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
 
             # 3. Pass through Temporal Encoder
             # TemporalConv expects (B, C, T) input
