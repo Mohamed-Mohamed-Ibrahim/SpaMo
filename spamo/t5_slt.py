@@ -14,7 +14,7 @@ from peft import LoraConfig, get_peft_model, TaskType
 
 from spamo.tconv import TemporalConv
 from utils.helpers import create_mask, derangement
-from spamo.mm_projector import build_vision_projector
+from spamo.mm_projector import build_vision_projector, AdaptiveFusion
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.asb import AbstractSLT
@@ -171,7 +171,15 @@ class FlanT5SLT(AbstractSLT):
         
         # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
-
+        
+        # Initialize adaptive fusion if fusion_mode is 'adaptive'
+        if self.fusion_mode == 'adaptive':
+            self.adaptive_fusion = AdaptiveFusion(
+                input_size_1=self.inter_hidden, 
+                input_size_2=self.inter_hidden, 
+                output_size=2
+            )
+            
         # if self.cross_modal_align:
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
@@ -258,7 +266,7 @@ class FlanT5SLT(AbstractSLT):
             Tuple of (visual_outputs, visual_masks)
         """
         # Determine which visual features to use based on fusion mode
-        if self.fusion_mode in ['joint']:
+        if self.fusion_mode in ['joint', 'adaptive']:
             spatial = spatiotemporal = pose = True
         else:
             spatial = self.fusion_mode == 'spatial'
@@ -324,7 +332,37 @@ class FlanT5SLT(AbstractSLT):
             visual_masks = create_mask(
                 seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
                 device=self.device
-            ) 
+            )
+        
+        elif self.fusion_mode == 'adaptive':
+            
+            # 1. Align Dimensions: Interpolate spatiotemporal (T_st) to match spatial (T_s) length
+            # Input shapes are (B, T, C). Interpolate expects (B, C, T)
+            if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
+                spatiotemporal_outputs = F.interpolate(
+                    spatiotemporal_outputs.permute(0, 2, 1), 
+                    size=spatial_outputs.shape[1], 
+                    mode='linear', 
+                    align_corners=False
+                ).permute(0, 2, 1)
+
+            # 2. Apply Adaptive Fusion
+            # Returns (B, T, C)
+            fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs)
+
+            # 3. Pass through Temporal Encoder
+            # TemporalConv expects (B, C, T) input
+            visual_conv_outputs = self.temporal_encoder(
+                fused_outputs.permute(0, 2, 1), 
+                torch.tensor(samples['num_frames'], device=self.device)
+            )
+
+            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
+            visual_masks = create_mask(
+                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
+                device=self.device
+            )
+
         else:
             # Use single feature type
             if spatial:

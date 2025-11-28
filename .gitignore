@@ -1,6 +1,8 @@
 # Dependency directories
 node_modules/
 jspm_packages/
+ok.py
+ok2.py
 
 # Build outputs
 dist/

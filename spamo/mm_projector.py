@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import re
-import math
 import torch.nn.functional as F
 
 
@@ -31,6 +30,73 @@ class SimpleResBlock(nn.Module):
     def forward(self, x):
         x = self.pre_norm(x)
         return x + self.proj(x)
+
+
+class AdaptiveFusion(nn.Module):
+    """
+    Adaptive Fusion Mechanism inspired by AVRET.
+    
+    Instead of simple addition or concatenation, this module learns to adaptively
+    weight two input representations at each timestep, allowing the model to
+    dynamically emphasize one stream over the other.
+    
+    Formula: fused = input_1 + input_2 + λ₁ × input_1 + λ₂ × input_2
+    where λ₁ and λ₂ are learnable per-timestep weights.
+    """
+    def __init__(self, input_size_1=512, input_size_2=512, output_size=2, bias=False):
+        """
+        Args:
+            input_size_1: dimensionality of first input
+            input_size_2: dimensionality of second input (should match input_size_1)
+            output_size: number of adaptive weight channels (default 2 for λ₁, λ₂)
+            bias: whether to use bias in linear layers
+        """
+        super(AdaptiveFusion, self).__init__()
+        self.sigmoid = nn.Sigmoid()
+        self.weight_input_1 = nn.Linear(input_size_1, output_size, bias=bias)
+        self.weight_input_2 = nn.Linear(input_size_2, output_size, bias=bias)
+        self.layer_norm = nn.LayerNorm(input_size_1, eps=1e-5)
+        
+    def forward(self, input_1, input_2):
+        """
+        Fuse two input representations adaptively.
+        
+        Args:
+            input_1: First input tensor [B, T, D]
+            input_2: Second input tensor [B, T, D] (same shape as input_1)
+            
+        Returns:
+            Fused representation [B, T, D]
+        """
+        # Compute adaptive weights: [B, T, 2]
+        fm_sigmoid = self.sigmoid(self.weight_input_1(input_1) + self.weight_input_2(input_2))
+        
+        # Extract lambda weights (using detach to prevent gradient flow through weights)
+        # This allows the fusion to be adaptive but doesn't backprop through lambda computation
+        lambda1 = fm_sigmoid.clone().detach()[:, :, 0].unsqueeze(-1)  # [B, T, 1]
+        lambda2 = fm_sigmoid.clone().detach()[:, :, 1].unsqueeze(-1)  # [B, T, 1]
+        
+        # Adaptive fusion formula
+        fused_output = input_1 + input_2 + torch.mul(lambda1, input_1) + torch.mul(lambda2, input_2)
+        fused_output = self.layer_norm(fused_output)
+        return fused_output
+
+
+class AdaptiveFusionWithProjection(nn.Module):
+    """
+    Adaptive Fusion with projection for inputs of different dimensions.
+    Projects both inputs to a common dimension before fusion.
+    """
+    def __init__(self, input_size_1, input_size_2, hidden_size, output_size=2, bias=False):
+        super(AdaptiveFusionWithProjection, self).__init__()
+        self.proj_1 = nn.Linear(input_size_1, hidden_size)
+        self.proj_2 = nn.Linear(input_size_2, hidden_size)
+        self.adaptive_fusion = AdaptiveFusion(hidden_size, hidden_size, output_size, bias)
+        
+    def forward(self, input_1, input_2):
+        proj_1 = self.proj_1(input_1)
+        proj_2 = self.proj_2(input_2)
+        return self.adaptive_fusion(proj_1, proj_2)
 
 def build_vision_projector(mm_projector_type='linear', mm_hidden_size=512, hidden_size=768, mlp_depth=1):
     if mm_projector_type == 'linear':
