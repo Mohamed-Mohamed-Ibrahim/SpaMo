@@ -1,13 +1,3 @@
-"""
-Sign Contrastive Learning (SignCL) Loss
-
-Inspired by: "Improving Gloss-free Sign Language Translation by Reducing Representation Density"
-
-This module implements a contrastive learning loss that improves representation discriminability
-by pulling representations of the same sign closer while pushing different signs apart.
-The loss uses temporal neighborhoods to construct positive pairs, addressing the "representation
-density problem" where visually similar but semantically distinct signs are mapped too close.
-"""
 
 import torch
 import torch.nn as nn
@@ -16,21 +6,7 @@ from typing import Tuple, Optional
 
 
 class SignCLLoss(nn.Module):
-    """
-    Sign Contrastive Learning Loss with temporal neighborhood sampling.
-    
-    This loss function:
-    1. Constructs positive pairs from temporal neighborhoods (frames from same sign)
-    2. Uses negative pairs from different time steps or different videos
-    3. Applies NT-Xent (Normalized Temperature-scaled Cross Entropy) loss
-    4. Reduces representation density by increasing separation between different signs
-    
-    Args:
-        temperature: Temperature parameter for scaling logits (default: 0.07)
-        temporal_window: Size of temporal neighborhood for positive pairs (default: 5)
-        use_cosine_similarity: Whether to use cosine similarity (default: True)
-    """
-    
+
     def __init__(
         self,
         temperature: float = 0.07,
@@ -48,20 +24,7 @@ class SignCLLoss(nn.Module):
         visual_masks: torch.Tensor,
         video_ids: Optional[list] = None,
     ) -> torch.Tensor:
-        """
-        Compute SignCL loss for a batch of visual embeddings.
-        
-        Args:
-            visual_embeddings: Shape [batch_size, seq_len, embedding_dim]
-                Temporal visual features after projection
-            visual_masks: Shape [batch_size, seq_len]
-                Binary mask indicating valid (1) and padded (0) positions
-            video_ids: Optional list of video identifiers for negative sampling
-                If provided, frames from same video are treated as potential positives
-        
-        Returns:
-            Scalar loss value
-        """
+  
         batch_size, seq_len, embedding_dim = visual_embeddings.shape
         
         # Flatten batch and sequence dimensions: [batch_size * seq_len, embedding_dim]
@@ -125,22 +88,7 @@ class SignCLLoss(nn.Module):
         batch_size: int,
         seq_len: int,
     ) -> torch.Tensor:
-        """
-        Construct positive pair mask using temporal neighborhoods.
-        
-        Two frames are positive pairs if:
-        1. They belong to the same video (same batch index)
-        2. They are within temporal_window distance
-        
-        Args:
-            batch_indices: Batch indices of valid frames
-            seq_indices: Sequence indices of valid frames
-            batch_size: Total batch size
-            seq_len: Maximum sequence length
-        
-        Returns:
-            Boolean mask [num_valid_frames, num_valid_frames] where True indicates positive pairs
-        """
+ 
         num_valid = len(batch_indices)
         pos_mask = torch.zeros((num_valid, num_valid), dtype=torch.bool, device=batch_indices.device)
         
@@ -161,16 +109,7 @@ class SignCLLoss(nn.Module):
         similarity_matrix: torch.Tensor,
         pos_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Compute InfoNCE (NT-Xent) loss.
-        
-        Args:
-            similarity_matrix: [num_frames, num_frames] similarity scores
-            pos_mask: [num_frames, num_frames] boolean mask for positive pairs
-        
-        Returns:
-            Scalar loss
-        """
+ 
         num_frames = similarity_matrix.shape[0]
         
         if pos_mask.sum() == 0:
@@ -214,15 +153,7 @@ class SignCLLoss(nn.Module):
 
 
 class TemporalSignCLLoss(nn.Module):
-    """
-    Temporal Sign Contrastive Learning Loss (simplified version).
-    
-    Uses a more efficient implementation for temporal contrastive learning by:
-    1. Sampling hard negatives from different temporal regions
-    2. Using temporal distance weighting for positive pairs
-    3. Supporting batch-wise computation
-    """
-    
+
     def __init__(
         self,
         temperature: float = 0.07,
@@ -239,16 +170,7 @@ class TemporalSignCLLoss(nn.Module):
         visual_embeddings: torch.Tensor,
         visual_masks: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Compute temporal contrastive loss using simplified NT-Xent.
-        
-        Args:
-            visual_embeddings: [batch_size, seq_len, embedding_dim]
-            visual_masks: [batch_size, seq_len]
-        
-        Returns:
-            Scalar loss
-        """
+
         batch_size, seq_len, embed_dim = visual_embeddings.shape
         device = visual_embeddings.device
         
@@ -297,16 +219,7 @@ class TemporalSignCLLoss(nn.Module):
         sim_matrix: torch.Tensor,
         pos_mask: torch.Tensor,
     ) -> Optional[torch.Tensor]:
-        """
-        Compute NT-Xent loss for a single sample.
-        
-        Args:
-            sim_matrix: [T, T] similarity matrix
-            pos_mask: [T, T] positive pair mask
-        
-        Returns:
-            Loss scalar or None if no valid pairs
-        """
+  
         seq_len = sim_matrix.shape[0]
         device = sim_matrix.device
         
