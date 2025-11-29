@@ -20,14 +20,11 @@ class Phoenix14T(torch.utils.data.Dataset):
         vid_root: str,
         feat_root: str,
         mae_feat_root: str,
-        pose_root: str,    # <--- NEW
         mode: str = 'dev',
         spatial: bool = False,
         spatiotemporal: bool = False,
         spatial_postfix: str = '',
-        spatiotemporal_postfix: Union[str, List[str]] = '',
-        pose_postfix: str = '',            # <--- NEW
-        pose: bool = False           # <--- NEW
+        spatiotemporal_postfix: Union[str, List[str]] = ''
     ):
         """
         Initialize the Phoenix14T dataset.
@@ -55,18 +52,11 @@ class Phoenix14T(torch.utils.data.Dataset):
         self.spatiotemporal = spatiotemporal
         self.spatial_postfix = spatial_postfix
         self.spatiotemporal_postfix = spatiotemporal_postfix
-        # pose_root may be None or empty string if pose features are not used
-        self.pose_root = Path(pose_root) if pose_root else None
-        self.pose_postfix = pose_postfix
-        self.pose = pose
         
         # Validate inputs
         if not (spatial or spatiotemporal):
             raise ValueError("At least one of 'spatial' or 'spatiotemporal' must be True")
         
-        if  not (pose):
-            print("No Pose features will be loaded.")
- 
         # Load annotations
         anno_path = self.anno_root / f'{mode}_info_ml.npy'
         if not anno_path.exists():
@@ -77,7 +67,6 @@ class Phoenix14T(torch.utils.data.Dataset):
         # Set up directory paths
         self.spatial_dir = self.feat_root / self.mode
         self.spatiotemporal_dir = self.mae_feat_root / self.mode
-        self.pose_dir = (self.pose_root / self.mode) if (self.pose_root is not None) else None
         
         # Validate that key directories exist
         self._validate_directories()
@@ -89,11 +78,6 @@ class Phoenix14T(torch.utils.data.Dataset):
         
         if self.spatiotemporal and not self.spatiotemporal_dir.exists():
             raise FileNotFoundError(f"Spatiotemporal feature directory not found: {self.spatiotemporal_dir}")
-        
-        if self.pose:
-            if self.pose_dir is None or not self.pose_dir.exists():
-                raise FileNotFoundError(f"Pose feature directory not found: {self.pose_dir}")
-        
 
     def _load_spatial_features(self, file_id: str) -> torch.Tensor:
         """
@@ -141,19 +125,6 @@ class Phoenix14T(torch.utils.data.Dataset):
                     raise FileNotFoundError(f"Spatiotemporal feature file not found: {path}")
                 features.append(torch.tensor(np.load(path)))
             return features
-        
-    def _load_pose_features(self, file_id: str) -> torch.Tensor:
-        """Load pose (skeletal) features for a given file ID."""
-        if self.pose_dir is None:
-            return torch.tensor([])
-
-        pose_path = self.pose_dir / f"{file_id}{self.pose_postfix}.npy"
-        if not pose_path.exists():
-            print(f"Warning: Pose feature file not found: {pose_path}")
-            return torch.tensor([])
-
-        return torch.tensor(np.load(pose_path), dtype=torch.float32)
-
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
         """
@@ -169,7 +140,6 @@ class Phoenix14T(torch.utils.data.Dataset):
         file_id = data['fileid']
         pixel_value = None
         glor_value = None
-        pose_value = None
         
         # Load spatial features if enabled
         if self.spatial:
@@ -189,20 +159,11 @@ class Phoenix14T(torch.utils.data.Dataset):
                     glor_value = torch.tensor([])
                 else:
                     glor_value = [torch.tensor([])]
-
-        # Load pose features if enabled
-        if self.pose:
-            try:
-                pose_value = self._load_pose_features(file_id)
-            except FileNotFoundError as e:
-                print(f"Warning: {e}. Returning empty tensor.")
-                pose_value = torch.tensor([])
         
         # Create result dictionary with normalized text
         result = {
             'pixel_value': pixel_value,
             'glor_value': glor_value,
-            'pose_value': pose_value,
             'bool_mask_pos': None,
             'text': self._normalize_text(data['text']),
             'gloss': data['gloss'],
@@ -244,8 +205,3 @@ class Phoenix14T(torch.utils.data.Dataset):
     @staticmethod
     def collate_fn(batch: List[Dict]) -> List[Dict]:
         return batch
-
-
-
-
-
