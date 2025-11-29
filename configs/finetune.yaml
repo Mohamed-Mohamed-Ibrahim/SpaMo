@@ -51,12 +51,12 @@ data:
     train:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: ./preprocess/Phoenix14T
-        vid_root: ./dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
-        pose_root: ./dataset/mediapipe_features_rwth_phoenix_2014_t
-        i3d_root: ./dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
+        anno_root: /kaggle/working/SpaMo/preprocess/Phoenix14T
+        vid_root: /kaggle/working/SpaMo/dataset/Phoenix14T
+        feat_root: /kaggle/working/SpaMo/feat_Phoenix14T
+        mae_feat_root: /kaggle/working/SpaMo/mae_feat_Phoenix14T
+        pose_root: /kaggle/working/SpaMo/dataset/mediapipe_features_rwth_phoenix_2014_t
+        i3d_root: /kaggle/working/SpaMo/dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
         mode: train
         spatial: true
         spatiotemporal: true
@@ -69,13 +69,13 @@ data:
     validation:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: ./preprocess/Phoenix14T
-        vid_root: ./dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
-        pose_root: ./dataset/mediapipe_features_rwth_phoenix_2014_t
-        i3d_root: ./dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
-        mode: test
+        anno_root: /kaggle/working/SpaMo/preprocess/Phoenix14T
+        vid_root: /kaggle/working/SpaMo/dataset/Phoenix14T
+        feat_root: /kaggle/working/SpaMo/feat_Phoenix14T
+        mae_feat_root: /kaggle/working/SpaMo/mae_feat_Phoenix14T
+        pose_root: /kaggle/working/SpaMo/dataset/mediapipe_features_rwth_phoenix_2014_t
+        i3d_root: /kaggle/working/SpaMo/dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
+        mode: dev
         spatial: true
         spatiotemporal: true
         pose: true
@@ -87,12 +87,12 @@ data:
     test:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: ./preprocess/Phoenix14T
-        vid_root: ./dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
-        pose_root: ./dataset/mediapipe_features_rwth_phoenix_2014_t
-        i3d_root: ./dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
+        anno_root: /kaggle/working/SpaMo/preprocess/Phoenix14T
+        vid_root: /kaggle/working/SpaMo/dataset/Phoenix14T
+        feat_root: /kaggle/working/SpaMo/feat_Phoenix14T
+        mae_feat_root: /kaggle/working/SpaMo/mae_feat_Phoenix14T
+        pose_root: /kaggle/working/SpaMo/dataset/mediapipe_features_rwth_phoenix_2014_t
+        i3d_root: /kaggle/working/SpaMo/dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
         mode: test
         spatial: true
         spatiotemporal: true
