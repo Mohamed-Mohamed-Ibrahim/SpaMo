@@ -131,11 +131,93 @@ class CrossAttentionBlock(nn.Module):
         self.norm1 = norm_layer(dim)
         self.xattn = CrossAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias)
         self.norm2 = norm_layer(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer)
+        self.mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = MLP(in_features=dim, hidden_features=self.mlp_hidden_dim, act_layer=act_layer)
 
     def forward(self, q, x):
         y = self.xattn(q, self.norm1(x))
         q = q + y
         q = q + self.mlp(self.norm2(q))
         return q
+
+# =========================================================================
+# NEW: MMProjector Class to handle Spatial, MAE, Pose, and I3D Projections
+# =========================================================================
+
+class MMProjector(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        
+        # Target dimension (usually 512 for T5-Small/Base)
+        self.inter_hidden = config.inter_hidden
+
+        # 1. Spatial Projector (e.g., from 2048 -> 512)
+        if hasattr(config, "input_size"):
+            self.spatial_proj = build_vision_projector(
+                mm_hidden_size=config.input_size, 
+                hidden_size=config.inter_hidden
+            )
+            
+        # 2. Spatiotemporal / MAE Projector
+        # Checks for explicit mae_input_size, otherwise defaults to 768 (standard VideoMAE-B)
+        mae_dim = getattr(config, 'mae_input_size', 768) 
+        self.mae_proj = build_vision_projector(
+            mm_hidden_size=mae_dim,
+            hidden_size=config.inter_hidden
+        )
+
+        # 3. Pose Projector (e.g., from 99 -> 512)
+        if hasattr(config, "pose_input_size"):
+             self.pose_proj = build_vision_projector(
+                mm_hidden_size=config.pose_input_size,
+                hidden_size=config.inter_hidden
+             )
+             
+        # 4. I3D Projector (e.g., from 1024 -> 512)
+        if hasattr(config, "i3d_input_size"):
+             self.i3d_proj = build_vision_projector(
+                mm_hidden_size=config.i3d_input_size,
+                hidden_size=config.inter_hidden
+             )
+
+    def forward(self, features):
+        """
+        Args:
+            features (dict): Dictionary containing raw tensors from dataset
+                             Keys: 'pixel_value', 'glor_value', 'pose_value', 'i3d_feat'
+        Returns:
+            projections (dict): Dictionary containing projected embeddings
+                                Keys: 'spatial', 'mae', 'pose', 'i3d'
+        """
+        projections = {}
+        
+        # --- Spatial Projection ---
+        if 'pixel_value' in features:
+            x = features['pixel_value']
+            # Check if valid tensor and not empty
+            if isinstance(x, torch.Tensor) and x.numel() > 0:
+                projections['spatial'] = self.spatial_proj(x)
+
+        # --- MAE / Spatiotemporal Projection ---
+        if 'glor_value' in features:
+             x = features['glor_value']
+             if isinstance(x, torch.Tensor) and x.numel() > 0:
+                 projections['mae'] = self.mae_proj(x)
+             elif isinstance(x, list) and len(x) > 0 and isinstance(x[0], torch.Tensor):
+                 # Handle case where MAE features might be a list of tensors
+                 # For now, we project the first view or handle specific logic
+                 projections['mae'] = self.mae_proj(x[0])
+
+        # --- Pose Projection ---
+        if 'pose_value' in features:
+             x = features['pose_value']
+             if isinstance(x, torch.Tensor) and x.numel() > 0:
+                 projections['pose'] = self.pose_proj(x)
+
+        # --- I3D Projection ---
+        if 'i3d_feat' in features:
+             x = features['i3d_feat']
+             if isinstance(x, torch.Tensor) and x.numel() > 0:
+                 projections['i3d'] = self.i3d_proj(x)
+                 
+        return projections

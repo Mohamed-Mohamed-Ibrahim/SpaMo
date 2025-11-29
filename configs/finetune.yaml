@@ -7,6 +7,7 @@ model:
     cache_dir: /data3/models
     input_size: 2048
     pose_input_size: 99
+    i3d_input_size: 1024
     inter_hidden: 512
     beam_size: 5
     max_frame_len: 512
@@ -16,12 +17,12 @@ model:
     tuning_type: lora
     lora_r: 32
     lora_alpha: 64
-    lora_dropout: 0.3
+    lora_dropout: 0.1
     fusion_mode: joint
     warm_up_steps: 500
     cross_modal_align: true
     combined_loss: true
-    alpha: 0.5
+    alpha: 1
     use_in_context: true
     num_in_context: 5
 
@@ -54,11 +55,13 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: ./dataset/mediapipe_features_rwth_phoenix_2014_t
+        i3d_root: ./dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
         mode: train
         spatial: true
         spatiotemporal: true
         pose: true
+        i3d: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -70,11 +73,13 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: ./dataset/mediapipe_features_rwth_phoenix_2014_t
+        i3d_root: ./dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
         mode: test
         spatial: true
         spatiotemporal: true
         pose: true
+        i3d: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -86,11 +91,13 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: ./dataset/mediapipe_features_rwth_phoenix_2014_t
+        i3d_root: ./dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
         mode: test
         spatial: true
         spatiotemporal: true
         pose: true
+        i3d: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
