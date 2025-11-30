@@ -60,8 +60,8 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: false
-        i3d: true
+        pose: true
+        i3d: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
