@@ -1,11 +1,14 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 3.0e-4
+    # lr: 3.0e-4
+    lr: 6.0e-4
     monitor: val/bleu4
-    model_name: google/flan-t5-base
+    # model_name: google/flan-t5-base
+    model_name: google/flan-t5-small
     cache_dir: /data3/models
-    inter_hidden: 768
+    # inter_hidden: 768
+    inter_hidden: 512
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
@@ -17,7 +20,8 @@ model:
     lora_alpha: 64
     lora_dropout: 0.1
     fusion_mode: joint
-    warm_up_steps: 1000
+    # warm_up_steps: 1000
+    warm_up_steps: 500
     cross_modal_align: true
     combined_loss: true
     alpha: 1.0
