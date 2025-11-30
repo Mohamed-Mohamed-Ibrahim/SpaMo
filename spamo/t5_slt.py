@@ -52,6 +52,7 @@ class FlanT5SLT(AbstractSLT):
         sign_cl_alpha: float = 0.5,
         sign_cl_temperature: float = 0.07,
         sign_cl_temporal_window: int = 5,
+        sign_cl_every_n_steps: int = 1,
         use_resampler: bool = False,
         sampling_length: int = 64,
         cache_dir: str = "/data3/models",
@@ -83,6 +84,7 @@ class FlanT5SLT(AbstractSLT):
         self.sign_cl_alpha = sign_cl_alpha
         self.sign_cl_temperature = sign_cl_temperature
         self.sign_cl_temporal_window = sign_cl_temporal_window
+        self.sign_cl_every_n_steps = sign_cl_every_n_steps
         self.use_resampler = use_resampler
         self.sampling_length = sampling_length
         self.cache_dir = cache_dir
@@ -551,7 +553,11 @@ class FlanT5SLT(AbstractSLT):
                 loss = cont_loss
                 
                 # Sign Contrastive Learning loss (SignCL) - temporal neighborhoods
-                if self.sign_cl_loss and self.sign_cl is not None:
+                if (
+                    self.sign_cl_loss
+                    and self.sign_cl is not None
+                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
+                ):
                     sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
                     if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
                         loss = loss + self.sign_cl_alpha * sign_cl_loss_val
@@ -583,7 +589,11 @@ class FlanT5SLT(AbstractSLT):
                 log_dict[f"{split}/contra_loss"] = cont_loss
                 
                 # Add SignCL loss if enabled (reduces representation density)
-                if self.sign_cl_loss and self.sign_cl is not None:
+                if (
+                    self.sign_cl_loss
+                    and self.sign_cl is not None
+                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
+                ):
                     sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
                     if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
                         loss = loss + self.sign_cl_alpha * sign_cl_loss_val

@@ -56,70 +56,41 @@ class TemporalSignCLLoss(nn.Module):
         return total_loss / batch_count
     
     def _compute_sequence_loss(self, embeddings: torch.Tensor) -> Optional[torch.Tensor]:
-   
         seq_len = embeddings.shape[0]
-        
-        # Compute similarity matrix: [T, T]
-        # Using normalized embeddings, this is cosine similarity
-        sim_matrix = torch.mm(embeddings, embeddings.t())
-        
-        # Scale by temperature
-        sim_matrix = sim_matrix / self.temperature
-        
-        # Mask out diagonal (self-similarity)
-        sim_matrix.fill_diagonal_(-1e9)
-        
-        # Compute NT-Xent loss
-        loss = 0.0
-        valid_frames = 0
-        
-        for i in range(seq_len):
-            # Find positive pair indices (within temporal window)
-            pos_start = max(0, i - self.temporal_window)
-            pos_end = min(seq_len, i + self.temporal_window + 1)
-            
-            # Collect indices (excluding self)
-            pos_indices = list(range(pos_start, pos_end))
-            if i in pos_indices:
-                pos_indices.remove(i)
-            
-            # Skip if no positive pairs
-            if len(pos_indices) == 0:
-                continue
-            
-            # Get logits for this anchor
-            logits_i = sim_matrix[i]  # [T]
-            pos_logits = logits_i[pos_indices]  # [num_pos]
-            
-            # Numerically stable NT-Xent loss using log-sum-exp trick
-            # Find maximum for stability
-            max_logit = torch.max(logits_i).detach()
-            
-            # Compute exp with stability
-            logits_stable = logits_i - max_logit
-            pos_logits_stable = pos_logits - max_logit
-            
-            # Sum of positive exponentials
-            pos_exp_sum = torch.exp(pos_logits_stable).sum()
-            
-            # Sum of all exponentials  
-            all_exp_sum = torch.exp(logits_stable).sum()
-            
-            # NT-Xent loss = -log(mean(exp(pos)) / mean(exp(all)))
-            #              = -log(sum(exp(pos)) / sum(exp(all)))
-            frame_loss = -torch.log(pos_exp_sum / (all_exp_sum + 1e-8))
-            
-            # Only add if finite (skip NaN/Inf)
-            if torch.isfinite(frame_loss):
-                loss += frame_loss
-                valid_frames += 1
-        
-        # Return None if no valid frames processed
-        if valid_frames == 0:
+
+        # Similarity matrix: [T, T] (cosine because embeddings are normalized)
+        logits = torch.mm(embeddings, embeddings.t()) / self.temperature
+
+        # Build positive mask: True where |i-j| <= temporal_window and i != j
+        idx = torch.arange(seq_len, device=embeddings.device)
+        dist = (idx.unsqueeze(0) - idx.unsqueeze(1)).abs()
+        pos_mask = (dist <= self.temporal_window)
+        pos_mask.fill_diagonal_(False)
+
+        # For numerical stability compute per-row log-sum-exp
+        # Work in float32 for stable exp/log when needed
+        logits_f = logits.float()
+
+        row_max, _ = torch.max(logits_f, dim=1, keepdim=True)
+        logits_stable = logits_f - row_max
+        exp_logits = torch.exp(logits_stable)
+
+        # Denominator: sum over all (including positives, excluding diag since exp(-inf)~0)
+        denom = exp_logits.sum(dim=1)  # [T]
+
+        # Numerator: sum over positive positions for each anchor
+        numer = (exp_logits * pos_mask.float()).sum(dim=1)  # [T]
+
+        # Valid anchors are those that have at least one positive
+        valid = numer > 0
+        if valid.sum() == 0:
             return None
-        
-        # Return averaged loss
-        return loss / valid_frames
+
+        # Per-anchor loss
+        loss_per_anchor = -torch.log(numer[valid] / (denom[valid] + 1e-8))
+
+        # Return averaged loss (cast back to embeddings dtype)
+        return loss_per_anchor.mean().to(embeddings.dtype)
 
 
 class SignCLLoss(nn.Module):
