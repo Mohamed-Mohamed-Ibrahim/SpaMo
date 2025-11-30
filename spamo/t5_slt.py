@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import torch.nn.functional as F
 
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, T5ForConditionalGeneration
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, get_cosine_schedule_with_warmup
 from transformers import BertConfig, BertModel
 from peft import LoraConfig, get_peft_model, TaskType
 
@@ -18,8 +18,6 @@ from spamo.mm_projector import build_vision_projector
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.asb import AbstractSLT
-from transformers import get_cosine_schedule_with_warmup
-
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -50,9 +48,10 @@ class FlanT5SLT(AbstractSLT):
         model_name: Optional[str] = None, 
         frame_sample_rate: int = 1, 
         prompt: str = '',
+        lr: float = 1e-4,             # <--- FIXED: Added lr here
         input_size: int = 1024,
         pose_input_size: int = 33*3,
-        i3d_input_size: int = 1024,   # <--- NEW: I3D Dimension
+        i3d_input_size: int = 1024,
         fusion_mode: str = 'joint',
         inter_hidden: int = 768,
         max_frame_len: int = 1024,
@@ -76,7 +75,7 @@ class FlanT5SLT(AbstractSLT):
         # Configuration parameters
         self.input_size = input_size
         self.pose_input_size = pose_input_size
-        self.i3d_input_size = i3d_input_size # <--- NEW
+        self.i3d_input_size = i3d_input_size
         self.prompt = prompt
         self.model_name = model_name
         self.frame_sample_rate = frame_sample_rate
@@ -92,11 +91,20 @@ class FlanT5SLT(AbstractSLT):
         self.use_resampler = use_resampler
         self.sampling_length = sampling_length
         self.cache_dir = cache_dir
+        
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
+        
+        # <--- FIXED: Force disable context if set to 0
+        if self.num_in_context == 0:
+            self.use_in_context = False
+        
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
+        
+        # Save hyperparameters explicitly ensures 'lr' is available
+        self.save_hyperparameters() 
         
         self.prepare_models(model_name)
 
@@ -159,9 +167,8 @@ class FlanT5SLT(AbstractSLT):
         self.pose_proj = build_vision_projector('mlp2x_gelu', self.pose_input_size, self.inter_hidden)
         self.pose_gating = PoseGatingUnit(self.inter_hidden, dropout_rate=0.3)
         
-        # --- NEW: I3D Projector ---
+        # I3D Projector
         self.i3d_proj = build_vision_projector('mlp2x_gelu', self.i3d_input_size, self.inter_hidden)
-        # --------------------------
 
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
@@ -225,12 +232,12 @@ class FlanT5SLT(AbstractSLT):
     def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
         # Determine fusion mode
         if self.fusion_mode in ['joint']:
-            spatial = spatiotemporal = pose = i3d = True # <--- Added i3d
+            spatial = spatiotemporal = pose = i3d = True
         else:
             spatial = self.fusion_mode == 'spatial'
             spatiotemporal = self.fusion_mode == 'spatiotemporal'
             pose = self.fusion_mode == 'pose'
-            i3d = self.fusion_mode == 'i3d' # <--- Added i3d check
+            i3d = self.fusion_mode == 'i3d'
 
         # Process spatial features
         if spatial:
@@ -262,7 +269,7 @@ class FlanT5SLT(AbstractSLT):
             pose_outputs = self.pose_gating(pose_outputs)
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
 
-        # --- NEW: Process I3D features ---
+        # Process I3D features
         if i3d:
             raw_i3d_values = samples.get('i3d_values', [])
             i3d_values_local = [iv.view(iv.shape[0], -1) for iv in raw_i3d_values]
@@ -278,7 +285,6 @@ class FlanT5SLT(AbstractSLT):
             
             i3d_outputs = self.i3d_proj(i3d_padded)
             i3d_mask = create_mask(seq_lengths=i3d_lengths, device=self.device)
-        # --------------------------------
 
         # Combine features
         if self.fusion_mode == 'joint':
@@ -286,7 +292,7 @@ class FlanT5SLT(AbstractSLT):
             spatial_length = spatial_mask.sum(1)
             spatiotemporal_length = spatiotemporal_mask.sum(1)
             pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
-            i3d_length = i3d_mask.sum(1) if i3d else torch.zeros_like(spatial_length) # <--- NEW
+            i3d_length = i3d_mask.sum(1) if i3d else torch.zeros_like(spatial_length)
 
             new_length = spatial_length + spatiotemporal_length + pose_length + i3d_length
 
@@ -297,7 +303,7 @@ class FlanT5SLT(AbstractSLT):
                 if spatial: parts.append(spatial_outputs[i, :spatial_length[i], :])
                 if spatiotemporal: parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
                 if pose: parts.append(pose_outputs[i, :pose_length[i], :])
-                if i3d: parts.append(i3d_outputs[i, :i3d_length[i], :]) # <--- NEW
+                if i3d: parts.append(i3d_outputs[i, :i3d_length[i], :])
                 
                 concat_sample = torch.cat(parts, dim=0)
                 joint_outputs.append(concat_sample)
@@ -321,15 +327,12 @@ class FlanT5SLT(AbstractSLT):
                 active_outputs, active_lens = spatiotemporal_outputs, samples['glor_lengths']
             elif pose:
                 active_outputs, active_lens = pose_outputs, pose_lengths
-            elif i3d: # <--- NEW
+            elif i3d:
                 active_outputs, active_lens = i3d_outputs, i3d_lengths
             else:
                 raise NotImplementedError("Invalid fusion mode")
             
-            # Apply Temporal Encoder
             if self.fusion_mode == 'spatiotemporal':
-                 # Usually spatiotemporal (VideoMAE) is already temporally encoded, so we might skip or apply light encoding
-                 # But keeping consistent with your logic:
                  visual_outputs = active_outputs
                  visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
             else:
@@ -347,7 +350,7 @@ class FlanT5SLT(AbstractSLT):
     def get_inputs(self, batch: List) -> Dict:
         pixel_values, glor_values, masks, ids = [], [], [], []
         pose_values = []
-        i3d_values = [] # <--- NEW
+        i3d_values = []
         texts, glosses = [], []
         num_frames, glor_lengths, langs = [], [], []
         ex_lang_translations = []
@@ -366,15 +369,19 @@ class FlanT5SLT(AbstractSLT):
             glosses.append(sample['gloss'])
             langs.append(sample['lang'])
 
+            # <--- FIXED: Check for empty context
             _ex_lang_trans = []
-            if 'en_text' in sample and 'text' in sample:
-                _ex_lang_trans = [
-                    f"{sample.get('en_text','')}={sample['text']}",
-                    f"{sample.get('fr_text','')}={sample['text']}",
-                    f"{sample.get('es_text','')}={sample['text']}"
-                ]
-            ex_lang_trans = _ex_lang_trans[:self.num_in_context]
-            ex_lang_translations.append(' '.join(_ex_lang_trans))
+            if self.num_in_context > 0:
+                if 'en_text' in sample and 'text' in sample:
+                    _ex_lang_trans = [
+                        f"{sample.get('en_text','')}={sample['text']}",
+                        f"{sample.get('fr_text','')}={sample['text']}",
+                        f"{sample.get('es_text','')}={sample['text']}"
+                    ]
+                ex_lang_trans = _ex_lang_trans[:self.num_in_context]
+                ex_lang_translations.append(' '.join(_ex_lang_trans))
+            else:
+                ex_lang_translations.append("")
 
             if nframe > max_frame_len:
                 nframe = max_frame_len
@@ -404,19 +411,15 @@ class FlanT5SLT(AbstractSLT):
                 
                 pose_values.append(pose_arr)
 
-            # --- NEW: I3D PROCESSING ---
-            # Note: Checking for 'i3d_feat' as defined in dataset/p14t.py
+            # --- I3D PROCESSING ---
             if 'i3d_feat' in sample and sample['i3d_feat'] is not None and sample['i3d_feat'].numel() != 0:
                 i3d_arr = sample['i3d_feat'] 
-                # I3D is usually already downsampled, so we might not need frame_sample_rate
-                # but if alignment is needed, apply logic here.
                 
                 if i3d_arr.size(0) > max_frame_len:
                     start_index = random.randint(0, i3d_arr.size(0) - max_frame_len)
                     i3d_arr = i3d_arr[start_index:start_index + max_frame_len]
                 
                 i3d_values.append(i3d_arr)
-            # ---------------------------
 
             if sample.get('glor_value') is not None:
                 if isinstance(sample['glor_value'], list):
@@ -433,7 +436,7 @@ class FlanT5SLT(AbstractSLT):
             'pixel_values': pixel_values,
             'glor_values': glor_values,
             'pose_values': pose_values,
-            'i3d_values': i3d_values, # <--- NEW
+            'i3d_values': i3d_values,
             'bool_mask_pos': masks,
             'ids': ids,
             'text': texts,
@@ -591,34 +594,42 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
 
     def configure_optimizers(self):
+        # 1. Filter parameters
         trainable_params = [p for p in self.parameters() if p.requires_grad]
         if len(trainable_params) == 0:
-            raise RuntimeError("No trainable parameters found in the model. Check freezing/LoRA setup.")
+            raise RuntimeError("No trainable parameters found. Check freezing/LoRA setup.")
 
+        # 2. Setup AdamW 
         optimizer = torch.optim.AdamW(
             trainable_params,
-            lr=self.lr,
+            lr=self.hparams.lr,  
             eps=1e-8,
             weight_decay=0.01,
             betas=(0.9, 0.98)
         )
         
+        # 3. Dynamic Step Calculation
         if hasattr(self.trainer, 'estimated_stepping_batches'):
-            total_steps = self.trainer.estimated_stepping_batches
+            total_steps = int(self.trainer.estimated_stepping_batches)
         else:
             max_epochs = self.trainer.max_epochs
-            train_dataloader = self.trainer.train_dataloader
-            if hasattr(train_dataloader, 'dataloader'):
-                train_dataloader = train_dataloader.dataloader
+            train_loader = self.trainer.train_dataloader
+            if hasattr(train_loader, 'dataloader'): 
+                train_loader = train_loader.dataloader
             
-            batches_per_epoch = len(train_dataloader)
-            total_steps = batches_per_epoch * max_epochs
-            
-            if hasattr(self.trainer, 'accumulate_grad_batches'):
-                total_steps = total_steps // self.trainer.accumulate_grad_batches
+            batches_per_epoch = len(train_loader)
+            acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
+            total_steps = (batches_per_epoch // acc_batches) * max_epochs
         
-        warmup_steps = int(total_steps * 0.1)
+        # 4. Warmup Logic
+        if self.warm_up_steps is not None:
+            warmup_steps = self.warm_up_steps
+        else:
+            warmup_steps = int(total_steps * 0.1)
 
+        print(f"--> Optimizer Setup: Total Steps={total_steps}, Warmup Steps={warmup_steps}")
+
+        # 5. Cosine Scheduler
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
