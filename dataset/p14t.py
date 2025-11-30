@@ -64,7 +64,7 @@ class Phoenix14T(torch.utils.data.Dataset):
         if not (spatial or spatiotemporal):
             raise ValueError("At least one of 'spatial' or 'spatiotemporal' must be True")
         
-        if  not (pose):
+        if not (pose):
             print("No Pose features will be loaded.")
  
         # Load annotations
