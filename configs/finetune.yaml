@@ -51,12 +51,16 @@ data:
     train:
       target: dataset.p14t.Phoenix14T
       params:
+        # ABSOLUTE PATHS (Safest for Configs)
         anno_root: /kaggle/working/SpaMo/preprocess/Phoenix14T
         vid_root: /kaggle/working/SpaMo/dataset/Phoenix14T
         feat_root: /kaggle/working/SpaMo/feat_Phoenix14T
         mae_feat_root: /kaggle/working/SpaMo/mae_feat_Phoenix14T
-        pose_root: /kaggle/working/SpaMo/dataset/mediapipe_features_rwth_phoenix_2014_t
-        i3d_root: /kaggle/working/SpaMo/dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
+        
+        # Pointing to the NEW simplified folders
+        pose_root: /kaggle/working/SpaMo/dataset/pose_features
+        i3d_root: /kaggle/working/SpaMo/dataset/i3d_features
+        
         mode: train
         spatial: true
         spatiotemporal: true
@@ -73,8 +77,10 @@ data:
         vid_root: /kaggle/working/SpaMo/dataset/Phoenix14T
         feat_root: /kaggle/working/SpaMo/feat_Phoenix14T
         mae_feat_root: /kaggle/working/SpaMo/mae_feat_Phoenix14T
-        pose_root: /kaggle/working/SpaMo/dataset/mediapipe_features_rwth_phoenix_2014_t
-        i3d_root: /kaggle/working/SpaMo/dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
+        
+        pose_root: /kaggle/working/SpaMo/dataset/pose_features
+        i3d_root: /kaggle/working/SpaMo/dataset/i3d_features
+        
         mode: dev
         spatial: true
         spatiotemporal: true
@@ -91,8 +97,10 @@ data:
         vid_root: /kaggle/working/SpaMo/dataset/Phoenix14T
         feat_root: /kaggle/working/SpaMo/feat_Phoenix14T
         mae_feat_root: /kaggle/working/SpaMo/mae_feat_Phoenix14T
-        pose_root: /kaggle/working/SpaMo/dataset/mediapipe_features_rwth_phoenix_2014_t
-        i3d_root: /kaggle/working/SpaMo/dataset/i3d_features_rwth_phoenix_2014_t/i3d_features_rwth_phoenix_2014_t
+        
+        pose_root: /kaggle/working/SpaMo/dataset/pose_features
+        i3d_root: /kaggle/working/SpaMo/dataset/i3d_features
+        
         mode: test
         spatial: true
         spatiotemporal: true
