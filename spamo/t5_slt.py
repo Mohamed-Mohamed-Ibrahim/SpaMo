@@ -18,6 +18,7 @@ from spamo.mm_projector import build_vision_projector
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.asb import AbstractSLT
+from spamo.data_augmentation import FeatureAugmenter
 from transformers import get_cosine_schedule_with_warmup
 
 
@@ -54,6 +55,9 @@ class FlanT5SLT(AbstractSLT):
         lora_r: int = 16,
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
+        use_data_augmentation: bool = False,
+        augmentation_noise_std: float = 0.1,
+        augmentation_noise_prob: float = 0.5,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -80,6 +84,7 @@ class FlanT5SLT(AbstractSLT):
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
+        self.use_data_augmentation = use_data_augmentation
         
         self.prepare_models(model_name)
 
@@ -88,6 +93,15 @@ class FlanT5SLT(AbstractSLT):
             self._freeze_model()
         elif tuning_type == 'lora':
             self._apply_lora()
+
+        # Data augmenter
+        if self.use_data_augmentation:
+            self.augmenter = FeatureAugmenter(
+                noise_std=augmentation_noise_std,
+                noise_prob=augmentation_noise_prob
+            )
+            print(f"Data augmentation enabled with noise_std={augmentation_noise_std}, "
+              f"noise_prob={augmentation_noise_prob}")
 
         self.set_container()
         
@@ -264,12 +278,20 @@ class FlanT5SLT(AbstractSLT):
         # Process spatial features if needed
         if spatial:
             pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
+
+            if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
+                pixel_values = self.augmenter(pixel_values, samples['num_frames'])
+
             spatial_outputs = self.spatio_proj(pixel_values)
             spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
         
         # Process spatiotemporal features if needed
         if spatiotemporal:
             spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True)
+            
+            if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
+                spatiotemporal_outputs = self.augmenter(spatiotemporal_outputs, samples['glor_lengths'])
+            
             spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
             spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
         
