@@ -294,6 +294,11 @@ def main():
     if opt.fast_dev_run:
         trainer_config["fast_dev_run"] = True
     trainer_opt = argparse.Namespace(**trainer_config)
+    # If not explicitly set, enable DDP find-unused-parameters to avoid
+    # runtime errors when some model parameters are intentionally unused
+    # (e.g., when freezing the base model or using LoRA adapters).
+    if not hasattr(trainer_opt, 'strategy') or trainer_opt.strategy is None:
+        trainer_opt.strategy = 'ddp_find_unused_parameters_true'
     lightning_config.trainer = trainer_config
     
     # Instantiate data module
@@ -329,9 +334,7 @@ def main():
             if not opt.no_test:
                 trainer.test(model, data)
     elif opt.test:
-        print("!!! OVERRIDE: Testing on TRAIN data set (as requested) !!!")
-        train_loader = data.train_dataloader()
-        trainer.test(model, dataloaders=train_loader, ckpt_path=ckpt)
+        trainer.validate(model, data, ckpt_path=ckpt) # trainer.test(model, data, ckpt_path=ckpt)
 
 
 if __name__ == '__main__':
