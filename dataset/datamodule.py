@@ -4,12 +4,15 @@ from utils.helpers import instantiate_from_config
 import os
 
 class DataModuleFromConfig(pl.LightningDataModule):
+
     def __init__(self, batch_size, train=None, validation=None, test=None, num_workers=None):
         super().__init__()
-
+        
         self.batch_size = batch_size
         self.dataset_configs = dict()
-        self.num_workers = num_workers if num_workers is not None else batch_size * 2
+        # Ensure default is safe (4 is standard)
+        self.num_workers = num_workers if num_workers is not None else 4
+        
         if train is not None:
             self.dataset_configs['train'] = train
             self.train_dataloader = self._train_dataloader
@@ -31,10 +34,9 @@ class DataModuleFromConfig(pl.LightningDataModule):
             dataset=self.datasets['train'], 
             batch_size=self.batch_size,
             pin_memory=True,
-            num_workers=os.cpu_count(),
+            num_workers=self.num_workers, # <--- FIXED: Uses YAML value
             persistent_workers=True,
             shuffle=True,
-            # collate_fn=BaseFeeder.collate_fn if self.use_collate else None
             collate_fn=self.datasets['train'].collate_fn
         )
 
@@ -43,10 +45,9 @@ class DataModuleFromConfig(pl.LightningDataModule):
             dataset=self.datasets['valid'], 
             pin_memory=True,
             batch_size=self.batch_size,
-            num_workers=os.cpu_count(),
+            num_workers=self.num_workers, # <--- FIXED: Uses YAML value
             persistent_workers=True,
             shuffle=False,
-            # collate_fn=BaseFeeder.collate_fn if self.use_collate else None,
             collate_fn=self.datasets['valid'].collate_fn
         )
 
@@ -55,9 +56,8 @@ class DataModuleFromConfig(pl.LightningDataModule):
             dataset=self.datasets['test'], 
             batch_size=self.batch_size,
             pin_memory=True,
-            num_workers=os.cpu_count(),
+            num_workers=self.num_workers, # <--- FIXED: Uses YAML value
             persistent_workers=True,
             shuffle=False,
-            # collate_fn=BaseFeeder.collate_fn if self.use_collate else None
             collate_fn=self.datasets['test'].collate_fn
         )

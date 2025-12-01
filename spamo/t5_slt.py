@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import torch.nn.functional as F
 
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, T5ForConditionalGeneration
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, get_cosine_schedule_with_warmup
 from transformers import BertConfig, BertModel
 from peft import LoraConfig, get_peft_model, TaskType
 
@@ -23,14 +23,13 @@ from transformers import get_cosine_schedule_with_warmup
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-
 torch.set_float32_matmul_precision('high')
-
 
 class FlanT5SLT(AbstractSLT):
     """
-    FlanT5-based Sign Language Translation model with multimodal capabilities.
+    FlanT5-based Sign Language Translation model.
+    Features: Spatial (ViT/ResNet) + Spatiotemporal (VideoMAE/C3D).
+    Removed: Pose and I3D features.
     """
     def __init__(
         self, 
@@ -38,26 +37,28 @@ class FlanT5SLT(AbstractSLT):
         model_name: Optional[str] = None, 
         frame_sample_rate: int = 1, 
         prompt: str = '',
-        input_size: int = 1024,
+        lr: float = 3e-4,             # <--- FIX: Added lr argument
+        input_size: int = 2048,       # Spatial input size
         fusion_mode: str = 'joint',
-        inter_hidden: int = 768,
-        max_frame_len: int = 1024,
+        inter_hidden: int = 512,
+        max_frame_len: int = 512,
         max_txt_len: int = 64,
         cross_modal_align: bool = False,
         warm_up_steps: Optional[int] = None,
         combined_loss: bool = False,
-        alpha: float = 0.1,
+        alpha: float = 1.0,
         use_resampler: bool = False,
         sampling_length: int = 64,
         cache_dir: str = "/data3/models",
-        use_in_context: bool = False,
-        num_in_context: int = 0,
-        lora_r: int = 16,
-        lora_alpha: int = 32,
+        use_in_context: bool = True,
+        num_in_context: int = 5,
+        lora_r: int = 32,
+        lora_alpha: int = 64,
         lora_dropout: float = 0.1,
-        use_data_augmentation: bool = False,
+        use_data_augmentation: bool = True,
         augmentation_noise_std: float = 0.1,
         augmentation_noise_prob: float = 0.5,
+        augmentation_adaptive: bool = True,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -79,12 +80,21 @@ class FlanT5SLT(AbstractSLT):
         self.use_resampler = use_resampler
         self.sampling_length = sampling_length
         self.cache_dir = cache_dir
+        
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
+        
+        # <--- FIX: Force disable context if count is 0
+        if self.num_in_context == 0:
+            self.use_in_context = False
+        
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
+        
+        # Save hyperparameters (ensures self.hparams.lr exists)
+        self.save_hyperparameters()
         
         self.prepare_models(model_name)
 
@@ -98,38 +108,20 @@ class FlanT5SLT(AbstractSLT):
         if self.use_data_augmentation:
             self.augmenter = FeatureAugmenter(
                 noise_std=augmentation_noise_std,
-                noise_prob=augmentation_noise_prob
+                noise_prob=augmentation_noise_prob,
+                use_adaptive=augmentation_adaptive
             )
             print(f"Data augmentation enabled with noise_std={augmentation_noise_std}, "
               f"noise_prob={augmentation_noise_prob}")
 
         self.set_container()
         
-    # def load_pretrained_weights(self, checkpoint_path: str) -> None:
-    #     """Load weights from a pretrained checkpoint."""
-    #     checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
-        
-    #     # Get model's state dict
-    #     model_state_dict = self.state_dict()
-    #     checkpoint_state_dict = checkpoint['state_dict']
-        
-    #     # Filter out mismatched keys
-    #     filtered_state_dict = {}
-    #     for k, v in checkpoint_state_dict.items():
-    #         if k in model_state_dict and v.size() == model_state_dict[k].size():
-    #             filtered_state_dict[k] = v
-        
-    #     # Load the filtered state dict
-    #     self.load_state_dict(filtered_state_dict)
-    #     print(f'Checkpoint loaded from {checkpoint_path}. Loaded {len(filtered_state_dict)}/{len(checkpoint_state_dict)} parameters.')
-    
     def load_pretrained_weights(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         self.load_state_dict(checkpoint['state_dict'])
         print(f'Checkpoint is loaded from {checkpoint_path}.')
 
     def _apply_lora(self) -> None:
-        """Apply LoRA adapter to the T5 model."""
         lora_config = LoraConfig(
             r=self.lora_r,
             lora_alpha=self.lora_alpha,
@@ -142,7 +134,6 @@ class FlanT5SLT(AbstractSLT):
         print("LoRA adapter applied to T5 model.")
 
     def _freeze_model(self) -> None:
-        """Freeze the T5 model parameters."""
         self.t5_model.eval()
         for params in self.t5_model.parameters():
             params.requires_grad = False
@@ -153,13 +144,6 @@ class FlanT5SLT(AbstractSLT):
         self.references = []
 
     def prepare_models(self, t5_model: str) -> None:
-        """
-        Prepare the textual and visual models.
-        
-        Args:
-            t5_model: Name or path of the T5 model to use
-        """
-        
         # Load the textual model
         self.t5_model = T5ForConditionalGeneration.from_pretrained(
             t5_model, 
@@ -175,15 +159,17 @@ class FlanT5SLT(AbstractSLT):
             max_length=self.max_txt_len,
         )
 
-        # Load the vision projectors
+        # Load the vision projectors (Spatial + Spatiotemporal ONLY)
         self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
+        
+        # Removed Pose and I3D projectors
+
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
         # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
 
-        # if self.cross_modal_align:
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
     def prepare_inputs(
@@ -194,29 +180,15 @@ class FlanT5SLT(AbstractSLT):
         split: str, 
         batch_idx: int
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
-        """
-        Prepare combined inputs for the T5 model.
-        
-        Args:
-            visual_outputs: Visual features
-            visual_mask: Mask for visual features
-            samples: Input samples
-            split: Current split (train, val, test)
-            batch_idx: Current batch index
-            
-        Returns:
-            Tuple of (joint_outputs, joint_mask, output_tokens, targets)
-        """
         bs = visual_outputs.shape[0]
         
-        # Prepare the prompt with language information
+        # Prepare the prompt
         prompts = [f'{self.prompt}'] * bs
         prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
         
         if self.use_in_context:
             prompts = [f"{p} {c}" for p, c in zip(prompts, samples['ex_lang_trans'])]
         
-        # Tokenize prompts
         input_tokens = self.t5_tokenizer(
             prompts,
             padding="longest",
@@ -224,15 +196,12 @@ class FlanT5SLT(AbstractSLT):
             return_tensors="pt",
         ).to(self.device)
         
-        # Get lengths for visual and prompt sequences
         visual_lengths = visual_mask.sum(1)
         prompt_lengths = input_tokens.attention_mask.sum(1)
         new_lengths = visual_lengths + prompt_lengths
         
-        # Convert tokens to embeddings
         input_embeds = self.t5_model.encoder.embed_tokens(input_tokens.input_ids)
         
-        # Concatenate visual and text embeddings
         joint_outputs = []
         for i in range(bs):
             vis_out = visual_outputs[i, :visual_lengths[i], :]
@@ -240,18 +209,15 @@ class FlanT5SLT(AbstractSLT):
             concat_sample = torch.cat((vis_out, prompt_embeds), dim=0)
             joint_outputs.append(concat_sample)
         
-        # Pad the combined embeddings
         joint_outputs = pad_sequence(joint_outputs, batch_first=True)
         joint_mask = create_mask(seq_lengths=new_lengths.tolist(), device=self.device)
         
-        # Tokenize target texts
         output_tokens = self.t5_tokenizer(
             samples['text'],
             padding="longest",
             return_tensors="pt",
         ).to(self.device)
         
-        # Prepare target labels (replace pad tokens with -100)
         targets = output_tokens.input_ids.masked_fill(
             output_tokens.input_ids == self.t5_tokenizer.pad_token_id, -100
         )
@@ -259,23 +225,14 @@ class FlanT5SLT(AbstractSLT):
         return joint_outputs, joint_mask, output_tokens, targets
 
     def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Prepare visual inputs based on the fusion mode.
-        
-        Args:
-            samples: Input samples containing visual features
-            
-        Returns:
-            Tuple of (visual_outputs, visual_masks)
-        """
-        # Determine which visual features to use based on fusion mode
+        # Determine fusion mode (Only Spatial/Spatiotemporal)
         if self.fusion_mode in ['joint']:
             spatial = spatiotemporal = True
         else:
             spatial = self.fusion_mode == 'spatial'
             spatiotemporal = self.fusion_mode == 'spatiotemporal'
 
-        # Process spatial features if needed
+        # Process spatial features
         if spatial:
             pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
 
@@ -285,7 +242,7 @@ class FlanT5SLT(AbstractSLT):
             spatial_outputs = self.spatio_proj(pixel_values)
             spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
         
-        # Process spatiotemporal features if needed
+        # Process spatiotemporal features
         if spatiotemporal:
             spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True)
             
@@ -295,111 +252,113 @@ class FlanT5SLT(AbstractSLT):
             spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
             spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
         
-        # Combine features for joint mode
+        # Combine features
         if self.fusion_mode == 'joint':
             bs = spatial_outputs.shape[0]
             spatial_length = spatial_mask.sum(1)
             spatiotemporal_length = spatiotemporal_mask.sum(1)
             new_length = spatial_length + spatiotemporal_length
-            
-            # Concatenate spatial and spatiotemporal features for each sample
+
+            # Concatenate features
             joint_outputs = []
             for i in range(bs):
-                valid_spatial_output = spatial_outputs[i, :spatial_length[i], :]
-                valid_spatiotemporal_output = spatiotemporal_outputs[i, :spatiotemporal_length[i], :]
-                concat_sample = torch.cat((valid_spatial_output, valid_spatiotemporal_output), dim=0)
+                parts = []
+                if spatial: parts.append(spatial_outputs[i, :spatial_length[i], :])
+                if spatiotemporal: parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
+                
+                concat_sample = torch.cat(parts, dim=0)
                 joint_outputs.append(concat_sample)
-            joint_outputs = pad_sequence(joint_outputs, batch_first=True)
             
-            # Apply temporal encoder
+            joint_outputs = pad_sequence(joint_outputs, batch_first=True)
+
             visual_conv_outputs = self.temporal_encoder(
                 joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
             )
-            
+
             visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
             visual_masks = create_mask(
                 seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
                 device=self.device
             ) 
         else:
-            # Use single feature type
+            # Single feature mode
             if spatial:
-                spatial_conv_outputs = self.temporal_encoder(
-                    spatial_outputs.permute(0,2,1), torch.tensor(samples['num_frames'], device=self.device)
-                )
-                visual_outputs = spatial_conv_outputs['visual_feat'].permute(1,0,2)
-                visual_masks = create_mask(
-                    seq_lengths=spatial_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                    device=self.device
-                )
+                active_outputs, active_lens = spatial_outputs, samples['num_frames']
             elif spatiotemporal:
-                visual_outputs = spatiotemporal_outputs
-                visual_masks = spatiotemporal_mask
+                active_outputs, active_lens = spatiotemporal_outputs, samples['glor_lengths']
             else:
                 raise NotImplementedError("Invalid fusion mode")
-        
+            
+            if self.fusion_mode == 'spatiotemporal':
+                 visual_outputs = active_outputs
+                 visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
+            else:
+                conv_outputs = self.temporal_encoder(
+                    active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
+                )
+                visual_outputs = conv_outputs['visual_feat'].permute(1,0,2)
+                visual_masks = create_mask(
+                    seq_lengths=conv_outputs['feat_len'].to(torch.int).tolist(), 
+                    device=self.device
+                )
+
         return visual_outputs, visual_masks
 
     def get_inputs(self, batch: List) -> Dict:
-        """
-        Process batch inputs into a structured dictionary.
-        
-        Args:
-            batch: Raw batch from dataloader
-            
-        Returns:
-            Processed inputs dictionary
-        """
         pixel_values, glor_values, masks, ids = [], [], [], []
         texts, glosses = [], []
         num_frames, glor_lengths, langs = [], [], []
         ex_lang_translations = []
-        
+
         max_frame_len = self.max_frame_len
 
         for sample in batch:
-            if sample['pixel_value'].shape[0] != 0:
-                # Calculate number of frames after sampling
-                nframe = math.ceil(sample['num_frames'] / self.frame_sample_rate)
-                pval = sample['pixel_value'][::self.frame_sample_rate]
+            if sample.get('pixel_value') is None or sample['pixel_value'].shape[0] == 0:
+                continue
 
-                # Collect metadata
-                ids.append(sample['id'])
-                texts.append(sample['text'].lower())
-                glosses.append(sample['gloss'])
-                langs.append(sample['lang'])
-                
-                _ex_lang_trans = [
-                    f"{sample['en_text']}={sample['text']}",
-                    f"{sample['fr_text']}={sample['text']}",
-                    f"{sample['es_text']}={sample['text']}"
-                ]
-                _ex_lang_trans = _ex_lang_trans[:self.num_in_context]
+            nframe = math.ceil(sample['num_frames'] / self.frame_sample_rate)
+            pval = sample['pixel_value'][::self.frame_sample_rate]
+
+            ids.append(sample['id'])
+            texts.append(sample['text'].lower())
+            glosses.append(sample['gloss'])
+            langs.append(sample['lang'])
+
+            # <--- FIX: Clean context handling
+            _ex_lang_trans = []
+            if self.num_in_context > 0:
+                if 'en_text' in sample and 'text' in sample:
+                    _ex_lang_trans = [
+                        f"{sample.get('en_text','')}={sample['text']}",
+                        f"{sample.get('fr_text','')}={sample['text']}",
+                        f"{sample.get('es_text','')}={sample['text']}"
+                    ]
+                ex_lang_trans = _ex_lang_trans[:self.num_in_context]
                 ex_lang_translations.append(' '.join(_ex_lang_trans))
-                
-                # Handle too long sequences with random cropping
-                if nframe > max_frame_len:
-                    nframe = max_frame_len
-                    start_index = random.randint(0, pval.size(0) - max_frame_len)
-                    pval = pval[start_index:start_index + max_frame_len]
-                
-                # Store processed visual features
-                num_frames.append(nframe)
-                pixel_values.append(pval)
-                
-                # Process glor values if available
-                if sample['glor_value'] is not None:
-                    if isinstance(sample['glor_value'], list):
-                        glor_values.append(torch.cat(sample['glor_value'], dim=0))
-                        glor_lengths.append(sum(len(g) for g in sample['glor_value']))
-                    else:
-                        glor_values.append(sample['glor_value'])
-                        glor_lengths.append(len(sample['glor_value']))
-        
+            else:
+                ex_lang_translations.append("")
+
+            if nframe > max_frame_len:
+                nframe = max_frame_len
+                start_index = random.randint(0, pval.size(0) - max_frame_len)
+                pval = pval[start_index:start_index + max_frame_len]
+
+            num_frames.append(nframe)
+            pixel_values.append(pval)
+
+            # Removed Pose and I3D processing blocks
+
+            if sample.get('glor_value') is not None:
+                if isinstance(sample['glor_value'], list):
+                    glor_values.append(torch.cat(sample['glor_value'], dim=0))
+                    glor_lengths.append(sum(len(g) for g in sample['glor_value']))
+                else:
+                    glor_values.append(sample['glor_value'])
+                    glor_lengths.append(len(sample['glor_value']))
+
         if len(ex_lang_translations) > 1:
             ex_lang_translations = derangement(ex_lang_translations)
-        
-        # Return structured dictionary
+
         return {
             'pixel_values': pixel_values,
             'glor_values': glor_values,
@@ -414,69 +373,34 @@ class FlanT5SLT(AbstractSLT):
         }
 
     def visual_textual_align(self, visual_outputs: torch.Tensor, visual_masks: torch.Tensor, samples: Dict) -> torch.Tensor:
-        """
-        Calculate visual-textual alignment loss.
-        
-        Args:
-            visual_outputs: Visual features
-            visual_masks: Mask for visual features
-            samples: Input samples
-            
-        Returns:
-            Contrastive loss
-        """
-        # Tokenize target texts
         output_tokens = self.t5_tokenizer(
             samples['text'],
             padding="longest",
             return_tensors="pt",
         ).to(self.device)
         
-        # Get text embeddings
         text_embeds = self.t5_model.encoder.embed_tokens(output_tokens.input_ids)
         
-        # Mean pooling for visual and text embeddings
-        image_embeds = visual_outputs.mean(1)  # global pooling
-        text_embeds = text_embeds.mean(1)  # global pooling
+        image_embeds = visual_outputs.mean(1) 
+        text_embeds = text_embeds.mean(1)
         
-        # Normalize features
         image_embeds = F.normalize(image_embeds, dim=-1)
         text_embeds = F.normalize(text_embeds, dim=-1)
 
-        # Calculate cosine similarities with temperature scaling
         logit_scale = self.logit_scale.exp()
         logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
-        logits_per_image = logits_per_text.T
 
-        # Calculate contrastive loss
         loss = clip_loss(logits_per_text)
-        
         return loss
 
     def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
-        """
-        Shared logic for training, validation and testing steps.
-        
-        Args:
-            inputs: Input dictionary
-            split: Current split (train, val, test)
-            batch_idx: Current batch index
-            
-        Returns:
-            Tuple of (loss, log_dict)
-        """
-        # Prepare visual inputs and project to match text embedding dimensions
         visual_outputs, visual_masks = self.prepare_visual_inputs(inputs)
         visual_outputs = self.fusion_proj(visual_outputs)
         
-        # Initialize logging dictionary
         log_dict = {}
         
-        # STEP 1: Determine training mode and prepare inputs accordingly
         if self.cross_modal_align:
-            # For pure contrastive learning or warm-up phase
             if self.warm_up_steps is None and not self.combined_loss:
-                # Pure contrastive learning mode
                 with torch.no_grad():
                     input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
                         visual_outputs, visual_masks, inputs, split, batch_idx
@@ -487,7 +411,6 @@ class FlanT5SLT(AbstractSLT):
                 loss = cont_loss
                 
             elif self.warm_up_steps is not None and self.global_step <= self.warm_up_steps:
-                # Warm-up phase with contrastive learning
                 with torch.no_grad():
                     input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
                         visual_outputs, visual_masks, inputs, split, batch_idx
@@ -498,12 +421,10 @@ class FlanT5SLT(AbstractSLT):
                 loss = cont_loss
                 
             else:
-                # Combined loss mode (regular training + contrastive)
                 input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
                     visual_outputs, visual_masks, inputs, split, batch_idx
                 )
                 
-                # Forward pass through T5 model
                 outputs = self.t5_model(
                     inputs_embeds=input_embeds,
                     attention_mask=input_masks,
@@ -516,19 +437,16 @@ class FlanT5SLT(AbstractSLT):
                 t5_loss = outputs.loss
                 log_dict[f"{split}/loss"] = t5_loss
                 
-                # Add contrastive component if using combined loss
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 loss = t5_loss + self.alpha * cont_loss
                 
                 log_dict[f"{split}/contra_loss"] = cont_loss
                 log_dict[f"{split}/combined_loss"] = loss
         else:
-            # Standard training without contrastive learning
             input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
                 visual_outputs, visual_masks, inputs, split, batch_idx
             )
             
-            # Forward pass through T5 model
             outputs = self.t5_model(
                 inputs_embeds=input_embeds,
                 attention_mask=input_masks,
@@ -541,14 +459,11 @@ class FlanT5SLT(AbstractSLT):
             loss = outputs.loss
             log_dict[f"{split}/loss"] = loss
 
-        # STEP 2: Handle evaluation phase (validation/testing)
         if split != "train":
-            # Prepare inputs for text generation
             input_embeds, input_masks, _, _ = self.prepare_inputs(
                 visual_outputs, visual_masks, inputs, split, batch_idx
             )
             
-            # Generate translations
             generated = self.t5_model.generate(
                 inputs_embeds=input_embeds,
                 attention_mask=input_masks,
@@ -558,7 +473,6 @@ class FlanT5SLT(AbstractSLT):
                 do_sample=True,
             )
             
-            # Decode generated outputs and references
             generated_strings = self.t5_tokenizer.batch_decode(generated, skip_special_tokens=True)
             generated_strings = [gen.lower() for gen in generated_strings]
             
@@ -567,54 +481,33 @@ class FlanT5SLT(AbstractSLT):
 
             self.generated.extend(generated_strings)
             self.references.extend(reference_strings)
-            
-            # Calculate evaluation metrics
-            # eval_res = evaluate_results(
-            #     predictions=generated_strings,
-            #     references=reference_strings,
-            #     split=split,
-            #     tokenizer='zh' if inputs['lang'][0] == 'Chinese' else '13a',
-            #     device=self.device
-            # )
-            
-            # Add evaluation results to logging
-            # log_dict.update(eval_res)
 
         return loss, log_dict
 
     def on_validation_epoch_end(self) -> None:
-        # Print some examples of generated translations and references with colors
         print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
-            print(f"\033[94mReference: {self.references[i]}\033[0m")  # Blue color for references
-            print(f"\033[92mGenerated: {self.generated[i]}\033[0m")    # Green color for generated
+            print(f"\033[94mReference: {self.references[i]}\033[0m") 
+            print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
             print("-" * 50)
             
-        # Calculate evaluation metrics
         eval_res = evaluate_results(
             predictions=self.generated,
             references=self.references,
             split='val',
-            # tokenizer='zh' if outputs['lang'][0] == 'Chinese' else '13a',
             device=self.device
         )
         
-        # Add evaluation results to logging
-        # log_dict.update(eval_res)
-
         self.log_dict(eval_res, sync_dist=True)
-
         self.set_container()
 
     def on_test_epoch_end(self) -> None:
-        # Print some examples of generated translations and references with colors
         print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
-            print(f"\033[94mReference: {self.references[i]}\033[0m")  # Blue color for references
-            print(f"\033[92mGenerated: {self.generated[i]}\033[0m")    # Green color for generated
+            print(f"\033[94mReference: {self.references[i]}\033[0m") 
+            print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
             print("-" * 50)
             
-        # Calculate evaluation metrics
         eval_res = evaluate_results(
             predictions=self.generated,
             references=self.references,
@@ -626,33 +519,41 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
 
     def configure_optimizers(self):
+        # 1. Filter parameters
+        trainable_params = [p for p in self.parameters() if p.requires_grad]
+        if len(trainable_params) == 0:
+            raise RuntimeError("No trainable parameters found.")
+
+        # 2. Setup AdamW 
         optimizer = torch.optim.AdamW(
-            self.parameters(), 
-            lr=self.lr, 
-            eps=1e-8, 
-            weight_decay=0.01, 
+            trainable_params,
+            lr=self.hparams.lr,  # <--- FIX: Read from YAML
+            eps=1e-8,
+            weight_decay=0.01,
             betas=(0.9, 0.98)
         )
         
-        # Calculate total steps based on PyTorch Lightning trainer settings
+        # 3. Dynamic Step Calculation
         if hasattr(self.trainer, 'estimated_stepping_batches'):
-            total_steps = self.trainer.estimated_stepping_batches
+            total_steps = int(self.trainer.estimated_stepping_batches)
         else:
-            # Fallback calculation if the attribute doesn't exist
             max_epochs = self.trainer.max_epochs
-            train_dataloader = self.trainer.train_dataloader
-            if hasattr(train_dataloader, 'dataloader'):
-                train_dataloader = train_dataloader.dataloader
-            
-            batches_per_epoch = len(train_dataloader)
-            total_steps = batches_per_epoch * max_epochs
-            
-            # Account for gradient accumulation if used
-            if hasattr(self.trainer, 'accumulate_grad_batches'):
-                total_steps = total_steps // self.trainer.accumulate_grad_batches
+            train_loader = self.trainer.train_dataloader
+            if hasattr(train_loader, 'dataloader'): 
+                train_loader = train_loader.dataloader
+            batches_per_epoch = len(train_loader)
+            acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
+            total_steps = (batches_per_epoch // acc_batches) * max_epochs
         
-        warmup_steps = int(total_steps * 0.1)
+        # 4. Warmup Logic (Priority: YAML value)
+        if self.warm_up_steps is not None:
+            warmup_steps = self.warm_up_steps
+        else:
+            warmup_steps = int(total_steps * 0.2)
 
+        print(f"--> Optimizer Setup: Total Steps={total_steps}, Warmup Steps={warmup_steps}")
+
+        # 5. Cosine Scheduler
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
