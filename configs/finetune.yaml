@@ -58,7 +58,6 @@ data:
         spatiotemporal: true 
         spatial_postfix: ""
         spatiotemporal_postfix: ""
-        pose_postfix: ""
         
     validation:
       target: dataset.p14t.Phoenix14T
@@ -72,7 +71,6 @@ data:
         spatiotemporal: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
-        pose_postfix: ""
     
     test:
       target: dataset.p14t.Phoenix14T
@@ -86,4 +84,3 @@ data:
         spatiotemporal: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
-        pose_postfix: ""
