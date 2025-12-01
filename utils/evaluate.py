@@ -20,7 +20,7 @@ def evaluate_results(predictions, references, split="train", device='cpu', token
     bleu4 = BLEU(max_ngram_order=4, tokenize=tokenizer).corpus_score(predictions, [references]).score
     log_dicts[f"{split}/bleu4"] = bleu4
 
-    if split == 'test':
+    if split in ['test', 'val']:
         for i in range(1, 4):
             score = BLEU(max_ngram_order=i, tokenize=tokenizer).corpus_score(predictions, [references]).score
             log_dicts[f"{split}/bleu" + str(i)] = score
