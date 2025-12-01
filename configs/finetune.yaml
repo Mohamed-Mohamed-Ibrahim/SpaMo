@@ -26,6 +26,7 @@ model:
     alpha: 1.0
     use_in_context: true
     num_in_context: 2
+    use_data_augmentation: true
 
 lightning:
   callback:
@@ -38,7 +39,7 @@ lightning:
     accumulate_grad_batches: 4
     accelerator: gpu
     devices: 2
-    max_epochs: 80
+    max_epochs: 160
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: bf16
