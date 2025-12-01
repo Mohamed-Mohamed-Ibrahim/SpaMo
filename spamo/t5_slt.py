@@ -107,7 +107,7 @@ class FlanT5SLT(AbstractSLT):
         # Data augmenter
         if self.use_data_augmentation:
             self.augmenter = FeatureAugmenter(
-                noise_std=augmentation_noise_std,
+                noise_ratio=augmentation_noise_std,
                 noise_prob=augmentation_noise_prob,
                 use_adaptive=augmentation_adaptive
             )
