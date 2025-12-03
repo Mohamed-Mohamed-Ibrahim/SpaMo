@@ -48,27 +48,33 @@ class LoggingCallback(Callback):
             )
 
 class MetricsTableCallback(Callback):
-    def _log_table(self, trainer, name):
+    def _log_table(self, trainer, name, filter_keyword=None):
         metrics = trainer.callback_metrics
         if not metrics:
             return
 
         table = "| Metric | Value |\n|---|---|\n"
+        found_metrics = False
         
         for key in sorted(metrics.keys()):
+            if filter_keyword and filter_keyword not in key:
+                continue
+                
             val = metrics[key]
             if isinstance(val, torch.Tensor):
                 val = val.item()
-            table += f"| {key} | {val:.5f} |\n"
             
-        if isinstance(trainer.logger, TensorBoardLogger):
+            table += f"| {key} | {val:.6f} |\n"
+            found_metrics = True
+            
+        if found_metrics and isinstance(trainer.logger, TensorBoardLogger):
             trainer.logger.experiment.add_text(name, table, trainer.current_epoch)
 
+    def on_train_epoch_end(self, trainer, pl_module):
+        self._log_table(trainer, "Metrics_Table/Training", filter_keyword="train")
+
     def on_validation_epoch_end(self, trainer, pl_module):
-        self._log_table(trainer, "Metrics/Validation_Epoch")
-        
-    def on_test_end(self, trainer, pl_module):
-        self._log_table(trainer, "Metrics/Test_Results")
+        self._log_table(trainer, "Metrics_Table/Validation", filter_keyword="val")
 
 class SetupCallback(Callback):
     def __init__(self, resume, now, logdir, ckptdir, cfgdir, config, lightning_config):
