@@ -1,6 +1,5 @@
 import os
 import torch
-import pytorch_lightning as pl
 from omegaconf import OmegaConf
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.loggers import TensorBoardLogger
@@ -31,40 +30,45 @@ class LoggingCallback(Callback):
                     text_table += f"| {id} | {ref} | {gen} |\n"
 
         if logger and isinstance(logger, TensorBoardLogger):
-            logger.experiment.add_text(f"{prefix}_generated_samples", text_table, step)
+            logger.experiment.add_text(f"{prefix}_samples", text_table, step)
 
     def on_test_end(self, trainer, pl_module):
-        ids = pl_module.id_list
-        vis_strings = pl_module.vis_string_list
-        glosses = pl_module.gloss_list
-        generated = pl_module.generated_text_list
-        references = pl_module.reference_text_list
+        ids = getattr(pl_module, 'id_list', [])
+        vis_strings = getattr(pl_module, 'vis_string_list', [])
+        glosses = getattr(pl_module, 'gloss_list', [])
+        generated = getattr(pl_module, 'generated_text_list', [])
+        references = getattr(pl_module, 'reference_text_list', [])
 
-        self.log_generated_text(
-            pl_module.logger.save_dir, ids, vis_strings, glosses, generated, references,
-            prefix="test",
-            logger=pl_module.logger,
-            step=pl_module.global_step
-        )
+        if generated:
+            self.log_generated_text(
+                pl_module.logger.save_dir, ids, vis_strings, glosses, generated, references,
+                prefix="test",
+                logger=pl_module.logger,
+                step=pl_module.global_step
+            )
 
 class MetricsTableCallback(Callback):
-    def on_validation_epoch_end(self, trainer, pl_module):
+    def _log_table(self, trainer, name):
         metrics = trainer.callback_metrics
         if not metrics:
             return
 
-        table_header = "| Metric | Value |\n|---|---|\n"
-        table_rows = ""
+        table = "| Metric | Value |\n|---|---|\n"
         
-        for key, value in metrics.items():
-            if isinstance(value, torch.Tensor):
-                value = value.item()
-            table_rows += f"| {key} | {value:.4f} |\n"
-        
-        full_table = table_header + table_rows
-        
+        for key in sorted(metrics.keys()):
+            val = metrics[key]
+            if isinstance(val, torch.Tensor):
+                val = val.item()
+            table += f"| {key} | {val:.5f} |\n"
+            
         if isinstance(trainer.logger, TensorBoardLogger):
-            trainer.logger.experiment.add_text("Epoch_Metrics_Table", full_table, trainer.current_epoch)
+            trainer.logger.experiment.add_text(name, table, trainer.current_epoch)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        self._log_table(trainer, "Metrics/Validation_Epoch")
+        
+    def on_test_end(self, trainer, pl_module):
+        self._log_table(trainer, "Metrics/Test_Results")
 
 class SetupCallback(Callback):
     def __init__(self, resume, now, logdir, ckptdir, cfgdir, config, lightning_config):
@@ -89,6 +93,5 @@ class SetupCallback(Callback):
             os.makedirs(self.logdir, exist_ok=True)
             os.makedirs(self.ckptdir, exist_ok=True)
             os.makedirs(self.cfgdir, exist_ok=True)
-
             OmegaConf.save(self.config, os.path.join(self.cfgdir, "{}-project.yaml".format(self.now)))
             OmegaConf.save(OmegaConf.create({"lightning": self.lightning_config}), os.path.join(self.cfgdir, "{}-lightning.yaml".format(self.now)))
