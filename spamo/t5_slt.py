@@ -31,9 +31,10 @@ class FlanT5SLT(AbstractSLT):
         self, 
         tuning_type: str = 'lora', 
         model_name: Optional[str] = None, 
+        weight_decay=0.01,
         frame_sample_rate: int = 1, 
         prompt: str = '',
-        lr: float = 3e-4,             # <--- FIXED: Added lr argument
+        lr: float = 2e-4,             # <--- FIXED: Added lr argument
         input_size: int = 2048,       # Spatial input size
         fusion_mode: str = 'joint',
         inter_hidden: int = 512,
@@ -59,6 +60,7 @@ class FlanT5SLT(AbstractSLT):
         self.input_size = input_size
         self.prompt = prompt
         self.model_name = model_name
+        self.weight_decay = weight_decay
         self.frame_sample_rate = frame_sample_rate
         self.fusion_mode = fusion_mode
         self.inter_hidden = inter_hidden
@@ -501,6 +503,7 @@ class FlanT5SLT(AbstractSLT):
         optimizer = torch.optim.AdamW(
             trainable_params,
             lr=self.hparams.lr,  # <--- FIX: Read from YAML
+            weight_decay=self.hparams.weight_decay,
             eps=1e-8,
             weight_decay=0.01,
             betas=(0.9, 0.98)
