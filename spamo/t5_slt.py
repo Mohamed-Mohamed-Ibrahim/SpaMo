@@ -60,7 +60,6 @@ class FlanT5SLT(AbstractSLT):
         self.input_size = input_size
         self.prompt = prompt
         self.model_name = model_name
-        self.weight_decay = weight_decay
         self.frame_sample_rate = frame_sample_rate
         self.fusion_mode = fusion_mode
         self.inter_hidden = inter_hidden
@@ -505,7 +504,6 @@ class FlanT5SLT(AbstractSLT):
             lr=self.hparams.lr,  # <--- FIX: Read from YAML
             weight_decay=self.hparams.weight_decay,
             eps=1e-8,
-            weight_decay=0.01,
             betas=(0.9, 0.98)
         )
         
