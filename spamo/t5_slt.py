@@ -19,6 +19,7 @@ from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.asb import AbstractSLT
 from transformers import get_cosine_schedule_with_warmup
+from spamo.SignCL import SignCL
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -55,6 +56,10 @@ class FlanT5SLT(AbstractSLT):
         lora_r: int = 16,
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
+        use_signcl: bool = True,
+        signcl_alpha: float = 1.0,     # Weight of SignCL loss
+        signcl_margin: int = 20,       # Temporal margin
+        signcl_max_dist: float = 32.0, # Max distance constraint
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -82,6 +87,17 @@ class FlanT5SLT(AbstractSLT):
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
+
+        # SignCL Configuration 
+        # self.use_signcl = use_signcl
+        # self.signcl_alpha = signcl_alpha
+        # self.signcl_margin = signcl_margin
+        # self.signcl_max_dist = signcl_max_dist
+        
+        self.use_signcl = True
+        self.signcl_alpha = 1.0
+        self.signcl_margin = 20.0
+        self.signcl_max_dist = 32.0
         
         self.prepare_models(model_name)
 
@@ -179,6 +195,13 @@ class FlanT5SLT(AbstractSLT):
                 input_size_2=self.inter_hidden, 
                 input_size_3=self.inter_hidden, 
                 output_size=3
+            )
+
+        if self.use_signcl:
+            self.sign_cl_module = SignCL(
+                max_distance=self.signcl_max_dist, 
+                pos_samples=2, 
+                neg_samples=4
             )
             
         # if self.cross_modal_align:
@@ -544,6 +567,13 @@ class FlanT5SLT(AbstractSLT):
         
         # Initialize logging dictionary
         log_dict = {}
+
+        # Calculate SignCL Loss
+        signcl_loss_value = 0.0
+        if self.use_signcl:
+            # Note: SignCL iterates over the sequence length. 
+            signcl_loss_value = self.sign_cl_module(visual_outputs, margin=self.signcl_margin)
+            log_dict[f"{split}/signcl_loss"] = signcl_loss_value
         
         # STEP 1: Determine training mode and prepare inputs accordingly
         if self.cross_modal_align:
@@ -557,7 +587,7 @@ class FlanT5SLT(AbstractSLT):
                 
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 log_dict[f"{split}/contra_loss"] = cont_loss
-                loss = cont_loss
+                loss = cont_loss + (self.signcl_alpha * signcl_loss_value)
                 
             elif self.warm_up_steps is not None and self.global_step <= self.warm_up_steps:
                 # Warm-up phase with contrastive learning
@@ -568,7 +598,7 @@ class FlanT5SLT(AbstractSLT):
                 
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 log_dict[f"{split}/contra_loss"] = cont_loss
-                loss = cont_loss
+                loss = cont_loss + (self.signcl_alpha * signcl_loss_value)
                 
             else:
                 # Combined loss mode (regular training + contrastive)
@@ -591,7 +621,7 @@ class FlanT5SLT(AbstractSLT):
                 
                 # Add contrastive component if using combined loss
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
-                loss = t5_loss + self.alpha * cont_loss
+                loss = t5_loss + self.alpha * cont_loss + (self.signcl_alpha * signcl_loss_value)
                 
                 log_dict[f"{split}/contra_loss"] = cont_loss
                 log_dict[f"{split}/combined_loss"] = loss
@@ -611,7 +641,7 @@ class FlanT5SLT(AbstractSLT):
                 return_dict=True
             )
             
-            loss = outputs.loss
+            loss = outputs.loss + (self.signcl_alpha * signcl_loss_value)
             log_dict[f"{split}/loss"] = loss
 
         # STEP 2: Handle evaluation phase (validation/testing)
