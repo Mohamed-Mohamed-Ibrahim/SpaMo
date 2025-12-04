@@ -2,7 +2,7 @@ model:
   target: spamo.t5_slt.FlanT5SLT
   params:
     lr: 2.0e-4
-    weight_decay: 0.1
+    weight_decay: 0.01
     monitor: val/bleu4
     model_name: google/flan-t5-small
     cache_dir: /data3/models
@@ -16,12 +16,12 @@ model:
     tuning_type: lora
     lora_r: 8
     lora_alpha: 16
-    lora_dropout: 0.2
+    lora_dropout: 0.3
     fusion_mode: joint
     warm_up_steps: 500
     cross_modal_align: true
     combined_loss: true
-    alpha: 0.5
+    alpha: 0.2
     use_in_context: true
     num_in_context: 1
 
@@ -33,7 +33,7 @@ lightning:
         logging_interval: step
   trainer:
     strategy: ddp_find_unused_parameters_true
-    accumulate_grad_batches: 4
+    accumulate_grad_batches: 1
     accelerator: gpu
     devices: 2
     max_epochs: 500
