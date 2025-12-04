@@ -197,7 +197,7 @@ def main():
             if not opt.no_test:
                 trainer.test(model, data)
     elif opt.test:
-        trainer.test(model, data, ckpt_path=ckpt)
+        trainer.validate(model, data, ckpt_path=ckpt)
 
 if __name__ == '__main__':
     main()
