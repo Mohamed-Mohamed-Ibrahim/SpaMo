@@ -1,7 +1,7 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 2.0e-4
+    lr: 1.0e-4
     weight_decay: 0.01
     monitor: val/bleu4
     model_name: google/flan-t5-small
@@ -18,10 +18,10 @@ model:
     lora_alpha: 16
     lora_dropout: 0.3
     fusion_mode: joint
-    warm_up_steps: 2000
+    warm_up_steps: 0
     cross_modal_align: true
     combined_loss: true
-    alpha: 0.2
+    alpha: 1.0
     use_in_context: true
     num_in_context: 1
 
