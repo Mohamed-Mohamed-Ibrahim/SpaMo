@@ -95,7 +95,7 @@ class FlanT5SLT(AbstractSLT):
         # self.signcl_max_dist = signcl_max_dist
         
         self.use_signcl = True
-        self.signcl_alpha = 1.0
+        self.signcl_alpha = 0.5
         self.signcl_margin = 20.0
         self.signcl_max_dist = 32.0
         

@@ -52,6 +52,7 @@ class SignCL(nn.Module):
             # Loss calculation
             pos_loss = F.softplus(pos_dist - self.max_distance).mean()  # Positive loss
             neg_loss = F.softplus(self.max_distance - neg_dist).mean()  # Negative loss
+            neg_loss = torch.nan_to_num(neg_loss) 
 
             # Combine losses
             loss = pos_loss + neg_loss
