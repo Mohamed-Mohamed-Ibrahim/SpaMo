@@ -8,8 +8,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import torch.nn.functional as F
 
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, get_cosine_schedule_with_warmup
-from transformers import BertConfig, BertModel
+from transformers import AutoTokenizer, T5ForConditionalGeneration, get_cosine_schedule_with_warmup
 from peft import LoraConfig, get_peft_model, TaskType
 
 from spamo.tconv import TemporalConv
@@ -23,10 +22,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_float32_matmul_precision('high')
 
 class FlanT5SLT(AbstractSLT):
-    """
-    FlanT5-based Sign Language Translation model with multimodal capabilities.
-    (Pose and I3D features REMOVED)
-    """
     def __init__(
         self, 
         tuning_type: str = 'lora', 
@@ -34,8 +29,8 @@ class FlanT5SLT(AbstractSLT):
         weight_decay=0.01,
         frame_sample_rate: int = 1, 
         prompt: str = '',
-        lr: float = 2e-4,             # <--- FIXED: Added lr argument
-        input_size: int = 2048,       # Spatial input size
+        lr: float = 3e-4,
+        input_size: int = 2048,
         fusion_mode: str = 'joint',
         inter_hidden: int = 512,
         max_frame_len: int = 512,
@@ -48,15 +43,14 @@ class FlanT5SLT(AbstractSLT):
         sampling_length: int = 64,
         cache_dir: str = "/data3/models",
         use_in_context: bool = True,
-        num_in_context: int = 5,
-        lora_r: int = 32,
-        lora_alpha: int = 64,
-        lora_dropout: float = 0.1,
+        num_in_context: int = 0,
+        lora_r: int = 16,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.2,
         **kwargs
     ):
         super().__init__(**kwargs)
         
-        # Configuration parameters
         self.input_size = input_size
         self.prompt = prompt
         self.model_name = model_name
@@ -77,7 +71,6 @@ class FlanT5SLT(AbstractSLT):
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
         
-        # <--- FIX: Force disable context if count is 0
         if self.num_in_context == 0:
             self.use_in_context = False
         
@@ -85,12 +78,10 @@ class FlanT5SLT(AbstractSLT):
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         
-        # Save hyperparameters (ensures self.hparams.lr exists)
         self.save_hyperparameters()
         
         self.prepare_models(model_name)
 
-        # Apply the selected tuning strategy
         if tuning_type == 'freeze':
             self._freeze_model()
         elif tuning_type == 'lora':
@@ -126,7 +117,6 @@ class FlanT5SLT(AbstractSLT):
         self.references = []
 
     def prepare_models(self, t5_model: str) -> None:
-        # Load the textual model
         self.t5_model = T5ForConditionalGeneration.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
@@ -134,22 +124,17 @@ class FlanT5SLT(AbstractSLT):
             use_safetensors=True 
         )
         
-        # Load the tokenizer
         self.t5_tokenizer = AutoTokenizer.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
             max_length=self.max_txt_len,
         )
 
-        # Load the vision projectors (Spatial + Spatiotemporal ONLY)
         self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
         
-        # Removed Pose and I3D projectors
-
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
-        # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
 
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
@@ -164,7 +149,6 @@ class FlanT5SLT(AbstractSLT):
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
         bs = visual_outputs.shape[0]
         
-        # Prepare the prompt
         prompts = [f'{self.prompt}'] * bs
         prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
         
@@ -207,33 +191,28 @@ class FlanT5SLT(AbstractSLT):
         return joint_outputs, joint_mask, output_tokens, targets
 
     def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Determine fusion mode (Only Spatial/Spatiotemporal)
         if self.fusion_mode in ['joint']:
             spatial = spatiotemporal = True
         else:
             spatial = self.fusion_mode == 'spatial'
             spatiotemporal = self.fusion_mode == 'spatiotemporal'
 
-        # Process spatial features
         if spatial:
             pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
             spatial_outputs = self.spatio_proj(pixel_values)
             spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
         
-        # Process spatiotemporal features
         if spatiotemporal:
             spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True)
             spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
             spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
         
-        # Combine features
         if self.fusion_mode == 'joint':
             bs = spatial_outputs.shape[0]
             spatial_length = spatial_mask.sum(1)
             spatiotemporal_length = spatiotemporal_mask.sum(1)
             new_length = spatial_length + spatiotemporal_length
 
-            # Concatenate features
             joint_outputs = []
             for i in range(bs):
                 parts = []
@@ -255,7 +234,6 @@ class FlanT5SLT(AbstractSLT):
                 device=self.device
             ) 
         else:
-            # Single feature mode
             if spatial:
                 active_outputs, active_lens = spatial_outputs, samples['num_frames']
             elif spatiotemporal:
@@ -298,7 +276,6 @@ class FlanT5SLT(AbstractSLT):
             glosses.append(sample['gloss'])
             langs.append(sample['lang'])
 
-            # <--- FIX: Clean context handling
             _ex_lang_trans = []
             if self.num_in_context > 0:
                 if 'en_text' in sample and 'text' in sample:
@@ -320,8 +297,6 @@ class FlanT5SLT(AbstractSLT):
             num_frames.append(nframe)
             pixel_values.append(pval)
 
-            # Removed Pose and I3D processing blocks
-
             if sample.get('glor_value') is not None:
                 if isinstance(sample['glor_value'], list):
                     glor_values.append(torch.cat(sample['glor_value'], dim=0))
@@ -330,7 +305,7 @@ class FlanT5SLT(AbstractSLT):
                     glor_values.append(sample['glor_value'])
                     glor_lengths.append(len(sample['glor_value']))
 
-        if len(ex_lang_translations) > 1:
+        if self.use_in_context and len(ex_lang_translations) > 1:
             ex_lang_translations = derangement(ex_lang_translations)
 
         return {
@@ -493,21 +468,18 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
 
     def configure_optimizers(self):
-        # 1. Filter parameters
         trainable_params = [p for p in self.parameters() if p.requires_grad]
         if len(trainable_params) == 0:
             raise RuntimeError("No trainable parameters found.")
 
-        # 2. Setup AdamW 
         optimizer = torch.optim.AdamW(
             trainable_params,
-            lr=self.hparams.lr,  # <--- FIX: Read from YAML
+            lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay,
             eps=1e-8,
             betas=(0.9, 0.98)
         )
         
-        # 3. Dynamic Step Calculation
         if hasattr(self.trainer, 'estimated_stepping_batches'):
             total_steps = int(self.trainer.estimated_stepping_batches)
         else:
@@ -519,7 +491,6 @@ class FlanT5SLT(AbstractSLT):
             acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
             total_steps = (batches_per_epoch // acc_batches) * max_epochs
         
-        # 4. Warmup Logic (Priority: YAML value)
         if self.warm_up_steps is not None:
             warmup_steps = self.warm_up_steps
         else:
@@ -527,7 +498,6 @@ class FlanT5SLT(AbstractSLT):
 
         print(f"--> Optimizer Setup: Total Steps={total_steps}, Warmup Steps={warmup_steps}")
 
-        # 5. Cosine Scheduler
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
