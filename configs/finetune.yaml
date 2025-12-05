@@ -15,7 +15,7 @@ model:
     prompt: "Translate the given sentence into {}."
     tuning_type: lora
     lora_r: 16
-    lora_alpha: 16
+    lora_alpha: 32
     lora_dropout: 0.2
     fusion_mode: joint
     warm_up_steps: 600
