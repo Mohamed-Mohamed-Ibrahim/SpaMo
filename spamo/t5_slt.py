@@ -4,14 +4,10 @@ import torch.nn as nn
 import random
 import math
 from typing import Dict, List, Optional, Tuple, Any
-
 import torch.nn.functional as F
-
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, get_cosine_schedule_with_warmup
-from transformers import BertConfig, BertModel
+from transformers import AutoTokenizer, T5ForConditionalGeneration, get_cosine_schedule_with_warmup
 from peft import LoraConfig, get_peft_model, TaskType
-
 from spamo.tconv import TemporalConv
 from utils.helpers import create_mask, derangement
 from spamo.mm_projector import build_vision_projector
@@ -22,10 +18,6 @@ from spamo.asb import AbstractSLT
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 class PoseGatingUnit(nn.Module):
-    """
-    A gating mechanism that filters noisy pose features.
-    It learns a sigmoid gate: Output = Input * Sigmoid(Linear(Input))
-    """
     def __init__(self, hidden_size, dropout_rate=0.3):
         super().__init__()
         self.gate_proj = nn.Linear(hidden_size, hidden_size)
@@ -37,18 +29,15 @@ class PoseGatingUnit(nn.Module):
         x = x * gate
         return self.dropout(self.norm(x))
 
-
 class FlanT5SLT(AbstractSLT):
-    """
-    FlanT5-based Sign Language Translation model with multimodal capabilities.
-    """
     def __init__(
         self, 
         tuning_type: str = 'lora', 
         model_name: Optional[str] = None, 
+        weight_decay: float = 0.01,
         frame_sample_rate: int = 1, 
         prompt: str = '',
-        lr: float = 1e-4,             # <--- FIXED: Added lr here
+        lr: float = 3e-4,
         input_size: int = 1024,
         pose_input_size: int = 33*3,
         i3d_input_size: int = 1024,
@@ -72,12 +61,13 @@ class FlanT5SLT(AbstractSLT):
     ):
         super().__init__(**kwargs)
         
-        # Configuration parameters
         self.input_size = input_size
         self.pose_input_size = pose_input_size
         self.i3d_input_size = i3d_input_size
         self.prompt = prompt
         self.model_name = model_name
+        self.weight_decay = weight_decay
+        self.lr = lr
         self.frame_sample_rate = frame_sample_rate
         self.fusion_mode = fusion_mode
         self.inter_hidden = inter_hidden
@@ -95,7 +85,6 @@ class FlanT5SLT(AbstractSLT):
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
         
-        # <--- FIXED: Force disable context if set to 0
         if self.num_in_context == 0:
             self.use_in_context = False
         
@@ -103,12 +92,10 @@ class FlanT5SLT(AbstractSLT):
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         
-        # Save hyperparameters explicitly ensures 'lr' is available
-        self.save_hyperparameters() 
+        self.save_hyperparameters()
         
         self.prepare_models(model_name)
 
-        # Apply the selected tuning strategy
         if tuning_type == 'freeze':
             self._freeze_model()
         elif tuning_type == 'lora':
@@ -144,7 +131,6 @@ class FlanT5SLT(AbstractSLT):
         self.references = []
 
     def prepare_models(self, t5_model: str) -> None:
-        # Load the textual model
         self.t5_model = T5ForConditionalGeneration.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
@@ -152,27 +138,22 @@ class FlanT5SLT(AbstractSLT):
             use_safetensors=True 
         )
         
-        # Load the tokenizer
         self.t5_tokenizer = AutoTokenizer.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
             max_length=self.max_txt_len,
         )
 
-        # Load the vision projectors
         self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
         
-        # Pose projector with Gating
         self.pose_proj = build_vision_projector('mlp2x_gelu', self.pose_input_size, self.inter_hidden)
         self.pose_gating = PoseGatingUnit(self.inter_hidden, dropout_rate=0.3)
         
-        # I3D Projector
         self.i3d_proj = build_vision_projector('mlp2x_gelu', self.i3d_input_size, self.inter_hidden)
 
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
-        # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
 
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
@@ -187,7 +168,6 @@ class FlanT5SLT(AbstractSLT):
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
         bs = visual_outputs.shape[0]
         
-        # Prepare the prompt
         prompts = [f'{self.prompt}'] * bs
         prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
         
@@ -230,7 +210,6 @@ class FlanT5SLT(AbstractSLT):
         return joint_outputs, joint_mask, output_tokens, targets
 
     def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Determine fusion mode
         if self.fusion_mode in ['joint']:
             spatial = spatiotemporal = pose = i3d = True
         else:
@@ -239,19 +218,16 @@ class FlanT5SLT(AbstractSLT):
             pose = self.fusion_mode == 'pose'
             i3d = self.fusion_mode == 'i3d'
 
-        # Process spatial features
         if spatial:
             pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
             spatial_outputs = self.spatio_proj(pixel_values)
             spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
         
-        # Process spatiotemporal features
         if spatiotemporal:
             spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True)
             spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
             spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
         
-        # Process pose features
         if pose:
             raw_pose_values = samples.get('pose_values', [])
             pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in raw_pose_values]
@@ -269,7 +245,6 @@ class FlanT5SLT(AbstractSLT):
             pose_outputs = self.pose_gating(pose_outputs)
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
 
-        # Process I3D features
         if i3d:
             raw_i3d_values = samples.get('i3d_values', [])
             i3d_values_local = [iv.view(iv.shape[0], -1) for iv in raw_i3d_values]
@@ -286,7 +261,6 @@ class FlanT5SLT(AbstractSLT):
             i3d_outputs = self.i3d_proj(i3d_padded)
             i3d_mask = create_mask(seq_lengths=i3d_lengths, device=self.device)
 
-        # Combine features
         if self.fusion_mode == 'joint':
             bs = spatial_outputs.shape[0]
             spatial_length = spatial_mask.sum(1)
@@ -296,7 +270,6 @@ class FlanT5SLT(AbstractSLT):
 
             new_length = spatial_length + spatiotemporal_length + pose_length + i3d_length
 
-            # Concatenate features
             joint_outputs = []
             for i in range(bs):
                 parts = []
@@ -320,7 +293,6 @@ class FlanT5SLT(AbstractSLT):
                 device=self.device
             ) 
         else:
-            # Single feature mode
             if spatial:
                 active_outputs, active_lens = spatial_outputs, samples['num_frames']
             elif spatiotemporal:
@@ -369,7 +341,6 @@ class FlanT5SLT(AbstractSLT):
             glosses.append(sample['gloss'])
             langs.append(sample['lang'])
 
-            # <--- FIXED: Check for empty context
             _ex_lang_trans = []
             if self.num_in_context > 0:
                 if 'en_text' in sample and 'text' in sample:
@@ -391,13 +362,11 @@ class FlanT5SLT(AbstractSLT):
             num_frames.append(nframe)
             pixel_values.append(pval)
 
-            # --- POSE PROCESSING ---
             if 'pose_value' in sample and sample['pose_value'] is not None and sample['pose_value'].numel() != 0:
                 pose_arr = sample['pose_value'][::self.frame_sample_rate]
                 if pose_arr.dim() == 3:
                     pose_arr = pose_arr.view(pose_arr.shape[0], -1)
                 
-                # Instance Normalization for Pose
                 mask = (pose_arr != 0).float()
                 mean = (pose_arr * mask).sum(dim=0, keepdim=True) / (mask.sum(dim=0, keepdim=True) + 1e-6)
                 pose_arr = pose_arr - mean
@@ -411,7 +380,6 @@ class FlanT5SLT(AbstractSLT):
                 
                 pose_values.append(pose_arr)
 
-            # --- I3D PROCESSING ---
             if 'i3d_feat' in sample and sample['i3d_feat'] is not None and sample['i3d_feat'].numel() != 0:
                 i3d_arr = sample['i3d_feat'] 
                 
@@ -429,7 +397,7 @@ class FlanT5SLT(AbstractSLT):
                     glor_values.append(sample['glor_value'])
                     glor_lengths.append(len(sample['glor_value']))
 
-        if len(ex_lang_translations) > 1:
+        if self.use_in_context and len(ex_lang_translations) > 1:
             ex_lang_translations = derangement(ex_lang_translations)
 
         return {
@@ -594,21 +562,18 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
 
     def configure_optimizers(self):
-        # 1. Filter parameters
         trainable_params = [p for p in self.parameters() if p.requires_grad]
         if len(trainable_params) == 0:
-            raise RuntimeError("No trainable parameters found. Check freezing/LoRA setup.")
+            raise RuntimeError("No trainable parameters found.")
 
-        # 2. Setup AdamW 
         optimizer = torch.optim.AdamW(
             trainable_params,
-            lr=self.hparams.lr,  
+            lr=self.hparams.lr,
+            weight_decay=self.hparams.weight_decay,
             eps=1e-8,
-            weight_decay=0.01,
             betas=(0.9, 0.98)
         )
         
-        # 3. Dynamic Step Calculation
         if hasattr(self.trainer, 'estimated_stepping_batches'):
             total_steps = int(self.trainer.estimated_stepping_batches)
         else:
@@ -616,12 +581,10 @@ class FlanT5SLT(AbstractSLT):
             train_loader = self.trainer.train_dataloader
             if hasattr(train_loader, 'dataloader'): 
                 train_loader = train_loader.dataloader
-            
             batches_per_epoch = len(train_loader)
             acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
             total_steps = (batches_per_epoch // acc_batches) * max_epochs
         
-        # 4. Warmup Logic
         if self.warm_up_steps is not None:
             warmup_steps = self.warm_up_steps
         else:
@@ -629,7 +592,6 @@ class FlanT5SLT(AbstractSLT):
 
         print(f"--> Optimizer Setup: Total Steps={total_steps}, Warmup Steps={warmup_steps}")
 
-        # 5. Cosine Scheduler
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
