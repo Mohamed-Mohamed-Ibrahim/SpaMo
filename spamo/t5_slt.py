@@ -82,7 +82,7 @@ class FlanT5SLT(AbstractSLT):
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
-        
+
         self.prepare_models(model_name)
 
         # Apply the selected tuning strategy
@@ -337,6 +337,11 @@ class FlanT5SLT(AbstractSLT):
         
         elif self.fusion_mode == 'adaptive':
             
+            pre_cont_loss = self.spatial_pose_align(
+                spatial_outputs,
+                pose_outputs
+            )
+
             # 1. Align Dimensions: Interpolate spatiotemporal (T_st) to match spatial (T_s) length
             # Input shapes are (B, T, C). Interpolate expects (B, C, T)
             if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
@@ -392,7 +397,11 @@ class FlanT5SLT(AbstractSLT):
             else:
                 raise NotImplementedError("Invalid fusion mode")
         
-        return visual_outputs, visual_masks
+        print("="*50)
+        print(f"pre_cont_loss: {pre_cont_loss}")
+        print("="*50)
+        
+        return visual_outputs, visual_masks, pre_cont_loss
 
     def get_inputs(self, batch: List) -> Dict:
         """
@@ -525,6 +534,36 @@ class FlanT5SLT(AbstractSLT):
         loss = clip_loss(logits_per_text)
         
         return loss
+    
+    def spatial_pose_align(self, spatial_outputs: torch.Tensor, pose_outputs: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate visual-textual alignment loss.
+        
+        Args:
+            visual_outputs: Visual features
+            visual_masks: Mask for visual features
+            samples: Input samples
+            
+        Returns:
+            Contrastive loss
+        """
+        # Mean pooling for visual and text embeddings
+        image_embeds = spatial_outputs.mean(1)  # global pooling
+        text_embeds = pose_outputs.mean(1)  # global pooling
+        
+        # Normalize features
+        image_embeds = F.normalize(image_embeds, dim=-1)
+        text_embeds = F.normalize(text_embeds, dim=-1)
+
+        # Calculate cosine similarities with temperature scaling
+        logit_scale = self.logit_scale.exp()
+        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
+        logits_per_image = logits_per_text.T
+
+        # Calculate contrastive loss
+        loss = clip_loss(logits_per_text)
+        
+        return loss
 
     def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
         """
@@ -539,11 +578,14 @@ class FlanT5SLT(AbstractSLT):
             Tuple of (loss, log_dict)
         """
         # Prepare visual inputs and project to match text embedding dimensions
-        visual_outputs, visual_masks = self.prepare_visual_inputs(inputs)
+        visual_outputs, visual_masks, pre_cont_loss = self.prepare_visual_inputs(inputs)
         visual_outputs = self.fusion_proj(visual_outputs)
         
         # Initialize logging dictionary
         log_dict = {}
+
+        pre_cont_loss_alpha = 1.0
+        log_dict[f"{split}/pre_contra_loss"] = pre_cont_loss
         
         # STEP 1: Determine training mode and prepare inputs accordingly
         if self.cross_modal_align:
@@ -557,7 +599,7 @@ class FlanT5SLT(AbstractSLT):
                 
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 log_dict[f"{split}/contra_loss"] = cont_loss
-                loss = cont_loss
+                loss = cont_loss + (pre_cont_loss_alpha * pre_cont_loss)
                 
             elif self.warm_up_steps is not None and self.global_step <= self.warm_up_steps:
                 # Warm-up phase with contrastive learning
@@ -568,7 +610,7 @@ class FlanT5SLT(AbstractSLT):
                 
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 log_dict[f"{split}/contra_loss"] = cont_loss
-                loss = cont_loss
+                loss = cont_loss + (pre_cont_loss_alpha * pre_cont_loss)
                 
             else:
                 # Combined loss mode (regular training + contrastive)
@@ -591,7 +633,7 @@ class FlanT5SLT(AbstractSLT):
                 
                 # Add contrastive component if using combined loss
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
-                loss = t5_loss + self.alpha * cont_loss
+                loss = t5_loss + self.alpha * cont_loss + (pre_cont_loss_alpha * pre_cont_loss)
                 
                 log_dict[f"{split}/contra_loss"] = cont_loss
                 log_dict[f"{split}/combined_loss"] = loss
@@ -611,7 +653,7 @@ class FlanT5SLT(AbstractSLT):
                 return_dict=True
             )
             
-            loss = outputs.loss
+            loss = outputs.loss + (pre_cont_loss_alpha * pre_cont_loss)
             log_dict[f"{split}/loss"] = loss
 
         # STEP 2: Handle evaluation phase (validation/testing)
