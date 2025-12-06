@@ -24,10 +24,10 @@ model:
     combined_loss: true
     alpha: 1.0
     sign_cl_loss: true
-    sign_cl_alpha: 2
-    sign_cl_temperature: 0.02
+    sign_cl_alpha: 1
+    sign_cl_temperature: 0.05
     sign_cl_temporal_window: 9
-    sign_cl_every_n_steps: 2
+    sign_cl_every_n_steps: 3
     use_in_context: true
     num_in_context: 3
 
