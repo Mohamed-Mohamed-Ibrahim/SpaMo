@@ -56,9 +56,13 @@ class FlanT5SLT(AbstractSLT):
         lora_alpha: int = 64,
         lora_dropout: float = 0.1,
         use_data_augmentation: bool = True,
-        augmentation_noise_std: float = 0.1,
-        augmentation_noise_prob: float = 0.5,
-        augmentation_adaptive: bool = True,
+
+        # NEW: 3 Augmentation Parameters
+        augmentation_prob: float = 0.5,
+        aug_frame_prob: float = 0.1,
+        aug_span_prob: float = 0.1,
+        aug_channel_prob: float = 0.05,
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -107,12 +111,15 @@ class FlanT5SLT(AbstractSLT):
         # Data augmenter
         if self.use_data_augmentation:
             self.augmenter = FeatureAugmenter(
-                noise_ratio=augmentation_noise_std,
-                noise_prob=augmentation_noise_prob,
-                use_adaptive=augmentation_adaptive
+                aug_prob=augmentation_prob,
+                frame_dropout_prob=aug_frame_prob,
+                span_mask_prob=aug_span_prob,
+                channel_drop_prob=aug_channel_prob
             )
-            print(f"Data augmentation enabled with noise_std={augmentation_noise_std}, "
-              f"noise_prob={augmentation_noise_prob}")
+            print(
+                f"[AUG] Enabled | frame={aug_frame_prob}, span={aug_span_prob}, channel={aug_channel_prob}"
+            )
+
 
         self.set_container()
         
