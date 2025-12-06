@@ -335,6 +335,10 @@ def main():
                 trainer.test(model, data)
     elif opt.test:
         trainer.validate(model, data, ckpt_path=ckpt) # trainer.test(model, data, ckpt_path=ckpt)
+        # if you want to test on train data add these and comment above
+        # print("!!! OVERRIDE: Testing on TRAIN data set (as requested) !!!")
+        # train_loader = data.train_dataloader()
+        # trainer.test(model, dataloaders=train_loader, ckpt_path=ckpt)
 
 
 if __name__ == '__main__':
