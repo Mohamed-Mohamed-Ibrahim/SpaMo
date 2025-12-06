@@ -20,7 +20,7 @@ model:
     lora_alpha: 128
     lora_dropout: 0.05
     fusion_mode: joint
-    warm_up_steps: 4000
+    warm_up_steps: 1000
     cross_modal_align: true
     combined_loss: true
     alpha: 1.0
