@@ -34,7 +34,8 @@ class FlanT5SLT(AbstractSLT):
     def __init__(
         self, 
         tuning_type: str = 'lora', 
-        model_name: Optional[str] = None, 
+        model_name: Optional[str] = None,
+        weight_decay=0.01,
         frame_sample_rate: int = 1, 
         prompt: str = '',
         lr: float = 3e-4,             # <--- FIX: Added lr argument
@@ -91,6 +92,7 @@ class FlanT5SLT(AbstractSLT):
         # <--- FIX: Force disable context if count is 0
         if self.num_in_context == 0:
             self.use_in_context = False
+
         
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
@@ -539,9 +541,9 @@ class FlanT5SLT(AbstractSLT):
         # 2. Setup AdamW 
         optimizer = torch.optim.AdamW(
             trainable_params,
-            lr=self.hparams.lr,  # <--- FIX: Read from YAML
+            lr=self.hparams.lr,
+            weight_decay=self.hparams.weight_decay,
             eps=1e-8,
-            weight_decay=0.01,
             betas=(0.9, 0.98)
         )
         
@@ -561,7 +563,7 @@ class FlanT5SLT(AbstractSLT):
         if self.warm_up_steps is not None:
             warmup_steps = self.warm_up_steps
         else:
-            warmup_steps = int(total_steps * 0.2)
+            warmup_steps = int(total_steps * 0.1)
 
         print(f"--> Optimizer Setup: Total Steps={total_steps}, Warmup Steps={warmup_steps}")
 
