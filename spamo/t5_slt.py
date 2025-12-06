@@ -38,6 +38,7 @@ class FlanT5SLT(AbstractSLT):
         model_name: Optional[str] = None, 
         frame_sample_rate: int = 1, 
         prompt: str = '',
+        lr: float = 3e-4,
         input_size: int = 1024,
         pose_input_size: int = 33*3,
         fusion_mode: str = 'joint',
@@ -58,6 +59,7 @@ class FlanT5SLT(AbstractSLT):
         cache_dir: str = "/data3/models",
         use_in_context: bool = False,
         num_in_context: int = 0,
+        weight_decay: float = 0.01,
         lora_r: int = 16,
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
@@ -69,6 +71,8 @@ class FlanT5SLT(AbstractSLT):
         self.input_size = input_size
         self.pose_input_size = pose_input_size
         self.prompt = prompt
+        self.lr = lr
+        self.weight_decay = weight_decay
         self.model_name = model_name
         self.frame_sample_rate = frame_sample_rate
         self.fusion_mode = fusion_mode
@@ -90,6 +94,8 @@ class FlanT5SLT(AbstractSLT):
         self.cache_dir = cache_dir
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
+        if self.num_in_context == 0:
+            self.use_in_context = False
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
@@ -716,7 +722,7 @@ class FlanT5SLT(AbstractSLT):
             trainable_params,
             lr=self.lr,
             eps=1e-8,
-            weight_decay=0.01,
+            weight_decay=self.weight_decay,
             betas=(0.9, 0.98)
         )
         
@@ -737,7 +743,10 @@ class FlanT5SLT(AbstractSLT):
             if hasattr(self.trainer, 'accumulate_grad_batches'):
                 total_steps = total_steps // self.trainer.accumulate_grad_batches
         
-        warmup_steps = int(total_steps * 0.1)
+        if getattr(self, 'warm_up_steps', None) is not None:
+            warmup_steps = int(self.warm_up_steps)
+        else:
+            warmup_steps = int(total_steps * 0.1)
 
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
