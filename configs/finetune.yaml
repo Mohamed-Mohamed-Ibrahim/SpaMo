@@ -26,7 +26,13 @@ model:
     alpha: 1.0
     use_in_context: true
     num_in_context: 2
+    # NEW AUGMENTATION PARAMETERS
     use_data_augmentation: true
+
+    augmentation_prob: 0.5       # Apply augmentation to 50% of batches
+    aug_frame_prob: 0.1          # Drop 10% of frames
+    aug_span_prob: 0.1           # Mask 10% of spans
+    aug_channel_prob: 0.05       # Drop 5% of feature channels
 
 lightning:
   callback:
