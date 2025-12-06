@@ -19,7 +19,7 @@ from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
-from transformers import get_cosine_schedule_with_warmup
+
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -340,10 +340,15 @@ class FlanT5SLT(AbstractSLT):
                         f"{sample.get('fr_text','')}={sample['text']}",
                         f"{sample.get('es_text','')}={sample['text']}"
                     ]
-                ex_lang_trans = _ex_lang_trans[:self.num_in_context]
-                ex_lang_translations.append(' '.join(_ex_lang_trans))
+            
+                # Keep only the number requested
+                trimmed = _ex_lang_trans[:self.num_in_context]
+            
+                # Join them into one string
+                ex_lang_translations.append(' '.join(trimmed))
             else:
                 ex_lang_translations.append("")
+
 
             if nframe > max_frame_len:
                 nframe = max_frame_len
