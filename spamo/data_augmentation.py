@@ -2,73 +2,78 @@ import torch
 import torch.nn as nn
 from typing import List, Union
 
-
 class FeatureAugmenter(nn.Module):
     def __init__(
         self, 
-        noise_ratio: float = 0.1,  # Noise as percentage of feature std
-        noise_prob: float = 0.5,
-        use_adaptive: bool = True
+        aug_prob: float = 0.5,          # Chance of applying augmentation to a batch
+        frame_dropout_prob: float = 0.1, # Drop individual frames
+        span_mask_prob: float = 0.1,     # Mask continuous time spans
+        channel_drop_prob: float = 0.05, # Drop feature dimensions
+        max_span_length: int = 10        # Maximum contiguous masked span length
     ):
-        """
-        Initialize the feature augmenter.
-        
-        Args:
-            noise_ratio: Noise level as a ratio of feature standard deviation.
-                        e.g., 0.1 means noise_std = 0.1 * feature_std
-            noise_prob: Probability of applying augmentation to a batch.
-            use_adaptive: If True, compute noise_std from data variance.
-                         If False, use noise_ratio as fixed noise_std.
-        """
         super().__init__()
-        self.noise_ratio = noise_ratio
-        self.noise_prob = noise_prob
-        self.use_adaptive = use_adaptive
-    
+        self.aug_prob = aug_prob
+        self.frame_dropout_prob = frame_dropout_prob
+        self.span_mask_prob = span_mask_prob
+        self.channel_drop_prob = channel_drop_prob
+        self.max_span_length = max_span_length
+
     def forward(
         self, 
         features: torch.Tensor, 
         lengths: Union[List[int], torch.Tensor]
     ) -> torch.Tensor:
-        """
-        Apply Gaussian noise augmentation to features.
-        
-        Args:
-            features: Input features of shape [batch_size, seq_len, feature_dim].
-            lengths: Actual sequence lengths before padding.
-        
-        Returns:
-            Augmented features with same shape as input.
-        """
-        if not self.training or torch.rand(1).item() > self.noise_prob:
+
+        if not self.training or torch.rand(1).item() > self.aug_prob:
             return features
-        
-        if isinstance(lengths, list):
-            lengths = torch.tensor(lengths, device=features.device)
-        
-        batch_size, seq_len, _ = features.shape
-        
-        # Create mask for valid positions
-        mask = torch.zeros(batch_size, seq_len, 1, device=features.device)
-        for i, length in enumerate(lengths):
-            mask[i, :length, :] = 1.0
-        
-        # Compute adaptive noise std if enabled
-        if self.use_adaptive:
-            # Compute std only on valid (non-padded) positions
-            valid_features = features * mask
-            num_valid = mask.sum()
-            
-            feature_std = torch.sqrt(
-                (valid_features ** 2).sum() / num_valid
+
+        B, T, D = features.shape
+        device = features.device
+
+        aug = features.clone()
+
+        # -------------------------
+        # (1) FRAME DROPOUT
+        # -------------------------
+        if self.frame_dropout_prob > 0:
+            frame_mask = torch.bernoulli(
+                torch.full((B, T, 1), 1 - self.frame_dropout_prob, device=device)
             )
-            noise_std = self.noise_ratio * feature_std
-        else:
-            noise_std = self.noise_ratio
-        
-        # Generate and apply noise
-        noise = torch.randn_like(features) * noise_std
-        noise = noise * mask
-        augmented_features = features + noise
-        
-        return augmented_features
+            aug = aug * frame_mask
+
+        # -------------------------
+        # (2) CHANNEL DROPOUT
+        # -------------------------
+        if self.channel_drop_prob > 0:
+            channel_mask = torch.bernoulli(
+                torch.full((B, 1, D), 1 - self.channel_drop_prob, device=device)
+            )
+            aug = aug * channel_mask
+
+        # -------------------------
+        # (3) SPAN MASKING
+        # -------------------------
+        if self.span_mask_prob > 0:
+            if isinstance(lengths, list):
+                lengths = torch.tensor(lengths, device=device)
+
+            for b in range(B):
+                L = int(lengths[b])
+                if L <= 1: 
+                    continue
+
+                target_mask = int(L * self.span_mask_prob)
+                masked = 0
+                attempts = 0
+
+                while masked < target_mask and attempts < 20:
+                    attempts += 1
+                    span_len = int(torch.randint(1, self.max_span_length + 1, (1,)))
+                    if span_len >= L: 
+                        break
+                    
+                    start = int(torch.randint(0, L - span_len, (1,)))
+                    aug[b, start:start+span_len] = 0.0
+                    masked += span_len
+
+        return aug
