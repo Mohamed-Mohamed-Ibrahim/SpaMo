@@ -185,7 +185,7 @@ def configure_callbacks(
             mode="max"
         ))
         callbacks.append(EarlyStopping(
-            monitor=model.monitor, verbose=True, patience=50, mode="max"
+            monitor=model.monitor, verbose=True, patience=15, mode="max"
         ))
     else:
         callbacks.append(ModelCheckpoint(
