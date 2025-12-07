@@ -1,14 +1,12 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    # lr: 3.0e-4
-    lr: 6.0e-4
+
+    lr: 1.0e-3
     monitor: val/bleu4
-    # model_name: google/flan-t5-base
     model_name: google/flan-t5-small
     cache_dir: /data3/models
-    # inter_hidden: 768
-    inter_hidden: 512
+    inter_hidden: 768
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
@@ -20,7 +18,7 @@ model:
     lora_alpha: 256
     lora_dropout: 0.01
     fusion_mode: joint
-    warm_up_steps: 1000
+    warm_up_steps: 300
     cross_modal_align: true
     combined_loss: true
     alpha: 1.0
@@ -45,7 +43,7 @@ lightning:
     accumulate_grad_batches: 4
     accelerator: gpu
     devices: 2
-    max_epochs: 160
+    max_epochs: 240
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: bf16
@@ -53,7 +51,7 @@ lightning:
 data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
-    batch_size: 8
+    batch_size: 16
     num_workers: 4
   
     train:
