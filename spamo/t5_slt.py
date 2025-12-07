@@ -169,6 +169,16 @@ class FlanT5SLT(AbstractSLT):
         # Pose projector: default pose size is 33 keypoints * 3 coords = 99
         self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
+
+        # === IMPROVEMENT 1: Add Contrastive Projection Heads ===
+        # These are small MLPs that map the features to a shared space JUST for the loss
+        # This prevents the loss from making the actual features identical
+        self.spatial_c_proj = nn.Linear(self.inter_hidden, self.inter_hidden)
+        self.pose_c_proj = nn.Linear(self.inter_hidden, self.inter_hidden)
+        
+        # === IMPROVEMENT 2: Independent Logit Scale ===
+        # Do not share the scale with the text alignment
+        self.pose_logit_scale = nn.Parameter(torch.tensor(2.6592))
         
         # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
@@ -538,31 +548,31 @@ class FlanT5SLT(AbstractSLT):
     
     def spatial_pose_align(self, spatial_outputs: torch.Tensor, pose_outputs: torch.Tensor) -> torch.Tensor:
         """
-        Calculate visual-textual alignment loss.
-        
-        Args:
-            visual_outputs: Visual features
-            visual_masks: Mask for visual features
-            samples: Input samples
-            
-        Returns:
-            Contrastive loss
+        Calculate visual-pose alignment loss using projection heads.
         """
-        # Mean pooling for visual and text embeddings
-        image_embeds = spatial_outputs.mean(1)  # global pooling
-        text_embeds = pose_outputs.mean(1)  # global pooling
+        # 1. Project features into the specific contrastive space
+        # We assume inputs are (B, T, C)
+        s_emb = self.spatial_c_proj(spatial_outputs) # (B, T, C)
+        p_emb = self.pose_c_proj(pose_outputs)       # (B, T, C)
+
+        # 2. Mean pooling (Global Average Pooling)
+        # Note: If T varies significantly, ensure padding is handled or masked correctly 
+        # before mean(), but for simplicity (and assuming similar content):
+        image_embeds = s_emb.mean(1) 
+        pose_embeds = p_emb.mean(1) 
         
-        # Normalize features
+        # 3. Normalize features
         image_embeds = F.normalize(image_embeds, dim=-1)
-        text_embeds = F.normalize(text_embeds, dim=-1)
-
-        # Calculate cosine similarities with temperature scaling
-        logit_scale = self.logit_scale.exp()
-        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
-        logits_per_image = logits_per_text.T
-
-        # Calculate contrastive loss
-        loss = clip_loss(logits_per_text)
+        pose_embeds = F.normalize(pose_embeds, dim=-1)
+        
+        # 4. Calculate cosine similarities with INDEPENDENT temperature scaling
+        logit_scale = self.pose_logit_scale.exp()
+        
+        # (B, C) @ (C, B) -> (B, B)
+        logits_per_pose = torch.matmul(pose_embeds, image_embeds.t()) * logit_scale
+        
+        # 5. Calculate contrastive loss
+        loss = clip_loss(logits_per_pose)
         
         return loss
 
