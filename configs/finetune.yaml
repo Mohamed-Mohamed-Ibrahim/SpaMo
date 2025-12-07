@@ -4,7 +4,7 @@ model:
     lr: 3.0e-4
     weight_decay: 0.01
     monitor: val/bleu4
-    model_name: google/flan-t5-base
+    model_name: MBZUAI/LaMini-Flan-T5-783M
     cache_dir: /data3/models
     inter_hidden: 768
     input_size: 2048
