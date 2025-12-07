@@ -1,81 +1,130 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import random
 
 class SignCL(nn.Module):
-    def __init__(self, max_distance=32.0, pos_samples=2, neg_samples=4):
+    def __init__(self, temperature=0.07, margin=0.2):
         """
-        Initialize the SignCL module.
-
         Args:
-            max_distance (float): Maximum distance to prevent negative pairs from being pushed too far.
-            pos_samples (int): Number of positive samples to select.
-            neg_samples (int): Number of negative samples to select.
+            temperature: Scaling factor for logits (if using Softmax/InfoNCE)
+            margin: The margin for the hinge loss (pos_sim > neg_sim + margin)
         """
         super(SignCL, self).__init__()
-        self.max_distance = max_distance
-        self.pos_samples = pos_samples
-        self.neg_samples = neg_samples
+        self.temperature = temperature
+        self.margin = margin
 
-    def forward(self, inputs_embeds, margin=20):
+    def forward(self, inputs_embeds, mask=None, temporal_margin=1):
         """
-        Forward pass for the SignCL module.
-
         Args:
-            inputs_embeds (torch.Tensor): Input embeddings of shape (batch_size, seq_len, embed_dim).
-            margin (int): Minimum margin used for selecting negative samples.
-
-        Returns:
-            torch.Tensor: The computed contrastive loss.
+            inputs_embeds: (B, T, D) tensor of features.
+            mask: (B, T) boolean or binary tensor (1 for valid, 0 for pad).
+            temporal_margin: Time steps required between anchor and negative.
         """
-        batch_size, seq_len, _ = inputs_embeds.size()
-        total_loss = 0
+        B, T, D = inputs_embeds.size()
+        
+        # 1. Align Geometry: Normalize inputs for Cosine Similarity (matches CLIP)
+        embeds = F.normalize(inputs_embeds, p=2, dim=-1)
+        
+        total_loss = torch.tensor(0.0, device=inputs_embeds.device)
+        n_valid_steps = torch.tensor(0.0, device=inputs_embeds.device)
+        
+        # Iterate through the sequence (skipping first and last to have neighbors)
+        for t in range(1, T - 1):
+            anchor = embeds[:, t, :]       # (B, D)
+            positive_prev = embeds[:, t-1, :] # (B, D)
+            positive_next = embeds[:, t+1, :] # (B, D)
+            
+            # 2. Similarity with Positives (Temporal Smoothness)
+            sim_prev = torch.sum(anchor * positive_prev, dim=-1) 
+            sim_next = torch.sum(anchor * positive_next, dim=-1)
+            pos_sim = (sim_prev + sim_next) / 2.0 
+            
+            # 3. Similarity with Negatives (Distinctiveness)
+            # Find valid negative indices (outside the local window)
+            valid_neg_indices = [x for x in range(T) if abs(x - t) > temporal_margin]
+            
+            if not valid_neg_indices:
+                continue 
+                
+            # Randomly select one negative time step for the whole batch 
+            # (Vectorization trick: picking the same relative negative time step is faster)
+            neg_t = valid_neg_indices[torch.randint(0, len(valid_neg_indices), (1,)).item()]
+            negative = embeds[:, neg_t, :]
+            neg_sim = torch.sum(anchor * negative, dim=-1)
+            
+            # 4. Hinge Loss: We want pos_sim > neg_sim + margin
+            # Loss = max(0, neg_sim - pos_sim + margin)
+            loss_step = F.relu(neg_sim - pos_sim + self.margin)
+            
+            # 5. Apply Masking (CRITICAL FIX)
+            if mask is not None:
+                # A step is valid only if anchor, pos_prev, pos_next, AND negative are all valid
+                # mask[:, t] is the anchor validity
+                # mask[:, neg_t] is the negative validity
+                valid_mask = (
+                    mask[:, t] & 
+                    mask[:, t-1] & 
+                    mask[:, t+1] & 
+                    mask[:, neg_t]
+                ).float()
+                
+                loss_step = loss_step * valid_mask
+                n_valid_steps += valid_mask.sum()
+            else:
+                n_valid_steps += B
+                
+            total_loss += loss_step.sum()
 
-        for i in range(1, seq_len - 2):
-            anchor = inputs_embeds[:, i, :].unsqueeze(1)  # Anchor sample of shape (batch_size, 1, embed_dim)
-
-            # Positive samples selection
-            pos_indices = [idx for idx in range(max(0, i - 1), min(seq_len, i + 2)) if idx != i]
-            selected_pos_indices = random.sample(pos_indices, k=min(len(pos_indices), self.pos_samples))
-            positives = inputs_embeds[:, selected_pos_indices, :]  # Positive samples of shape (batch_size, pos_samples, embed_dim)
-
-            # Negative samples selection
-            neg_indices = [idx for idx in range(2, seq_len - 2) if idx < i - margin or idx > i + margin]
-            selected_neg_indices = random.sample(neg_indices, k=min(len(neg_indices), self.neg_samples))
-            negatives = inputs_embeds[:, selected_neg_indices, :]  # Negative samples of shape (batch_size, neg_samples, embed_dim)
-
-            # Calculate distances
-            pos_dist = torch.sum(torch.abs(anchor - positives), dim=-1)  # Distance to positive samples
-            neg_dist = torch.sum(torch.abs(anchor - negatives), dim=-1)  # Distance to negative samples
-
-            # Loss calculation
-            pos_loss = F.softplus(pos_dist - self.max_distance).mean()  # Positive loss
-            neg_loss = F.softplus(self.max_distance - neg_dist).mean()  # Negative loss
-            neg_loss = torch.nan_to_num(neg_loss) 
-
-            # Combine losses
-            loss = pos_loss + neg_loss
-            total_loss += loss
-
-        # Average loss over the sequence
-        total_loss /= (batch_size * (seq_len - 4)) # skip start and end frames
-        return total_loss
-
+        if n_valid_steps > 0:
+            return total_loss / n_valid_steps
+        else:
+            return torch.tensor(0.0, device=inputs_embeds.device, requires_grad=True)
 
 if __name__ == "__main__":
-    # Example usage of the SignCL class
-    batch_size = 8
-    seq_len = 16
-    embed_dim = 64
+    # --- Test Case Configuration ---
+    batch_size = 4
+    seq_len = 10
+    embed_dim = 16
+    
+    # 1. Generate Random Embeddings
+    inputs_embeds = torch.randn(batch_size, seq_len, embed_dim, requires_grad=True)
 
-    # Randomly generated input embeddings
-    inputs_embeds = torch.randn(batch_size, seq_len, embed_dim)
+    # 2. Create a Mask to simulate padding
+    # Sample 0: Full length (10 frames)
+    # Sample 1: Short (3 frames) -> Note: SignCL needs at least 3 frames (prev, curr, next)
+    # Sample 2: Medium (6 frames)
+    # Sample 3: Full length
+    mask = torch.zeros(batch_size, seq_len, dtype=torch.bool)
+    mask[0, :10] = True
+    mask[1, :3]  = True 
+    mask[2, :6]  = True
+    mask[3, :10] = True
+    
+    print(f"Input Shape: {inputs_embeds.shape}")
+    print(f"Mask Shape: {mask.shape}")
+    print(f"Mask (Sample 1 - Short): {mask[1].int().tolist()}")
 
-    # Initialize the SignCL model
-    sign_cl = SignCL(max_distance=32.0, pos_samples=2, neg_samples=4)
+    # 3. Initialize Model
+    # margin=0.2 is standard for cosine similarity (which ranges -1 to 1)
+    sign_cl = SignCL(margin=0.2)
 
-    # Compute the contrastive loss
-    loss = sign_cl(inputs_embeds, margin=20)
-    print(f"Contrastive Loss: {loss.item()}")
-  
+    # 4. Forward Pass
+    # temporal_margin=2 means negatives must be at least 2 frames away
+    loss = sign_cl(inputs_embeds, mask=mask, temporal_margin=2)
+    
+    print("\n--- Results ---")
+    print(f"Calculated Loss: {loss.item():.6f}")
+
+    # 5. Backward Pass Check (Verify gradients exist)
+    loss.backward()
+    print(f"Gradients computed? {inputs_embeds.grad is not None}")
+    
+    # Check if padding caused gradients (Should be 0 for padded regions)
+    # Checking gradients for Sample 1 (index 1) at frame 8 (which is padded/False)
+    grad_at_padding = inputs_embeds.grad[1, 8, :].sum().item()
+    print(f"Gradient at padded frame (should be 0.0): {grad_at_padding}")
+    
+    if grad_at_padding == 0.0:
+        print("\u2705 SUCCESS: Padding was correctly ignored.")
+    else:
+        print("\u274C FAILURE: Gradients leaked into padded regions.")

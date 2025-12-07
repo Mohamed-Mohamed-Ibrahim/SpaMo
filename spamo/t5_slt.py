@@ -95,7 +95,7 @@ class FlanT5SLT(AbstractSLT):
         # self.signcl_max_dist = signcl_max_dist
         
         self.use_signcl = True
-        self.signcl_alpha = 0.5
+        self.signcl_alpha = 1.0
         self.signcl_margin = 20.0
         self.signcl_max_dist = 32.0
         
@@ -200,11 +200,9 @@ class FlanT5SLT(AbstractSLT):
 
         if self.use_signcl:
             self.sign_cl_module = SignCL(
-                max_distance=self.signcl_max_dist, 
-                pos_samples=2, 
-                neg_samples=4
+                margin=0.2,       # Standard margin for Cosine Similarity
+                temperature=0.07  # Standard temp for contrastive learning
             )
-            
         # if self.cross_modal_align:
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
@@ -570,11 +568,20 @@ class FlanT5SLT(AbstractSLT):
         log_dict = {}
 
         # Calculate SignCL Loss
-        signcl_loss_value = 0.0
+        signcl_loss_value = torch.tensor(0.0, device=self.device) # Initialize safely
+
         if self.use_signcl:
-            # Note: SignCL iterates over the sequence length. 
-            signcl_loss_value = self.sign_cl_module(visual_outputs, margin=self.signcl_margin)
+            # PASS THE VISUAL MASK HERE
+            signcl_loss_value = self.sign_cl_module(
+                visual_outputs, 
+                mask=visual_masks.bool(), # Ensure it is boolean
+                margin=self.signcl_margin
+            )
             log_dict[f"{split}/signcl_loss"] = signcl_loss_value
+
+        print("="*100)
+        print(f"signcl_loss_value: {signcl_loss_value}")
+        print("="*100)
         
         # STEP 1: Determine training mode and prepare inputs accordingly
         if self.cross_modal_align:
