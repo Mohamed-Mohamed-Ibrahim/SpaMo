@@ -6,7 +6,7 @@ model:
     monitor: val/bleu4
     model_name: google/flan-t5-large
     cache_dir: /data3/models
-    inter_hidden: 512
+    inter_hidden: 1024
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
