@@ -16,9 +16,9 @@ model:
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
     tuning_type: lora
-    lora_r: 32
-    lora_alpha: 64
-    lora_dropout: 0.1
+    lora_r: 128
+    lora_alpha: 256
+    lora_dropout: 0.01
     fusion_mode: joint
     warm_up_steps: 1000
     cross_modal_align: true
@@ -27,7 +27,7 @@ model:
     use_in_context: false
     num_in_context: 0
     # NEW AUGMENTATION PARAMETERS
-    use_data_augmentation: true
+    use_data_augmentation: false
 
     augmentation_prob: 0.5       # Apply augmentation to 50% of batches
     aug_frame_prob: 0.1          # Drop 10% of frames
