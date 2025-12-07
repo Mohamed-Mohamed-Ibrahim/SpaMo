@@ -4,7 +4,7 @@ model:
     lr: 6.0e-4
     weight_decay: 0.0
     monitor: val/bleu4
-    model_name: google/flan-t5-small
+    model_name: google/flan-t5-large
     cache_dir: /data3/models
     inter_hidden: 512
     input_size: 2048
