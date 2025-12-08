@@ -83,4 +83,19 @@ data:
         spatiotemporal_postfix: ""
         pose_postfix: ""
     test:
-      target: dataset.p14t.Phoenix
+      target: dataset.p14t.Phoenix14T
+      params:
+        anno_root: preprocess/Phoenix14T
+        vid_root: dataset/Phoenix14T
+        feat_root: feat_Phoenix14T
+        mae_feat_root: mae_feat_Phoenix14T
+        pose_root: dataset/pose_features
+        i3d_root: dataset/i3d_features
+        mode: test
+        spatial: true
+        spatiotemporal: true
+        pose: true
+        i3d: true
+        spatial_postfix: ""
+        spatiotemporal_postfix: ""
+        pose_postfix: ""
