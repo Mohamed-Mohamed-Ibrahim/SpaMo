@@ -1,36 +1,52 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-
-    lr: 1.0e-3
+    lr: 1.0e-4
     monitor: val/bleu4
-    model_name: google/flan-t5-small
+
+    model_name: MBZUAI/LaMini-Flan-T5-783M
     cache_dir: /data3/models
+
     inter_hidden: 768
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
-    max_txt_len: 64
+    max_txt_len: 128
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
+
     tuning_type: lora
-    lora_r: 128
-    lora_alpha: 256
-    lora_dropout: 0.01
+
+    # Reduce model capacity
+    lora_r: 8
+    lora_alpha: 16
+
+    # Increase regularization
+    lora_dropout: 0.3
+    weight_decay: 0.1
+
     fusion_mode: joint
-    warm_up_steps: 300
+    warm_up_steps: 1000
     cross_modal_align: true
     combined_loss: true
+
     alpha: 1.0
+
     use_in_context: false
     num_in_context: 0
     # NEW AUGMENTATION PARAMETERS
-    use_data_augmentation: false
+    use_data_augmentation: true
 
     augmentation_prob: 0.5       # Apply augmentation to 50% of batches
     aug_frame_prob: 0.1          # Drop 10% of frames
     aug_span_prob: 0.1           # Mask 10% of spans
     aug_channel_prob: 0.05       # Drop 5% of feature channels
+    # # Stronger augmentation
+    # use_data_augmentation: true
+    # augmentation_prob: 0.7
+    # aug_frame_prob: 0.15
+    # aug_span_prob: 0.2
+    # aug_channel_prob: 0.1
 
 lightning:
   callback:
