@@ -1,8 +1,8 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 1.0e-3
-    weight_decay: 0.01
+    lr: 3.0e-4
+    weight_decay: 0.05
     monitor: val/bleu4
     model_name: google/flan-t5-base
     cache_dir: /data3/models
@@ -16,11 +16,11 @@ model:
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
     tuning_type: lora
-    lora_r: 64
-    lora_alpha: 128
-    lora_dropout: 0.05
+    lora_r: 32
+    lora_alpha: 64
+    lora_dropout: 0.1
     fusion_mode: joint
-    warm_up_steps: 1000
+    warm_up_steps: 2000
     cross_modal_align: true
     combined_loss: true
     alpha: 1.0
@@ -35,10 +35,10 @@ lightning:
         logging_interval: step
   trainer:
     strategy: ddp_find_unused_parameters_true
-    accumulate_grad_batches: 4
+    accumulate_grad_batches: 8
     accelerator: gpu
     devices: 2
-    max_epochs: 100
+    max_epochs: 200
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: bf16
@@ -83,19 +83,4 @@ data:
         spatiotemporal_postfix: ""
         pose_postfix: ""
     test:
-      target: dataset.p14t.Phoenix14T
-      params:
-        anno_root: preprocess/Phoenix14T
-        vid_root: dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
-        pose_root: dataset/pose_features
-        i3d_root: dataset/i3d_features
-        mode: test
-        spatial: true
-        spatiotemporal: true
-        pose: true
-        i3d: true
-        spatial_postfix: ""
-        spatiotemporal_postfix: ""
-        pose_postfix: ""
+      target: dataset.p14t.Phoenix
