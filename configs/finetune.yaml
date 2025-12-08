@@ -2,7 +2,7 @@ model:
   target: spamo.t5_slt.FlanT5SLT
   params:
     lr: 1.0e-3
-    weight_decay: 0.0
+    weight_decay: 0.01
     monitor: val/bleu4
     model_name: google/flan-t5-base
     cache_dir: /data3/models
