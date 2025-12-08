@@ -6,7 +6,7 @@ model:
     monitor: val/bleu4
     model_name: MBZUAI/LaMini-Flan-T5-783M
     cache_dir: /data3/models
-    inter_hidden: 768
+    inter_hidden: 1024
     input_size: 2048
     pose_input_size: 99
     i3d_input_size: 1024
@@ -16,8 +16,8 @@ model:
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
     tuning_type: lora
-    lora_r: 64
-    lora_alpha: 128
+    lora_r: 32
+    lora_alpha: 64
     lora_dropout: 0.05
     fusion_mode: joint
     warm_up_steps: 1000
@@ -60,8 +60,8 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: true
-        i3d: true
+        pose: false
+        i3d: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -77,8 +77,8 @@ data:
         mode: dev
         spatial: true
         spatiotemporal: true
-        pose: true
-        i3d: true
+        pose: false
+        i3d: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -94,8 +94,8 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
-        i3d: true
+        pose: false
+        i3d: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
