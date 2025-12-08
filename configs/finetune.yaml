@@ -1,7 +1,7 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 1.0e-3
+    lr: 3.0e-4
     weight_decay: 0.01
     monitor: val/bleu4
     model_name: google/flan-t5-base
@@ -14,9 +14,9 @@ model:
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
     tuning_type: lora
-    lora_r: 64
-    lora_alpha: 128
-    lora_dropout: 0.05
+    lora_r: 32
+    lora_alpha: 64
+    lora_dropout: 0.1
     fusion_mode: joint
     warm_up_steps: 1000
     cross_modal_align: true
@@ -36,7 +36,7 @@ lightning:
     accumulate_grad_batches: 4
     accelerator: gpu
     devices: 2
-    max_epochs: 100
+    max_epochs: 200
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: bf16
