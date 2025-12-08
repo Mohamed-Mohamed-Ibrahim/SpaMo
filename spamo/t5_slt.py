@@ -399,9 +399,9 @@ class FlanT5SLT(AbstractSLT):
             else:
                 raise NotImplementedError("Invalid fusion mode")
         
-        print("="*50)
-        print(f"pre_cont_loss: {pre_cont_loss}")
-        print("="*50)
+        # print("="*50)
+        # print(f"pre_cont_loss: {pre_cont_loss}")
+        # print("="*50)
         
         return visual_outputs, visual_masks, pre_cont_loss
 
