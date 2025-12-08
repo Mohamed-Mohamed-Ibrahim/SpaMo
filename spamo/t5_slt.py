@@ -338,10 +338,6 @@ class FlanT5SLT(AbstractSLT):
         
         elif self.fusion_mode == 'adaptive':
             
-            pre_cont_loss = self.spatial_pose_align(
-                spatial_outputs,
-                pose_outputs
-            )
 
             # 1. Align Dimensions: Interpolate spatiotemporal (T_st) to match spatial (T_s) length
             # Input shapes are (B, T, C). Interpolate expects (B, C, T)
@@ -352,6 +348,11 @@ class FlanT5SLT(AbstractSLT):
                     mode='linear', 
                     align_corners=False
                 ).permute(0, 2, 1)
+
+            pre_cont_loss = self.spatial_pose_align(
+                spatial_outputs,
+                spatiotemporal_outputs
+            )
 
             # 2. Apply Adaptive Fusion
             # Returns (B, T, C)
