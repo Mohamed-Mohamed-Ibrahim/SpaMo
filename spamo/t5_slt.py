@@ -17,6 +17,7 @@ from utils.helpers import create_mask, derangement
 from spamo.mm_projector import build_vision_projector, AdaptiveFusion
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
+from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from transformers import get_cosine_schedule_with_warmup
 
@@ -37,6 +38,7 @@ class FlanT5SLT(AbstractSLT):
         model_name: Optional[str] = None, 
         frame_sample_rate: int = 1, 
         prompt: str = '',
+        lr: float = 3e-4,
         input_size: int = 1024,
         pose_input_size: int = 33*3,
         fusion_mode: str = 'joint',
@@ -47,11 +49,17 @@ class FlanT5SLT(AbstractSLT):
         warm_up_steps: Optional[int] = None,
         combined_loss: bool = False,
         alpha: float = 0.1,
+        sign_cl_loss: bool = False,
+        sign_cl_alpha: float = 0.5,
+        sign_cl_temperature: float = 0.07,
+        sign_cl_temporal_window: int = 5,
+        sign_cl_every_n_steps: int = 1,
         use_resampler: bool = False,
         sampling_length: int = 64,
         cache_dir: str = "/data3/models",
         use_in_context: bool = False,
         num_in_context: int = 0,
+        weight_decay: float = 0.01,
         lora_r: int = 16,
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
@@ -63,6 +71,8 @@ class FlanT5SLT(AbstractSLT):
         self.input_size = input_size
         self.pose_input_size = pose_input_size
         self.prompt = prompt
+        self.lr = lr
+        self.weight_decay = weight_decay
         self.model_name = model_name
         self.frame_sample_rate = frame_sample_rate
         self.fusion_mode = fusion_mode
@@ -74,11 +84,18 @@ class FlanT5SLT(AbstractSLT):
         self.warm_up_steps = warm_up_steps
         self.combined_loss = combined_loss
         self.alpha = alpha
+        self.sign_cl_loss = sign_cl_loss
+        self.sign_cl_alpha = sign_cl_alpha
+        self.sign_cl_temperature = sign_cl_temperature
+        self.sign_cl_temporal_window = sign_cl_temporal_window
+        self.sign_cl_every_n_steps = sign_cl_every_n_steps
         self.use_resampler = use_resampler
         self.sampling_length = sampling_length
         self.cache_dir = cache_dir
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
+        if self.num_in_context == 0:
+            self.use_in_context = False
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
@@ -181,6 +198,16 @@ class FlanT5SLT(AbstractSLT):
                 output_size=3
             )
             
+
+        # Initialize SignCL loss if enabled
+        if self.sign_cl_loss:
+            self.sign_cl = TemporalSignCLLoss(
+                temperature=self.sign_cl_temperature,
+                temporal_window=self.sign_cl_temporal_window,
+            )
+        else:
+            self.sign_cl = None
+
         # if self.cross_modal_align:
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
@@ -566,9 +593,22 @@ class FlanT5SLT(AbstractSLT):
                         visual_outputs, visual_masks, inputs, split, batch_idx
                     )
                 
+                # Visual-textual contrastive loss (CLIP-style)
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 log_dict[f"{split}/contra_loss"] = cont_loss
                 loss = cont_loss
+                
+                # Sign Contrastive Learning loss (SignCL) - temporal neighborhoods
+                if (
+                    self.sign_cl_loss
+                    and self.sign_cl is not None
+                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
+                ):
+                    sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
+                    if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
+                        loss = loss + self.sign_cl_alpha * sign_cl_loss_val
+                        log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
+                        log_dict[f"{split}/warmup_total_loss"] = loss
                 
             else:
                 # Combined loss mode (regular training + contrastive)
@@ -589,11 +629,22 @@ class FlanT5SLT(AbstractSLT):
                 t5_loss = outputs.loss
                 log_dict[f"{split}/loss"] = t5_loss
                 
-                # Add contrastive component if using combined loss
+                # Add visual-textual contrastive component
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 loss = t5_loss + self.alpha * cont_loss
-                
                 log_dict[f"{split}/contra_loss"] = cont_loss
+                
+                # Add SignCL loss if enabled (reduces representation density)
+                if (
+                    self.sign_cl_loss
+                    and self.sign_cl is not None
+                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
+                ):
+                    sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
+                    if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
+                        loss = loss + self.sign_cl_alpha * sign_cl_loss_val
+                        log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
+                
                 log_dict[f"{split}/combined_loss"] = loss
         else:
             # Standard training without contrastive learning
@@ -711,7 +762,7 @@ class FlanT5SLT(AbstractSLT):
             trainable_params,
             lr=self.lr,
             eps=1e-8,
-            weight_decay=0.01,
+            weight_decay=self.weight_decay,
             betas=(0.9, 0.98)
         )
         
@@ -732,7 +783,10 @@ class FlanT5SLT(AbstractSLT):
             if hasattr(self.trainer, 'accumulate_grad_batches'):
                 total_steps = total_steps // self.trainer.accumulate_grad_batches
         
-        warmup_steps = int(total_steps * 0.1)
+        if getattr(self, 'warm_up_steps', None) is not None:
+            warmup_steps = int(self.warm_up_steps)
+        else:
+            warmup_steps = int(total_steps * 0.1)
 
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
