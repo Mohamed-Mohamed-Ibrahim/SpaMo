@@ -4,10 +4,10 @@ model:
     lr: 1.0e-4
     monitor: val/bleu4
 
-    model_name: MBZUAI/LaMini-Flan-T5-783M
+    model_name: google/flan-t5-small
     cache_dir: /data3/models
 
-    inter_hidden: 768
+    inter_hidden: 512
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
@@ -35,7 +35,7 @@ model:
     use_in_context: false
     num_in_context: 0
     # NEW AUGMENTATION PARAMETERS
-    use_data_augmentation: false
+    use_data_augmentation: true
 
     augmentation_prob: 0.5       # Apply augmentation to 50% of batches
     aug_frame_prob: 0.1          # Drop 10% of frames
