@@ -18,7 +18,7 @@ model:
     lora_r: 16
     lora_alpha: 32
     lora_dropout: 0.1
-    fusion_mode: joint
+    fusion_mode: adaptive
     warm_up_steps: 1000
     cross_modal_align: true
     combined_loss: true
@@ -41,7 +41,7 @@ lightning:
     accumulate_grad_batches: 2
     strategy: ddp_find_unused_parameters_true
     accelerator: gpu
-    devices: 1
+    devices: 2
     max_epochs: 1
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 2
