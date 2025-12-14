@@ -185,7 +185,7 @@ def configure_callbacks(
             mode="max"
         ))
         callbacks.append(EarlyStopping(
-            monitor=model.monitor, verbose=True, patience=50, mode="max"
+            monitor=model.monitor, verbose=True, patience=15, mode="max"
         ))
     else:
         callbacks.append(ModelCheckpoint(
@@ -197,7 +197,7 @@ def configure_callbacks(
             mode="min"
         ))
         callbacks.append(EarlyStopping(
-            monitor=model.monitor, verbose=True, patience=50, mode="min"
+            monitor=model.monitor, verbose=True, patience=15, mode="min"
         ))
     
     # Setup callback for logging configuration
@@ -299,6 +299,10 @@ def main():
     # (e.g., when freezing the base model or using LoRA adapters).
     if not hasattr(trainer_opt, 'strategy') or trainer_opt.strategy is None:
         trainer_opt.strategy = 'ddp_find_unused_parameters_true'
+    # from pytorch_lightning.strategies import DDPStrategy
+    # if not hasattr(trainer_opt, "strategy") or trainer_opt.strategy is None:
+    #     trainer_opt.strategy = DDPStrategy(find_unused_parameters=True)
+
     lightning_config.trainer = trainer_config
     
     # Instantiate data module
@@ -334,7 +338,11 @@ def main():
             if not opt.no_test:
                 trainer.test(model, data)
     elif opt.test:
-        trainer.test(model, data, ckpt_path=ckpt)
+        #trainer.validate(model, data, ckpt_path=ckpt) # trainer.test(model, data, ckpt_path=ckpt)
+        # if you want to test on train data add these and comment above
+        print("!!! OVERRIDE: Testing on TRAIN data set (as requested) !!!")
+        train_loader = data.train_dataloader()
+        trainer.test(model, dataloaders=train_loader, ckpt_path=ckpt)
 
 
 if __name__ == '__main__':
