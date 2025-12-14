@@ -73,38 +73,47 @@ data:
     train:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: preprocess/Phoenix14T
-        vid_root: dataset/Phoenix14T
+        anno_root: ./preprocess/Phoenix14T
+        vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
+        pose_root: pose_Phoenix14T
         mode: train
         spatial: true
-        spatiotemporal: true 
+        spatiotemporal: true
+        pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
+        pose_postfix: ""
         
     validation:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: preprocess/Phoenix14T
-        vid_root: dataset/Phoenix14T
+        anno_root: ./preprocess/Phoenix14T
+        vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        mode: dev
+        pose_root: pose_Phoenix14T
+        mode: test
         spatial: true
         spatiotemporal: true
+        pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
+        pose_postfix: ""
     
     test:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: preprocess/Phoenix14T
-        vid_root: dataset/Phoenix14T
+        anno_root: ./preprocess/Phoenix14T
+        vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
+        pose_root: pose_Phoenix14T
         mode: test
         spatial: true
         spatiotemporal: true
+        pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
+        pose_postfix: ""
