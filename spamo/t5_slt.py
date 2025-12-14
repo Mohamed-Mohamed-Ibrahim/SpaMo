@@ -114,7 +114,8 @@ class FlanT5SLT(AbstractSLT):
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
         print("==="*40)
-        print(use_data_augmentation)
+        print(f"use_data_augmentation: {use_data_augmentation}")
+        print(f"sign_cl_loss{sign_cl_loss}")
         print("==="*40)
         
         # Save hyperparameters (ensures self.hparams.lr exists)
