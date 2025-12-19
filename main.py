@@ -85,7 +85,7 @@ def configure_callbacks(opt: argparse.Namespace, model: pl.LightningModule, ckpt
             mode="max"
         ))
         callbacks.append(EarlyStopping(
-            monitor=model.monitor, verbose=True, patience=15, mode="max"
+            monitor=model.monitor, verbose=True, patience=60, mode="max"
         ))
     else:
         callbacks.append(ModelCheckpoint(
@@ -97,7 +97,7 @@ def configure_callbacks(opt: argparse.Namespace, model: pl.LightningModule, ckpt
             mode="min"
         ))
         callbacks.append(EarlyStopping(
-            monitor=model.monitor, verbose=True, patience=15, mode="min"
+            monitor=model.monitor, verbose=True, patience=60, mode="min"
         ))
     
     callbacks.append(SetupCallback(
@@ -205,12 +205,10 @@ def main():
             if not opt.no_test:
                 trainer.test(model, data)
     elif opt.test:
-        # if you want to test on train data add these and comment above
         print("!!! OVERRIDE: Testing on TRAIN data set (as requested) !!!")
         train_loader = data.train_dataloader()
         trainer.test(model, dataloaders=train_loader, ckpt_path=ckpt)
         trainer.validate(model, data, ckpt_path=ckpt) 
-        trainer.test(model, data, ckpt_path=ckpt)
 
 
 if __name__ == '__main__':
