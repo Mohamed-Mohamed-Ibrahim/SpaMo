@@ -85,7 +85,7 @@ def configure_callbacks(opt: argparse.Namespace, model: pl.LightningModule, ckpt
             mode="max"
         ))
         callbacks.append(EarlyStopping(
-            monitor=model.monitor, verbose=True, patience=60, mode="max"
+            monitor=model.monitor, verbose=True, patience=20, mode="max"
         ))
     else:
         callbacks.append(ModelCheckpoint(
@@ -97,7 +97,7 @@ def configure_callbacks(opt: argparse.Namespace, model: pl.LightningModule, ckpt
             mode="min"
         ))
         callbacks.append(EarlyStopping(
-            monitor=model.monitor, verbose=True, patience=60, mode="min"
+            monitor=model.monitor, verbose=True, patience=20, mode="min"
         ))
     
     callbacks.append(SetupCallback(
