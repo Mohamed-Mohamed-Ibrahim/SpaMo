@@ -1,13 +1,13 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 6.0e-4
+    lr: 3.0e-4
     monitor: val/bleu4
 
-    model_name: MBZUAI/LaMini-Flan-T5-783M
+    model_name: google/flan-t5-base
     cache_dir: /data3/models
 
-    inter_hidden: 512
+    inter_hidden: 768
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
@@ -18,15 +18,15 @@ model:
     tuning_type: lora
 
     # Reduce model capacity
-    lora_r: 64
-    lora_alpha: 128
+    lora_r: 32
+    lora_alpha: 64
 
     # Increase regularization
-    lora_dropout: 0.05
-    weight_decay: 0.0
+    lora_dropout: 0.1
+    weight_decay: 0.01
 
     fusion_mode: joint
-    warm_up_steps: 600
+    warm_up_steps: 1000
     cross_modal_align: true
     combined_loss: true
 
