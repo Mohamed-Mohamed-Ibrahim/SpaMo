@@ -7,7 +7,7 @@ model:
     model_name: MBZUAI/LaMini-Flan-T5-783M
     cache_dir: /data3/models
 
-    inter_hidden: 768
+    inter_hidden: 512
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
@@ -18,21 +18,21 @@ model:
     tuning_type: lora
 
     # Reduce model capacity
-    lora_r: 8
-    lora_alpha: 16
+    lora_r: 64
+    lora_alpha: 128
 
     # Increase regularization
-    lora_dropout: 0.3
-    weight_decay: 0.1
+    lora_dropout: 0.05
+    weight_decay: 0.0
 
     fusion_mode: joint
-    warm_up_steps: 1000
+    warm_up_steps: 600
     cross_modal_align: true
     combined_loss: true
 
     alpha: 1.0
 
-    sign_cl_loss: true
+    sign_cl_loss: false
     sign_cl_alpha: 0.1
     sign_cl_temperature: 0.3
     sign_cl_temporal_window: 12
@@ -41,7 +41,7 @@ model:
     use_in_context: false
     num_in_context: 0
     # NEW AUGMENTATION PARAMETERS
-    use_data_augmentation: true
+    use_data_augmentation: false
 
     augmentation_prob: 0.5       # Apply augmentation to 50% of batches
     aug_frame_prob: 0.1          # Drop 10% of frames
@@ -74,7 +74,7 @@ data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
     batch_size: 8
-    num_workers: 2
+    num_workers: 4
   
     train:
       target: dataset.p14t.Phoenix14T
@@ -87,7 +87,7 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -103,7 +103,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -119,7 +119,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
