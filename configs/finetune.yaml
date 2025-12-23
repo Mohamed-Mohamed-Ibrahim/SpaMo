@@ -26,7 +26,7 @@ model:
     weight_decay: 0.01
 
     fusion_mode: joint
-    warm_up_steps: 1000
+    warm_up_steps: 1500
     cross_modal_align: true
     combined_loss: true
 
@@ -87,7 +87,7 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -103,7 +103,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -119,7 +119,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
