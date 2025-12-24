@@ -424,15 +424,6 @@ class FlanT5SLT(AbstractSLT):
         return visual_outputs, visual_masks
 
     def get_inputs(self, batch: List) -> Dict:
-        """
-        Process batch inputs into a structured dictionary.
-        
-        Args:
-            batch: Raw batch from dataloader
-
-        Returns:
-            Processed inputs dictionary
-        """
         pixel_values, glor_values, masks, ids = [], [], [], []
         pose_values = []
         texts, glosses = [], []
@@ -448,30 +439,6 @@ class FlanT5SLT(AbstractSLT):
             nframe = math.ceil(sample['num_frames'] / self.frame_sample_rate)
             pval = sample['pixel_value'][::self.frame_sample_rate]
 
-            ids.append(sample['id'])
-            texts.append(sample['text'].lower())
-            glosses.append(sample['gloss'])
-            langs.append(sample['lang'])
-
-            # <--- FIX: Clean context handling
-            _ex_lang_trans = []
-            if self.num_in_context > 0:
-                if 'en_text' in sample and 'text' in sample:
-                    _ex_lang_trans = [
-                        f"{sample.get('en_text','')}={sample['text']}",
-                        f"{sample.get('fr_text','')}={sample['text']}",
-                        f"{sample.get('es_text','')}={sample['text']}"
-                    ]
-            
-                # Keep only the number requested
-                trimmed = _ex_lang_trans[:self.num_in_context]
-            
-                # Join them into one string
-                ex_lang_translations.append(' '.join(trimmed))
-            else:
-                ex_lang_translations.append("")
-
-
             if nframe > max_frame_len:
                 nframe = max_frame_len
                 start_index = random.randint(0, pval.size(0) - max_frame_len)
@@ -480,7 +447,29 @@ class FlanT5SLT(AbstractSLT):
             num_frames.append(nframe)
             pixel_values.append(pval)
 
-            # Removed Pose and I3D processing blocks
+            ids.append(sample['id'])
+            texts.append(sample['text'].lower())
+            glosses.append(sample['gloss'])
+            langs.append(sample['lang'])
+
+            context_str = ""
+            if self.num_in_context > 0:
+                candidates = []
+                target_text = sample.get('text', '')
+
+                if sample.get('en_text'):
+                    candidates.append(f"{sample['en_text']}={target_text}")
+                
+                if sample.get('fr_text'):
+                    candidates.append(f"{sample['fr_text']}={target_text}")
+                
+                if sample.get('es_text'):
+                    candidates.append(f"{sample['es_text']}={target_text}")
+
+                selected_candidates = candidates[:self.num_in_context]
+                context_str = " ".join(selected_candidates)
+            
+            ex_lang_translations.append(context_str)
 
             if sample.get('glor_value') is not None:
                 if isinstance(sample['glor_value'], list):
@@ -490,7 +479,6 @@ class FlanT5SLT(AbstractSLT):
                     glor_values.append(sample['glor_value'])
                     glor_lengths.append(len(sample['glor_value']))
 
-        # Only shuffle if we are actually USING context
         if self.use_in_context and len(ex_lang_translations) > 1:
             ex_lang_translations = derangement(ex_lang_translations)
 
