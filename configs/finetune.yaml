@@ -32,7 +32,7 @@ model:
 
     alpha: 1.0
 
-    sign_cl_loss: true
+    sign_cl_loss: false
     sign_cl_alpha: 0.1
     sign_cl_temperature: 0.3
     sign_cl_temporal_window: 12
@@ -41,7 +41,7 @@ model:
     use_in_context: false
     num_in_context: 0
     # NEW AUGMENTATION PARAMETERS
-    use_data_augmentation: false
+    use_data_augmentation: true
 
     augmentation_prob: 0.5       # Apply augmentation to 50% of batches
     aug_frame_prob: 0.1          # Drop 10% of frames
