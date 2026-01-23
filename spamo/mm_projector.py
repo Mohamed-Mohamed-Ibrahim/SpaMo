@@ -73,9 +73,9 @@ class AdaptiveFusion(nn.Module):
         
         # Extract lambda weights (using detach to prevent gradient flow through weights)
         # This allows the fusion to be adaptive but doesn't backprop through lambda computation
-        lambda1 = fm_sigmoid.clone().detach()[:, :, 0].unsqueeze(-1)  # [B, T, 1]
-        lambda2 = fm_sigmoid.clone().detach()[:, :, 1].unsqueeze(-1)  # [B, T, 1]
-        lambda3 = fm_sigmoid.clone().detach()[:, :, 2].unsqueeze(-1)  # [B, T, 1]
+        lambda1 = fm_sigmoid[:, :, 0].unsqueeze(-1)  # [B, T, 1]
+        lambda2 = fm_sigmoid[:, :, 1].unsqueeze(-1)  # [B, T, 1]
+        lambda3 = fm_sigmoid[:, :, 2].unsqueeze(-1)  # [B, T, 1]
         
         # Adaptive fusion formula
         fused_output = (input_1 + input_2 + input_3) + \
