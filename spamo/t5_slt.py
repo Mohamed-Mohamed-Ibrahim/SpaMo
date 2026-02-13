@@ -516,135 +516,84 @@ class FlanT5SLT(AbstractSLT):
             'glor_lengths': glor_lengths,
         }
 
-    def visual_textual_align(self, visual_outputs: torch.Tensor, visual_masks: torch.Tensor, samples: Dict) -> torch.Tensor:
-        # 1. Get Embeddings (Same as before)
-        output_tokens = self.t5_tokenizer(samples['text'], padding="longest", return_tensors="pt").to(self.device)
-        #text_embeds = self.t5_model.encoder.embed_tokens(output_tokens.input_ids)
-        with torch.no_grad():   # CRITICAL
+    def visual_textual_align(self, visual_outputs, visual_masks, samples):
+
+        output_tokens = self.t5_tokenizer(
+            samples['text'],
+            padding="longest",
+            return_tensors="pt"
+        ).to(self.device)
+    
+        with torch.no_grad():
             enc = self.t5_model.encoder(
                 input_ids=output_tokens.input_ids,
                 attention_mask=output_tokens.attention_mask,
                 return_dict=True
             )
-            text_feat = enc.last_hidden_state.mean(1)
-        
-        # 2. Pool and Normalize (Same as before)
-        image_feat = F.normalize(visual_outputs.mean(1), dim=-1)
-        text_feat = F.normalize(text_embeds.mean(1), dim=-1)
-
-        # === CHANGE 2: SigLIP Logic ===
-        # Batch size
-        B = image_feat.size(0)
-        
-        # Calculate logits: (Text @ Image.T) * Scale + Bias
-        logits = (torch.matmul(text_feat, image_feat.t()) * self.logit_scale.exp()) + self.siglip_bias
-        
-        # Create labels: Diagonal is 1, rest is -1
-        # 2*eye - 1  ->  {1, -1}
+    
+            hidden = enc.last_hidden_state
+            mask = output_tokens.attention_mask.unsqueeze(-1)
+            text_feat = (hidden * mask).sum(1) / mask.sum(1)
+    
+        # masked mean for visual
+        mask = visual_masks.unsqueeze(-1)
+        image_feat = (visual_outputs * mask).sum(1) / mask.sum(1)
+    
+        image_feat = F.normalize(image_feat, dim=-1)
+        text_feat  = F.normalize(text_feat, dim=-1)
+    
+        logits = torch.matmul(text_feat, image_feat.t())
+        logits = logits * self.logit_scale.exp() + self.siglip_bias
+    
+        B = logits.size(0)
         labels = 2 * torch.eye(B, device=self.device) - 1
-        
-        # SigLIP Loss: -log(sigmoid(logits * labels)) summed and divided by Batch Size
+    
         loss = -F.logsigmoid(labels * logits).sum() / B
-        # ==============================
-        
         return loss
 
+
+
+    
     def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
         visual_outputs, visual_masks = self.prepare_visual_inputs(inputs)
+    
+        # ===== ALWAYS project BEFORE anything =====
         visual_outputs = self.fusion_proj(visual_outputs)
-        
+    
         log_dict = {}
-        
+    
+        # ===== SIGLIP / ALIGNMENT PART =====
         if self.cross_modal_align:
-            if self.warm_up_steps is None and not self.combined_loss:
-                with torch.no_grad():
-                    input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
-                        visual_outputs, visual_masks, inputs, split, batch_idx
-                    )
-                
-                cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
-                log_dict[f"{split}/contra_loss"] = cont_loss
-                loss = cont_loss
-                
-            elif self.warm_up_steps is not None and self.global_step <= self.warm_up_steps:
-                with torch.no_grad():
-                    input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
-                        visual_outputs, visual_masks, inputs, split, batch_idx
-                    )
-                
-                # Visual-textual contrastive loss (CLIP-style)
-                cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
-                log_dict[f"{split}/contra_loss"] = cont_loss
-                loss = cont_loss
-                
-                # Sign Contrastive Learning loss (SignCL) - temporal neighborhoods
-                if (
-                    self.sign_cl_loss
-                    and self.sign_cl is not None
-                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
-                ):
-                    sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
-                    if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
-                        loss = loss + self.sign_cl_alpha * sign_cl_loss_val
-                        log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
-                        log_dict[f"{split}/warmup_total_loss"] = loss
-                
-            else:
-                input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
-                    visual_outputs, visual_masks, inputs, split, batch_idx
-                )
-                
-                outputs = self.t5_model(
-                    inputs_embeds=input_embeds,
-                    attention_mask=input_masks,
-                    decoder_attention_mask=output_tokens.attention_mask,
-                    labels=targets,
-                    output_hidden_states=True,
-                    return_dict=True
-                )
-                
-                t5_loss = outputs.loss
-                log_dict[f"{split}/loss"] = t5_loss
-                
-                # Add visual-textual contrastive component
-                cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
-                loss = t5_loss + self.alpha * cont_loss
-                log_dict[f"{split}/contra_loss"] = cont_loss
-                
-                # Add SignCL loss if enabled (reduces representation density)
-                if (
-                    self.sign_cl_loss
-                    and self.sign_cl is not None
-                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
-                ):
-                    sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
-                    if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
-                        loss = loss + self.sign_cl_alpha * sign_cl_loss_val
-                        log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
-                
-                log_dict[f"{split}/combined_loss"] = loss
+            cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
+            log_dict[f"{split}/contra_loss"] = cont_loss
         else:
-            input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
-                visual_outputs, visual_masks, inputs, split, batch_idx
-            )
-            
-            outputs = self.t5_model(
-                inputs_embeds=input_embeds,
-                attention_mask=input_masks,
-                decoder_attention_mask=output_tokens.attention_mask,
-                labels=targets,
-                output_hidden_states=True,
-                return_dict=True
-            )
-            
-            loss = outputs.loss
-            log_dict[f"{split}/loss"] = loss
-
+            cont_loss = None
+    
+        # ===== PREPARE T5 INPUTS =====
+        input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
+            visual_outputs, visual_masks, inputs, split, batch_idx
+        )
+    
+        outputs = self.t5_model(
+            inputs_embeds=input_embeds,
+            attention_mask=input_masks,
+            decoder_attention_mask=output_tokens.attention_mask,
+            labels=targets,
+            return_dict=True
+        )
+    
+        t5_loss = outputs.loss
+        log_dict[f"{split}/loss"] = t5_loss
+    
+        # ===== FINAL LOSS COMBINATION =====
+        if cont_loss is not None:
+            loss = t5_loss + self.alpha * cont_loss
+            log_dict[f"{split}/combined_loss"] = loss
+        else:
+            loss = t5_loss
+    
+        # ===== GENERATION FOR VAL/TEST =====
         if split != "train":
-            input_embeds, input_masks, _, _ = self.prepare_inputs(
-                visual_outputs, visual_masks, inputs, split, batch_idx
-            )
-            
             generated = self.t5_model.generate(
                 inputs_embeds=input_embeds,
                 attention_mask=input_masks,
@@ -653,27 +602,26 @@ class FlanT5SLT(AbstractSLT):
                 top_p=0.9,
                 do_sample=True,
             )
-            
-            generated_strings = self.t5_tokenizer.batch_decode(generated, skip_special_tokens=True)
-            generated_strings = [gen.lower() for gen in generated_strings]
-            
-            reference_strings = self.t5_tokenizer.batch_decode(output_tokens.input_ids, skip_special_tokens=True)
-            reference_strings = [ref.lower() for ref in reference_strings]
-
-            self.generated.extend(generated_strings)
-            self.references.extend(reference_strings)
-
+    
+            generated_strings = self.t5_tokenizer.batch_decode(
+                generated, skip_special_tokens=True
+            )
+            reference_strings = self.t5_tokenizer.batch_decode(
+                output_tokens.input_ids, skip_special_tokens=True
+            )
+    
+            self.generated.extend([g.lower() for g in generated_strings])
+            self.references.extend([r.lower() for r in reference_strings])
+    
         return loss, log_dict
 
     def on_validation_epoch_end(self) -> None:
-        # Print some examples
         print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
             print(f"\033[94mReference: {self.references[i]}\033[0m") 
             print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
             print("-" * 50)
             
-        # Calculate evaluation metrics
         eval_res = evaluate_results(
             predictions=self.generated,
             references=self.references,
@@ -681,30 +629,24 @@ class FlanT5SLT(AbstractSLT):
             device=self.device
         )
         
-        # [CRITICAL FIX] Convert CPU numbers to GPU Tensors
+        # [CRITICAL RESTORATION] Convert to GPU Tensors for DDP
         cuda_res = {}
         for k, v in eval_res.items():
-            # Use the prefix if you want, or just keep it simple for val
-            # For consistency with your test logic, let's use the prefix:
-            new_key = f"{self.eval_prefix}/{k}"
-
             if isinstance(v, torch.Tensor):
-                cuda_res[new_key] = v.to(self.device)
+                cuda_res[k] = v.to(self.device)
             else:
-                cuda_res[new_key] = torch.tensor(float(v), device=self.device)
-
-        # Now safe to log
+                cuda_res[k] = torch.tensor(float(v), device=self.device)
+        
         self.log_dict(cuda_res, sync_dist=True)
-
         self.set_container()
+
     def on_test_epoch_end(self) -> None:
         print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
-            print(f"\033[94mReference: {self.references[i]}\033[0m")
-            print(f"\033[92mGenerated: {self.generated[i]}\033[0m")
+            print(f"\033[94mReference: {self.references[i]}\033[0m") 
+            print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
             print("-" * 50)
             
-        # Calculate evaluation metrics (Returns CPU numbers)
         eval_res = evaluate_results(
             predictions=self.generated,
             references=self.references,
@@ -712,22 +654,15 @@ class FlanT5SLT(AbstractSLT):
             device=self.device
         )
 
-        # --- FIX: Convert to GPU Tensors & Rename ---
-        final_res = {}
+        # [CRITICAL RESTORATION] Convert to GPU Tensors for DDP
+        cuda_res = {}
         for k, v in eval_res.items():
-            # 1. Create the new key name using your prefix (e.g., "train/bleu4")
-            new_key = f"{self.eval_prefix}/{k}"
-            
-            # 2. FORCE move to GPU to prevent crash
             if isinstance(v, torch.Tensor):
-                final_res[new_key] = v.to(self.device)
+                cuda_res[k] = v.to(self.device)
             else:
-                # Convert float/int to Tensor on GPU
-                final_res[new_key] = torch.tensor(float(v), device=self.device)
-    
-        # Now it is safe to log with sync_dist=True
-        self.log_dict(final_res, sync_dist=True)
-        
+                cuda_res[k] = torch.tensor(float(v), device=self.device)
+
+        self.log_dict(cuda_res, sync_dist=True)
         self.set_container()
 
     def configure_optimizers(self):
