@@ -104,11 +104,11 @@ class FlanT5SLT(AbstractSLT):
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
 
-        self.eval_prefix = "unknown"
+        #self.eval_prefix = "unknown"
         # <--- FIX: Force disable context if count is 0
         if self.num_in_context == 0:
             self.use_in_context = False
-
+        
         
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
@@ -519,7 +519,14 @@ class FlanT5SLT(AbstractSLT):
     def visual_textual_align(self, visual_outputs: torch.Tensor, visual_masks: torch.Tensor, samples: Dict) -> torch.Tensor:
         # 1. Get Embeddings (Same as before)
         output_tokens = self.t5_tokenizer(samples['text'], padding="longest", return_tensors="pt").to(self.device)
-        text_embeds = self.t5_model.encoder.embed_tokens(output_tokens.input_ids)
+        #text_embeds = self.t5_model.encoder.embed_tokens(output_tokens.input_ids)
+        with torch.no_grad():   # CRITICAL
+            enc = self.t5_model.encoder(
+                input_ids=output_tokens.input_ids,
+                attention_mask=output_tokens.attention_mask,
+                return_dict=True
+            )
+            text_feat = enc.last_hidden_state.mean(1)
         
         # 2. Pool and Normalize (Same as before)
         image_feat = F.normalize(visual_outputs.mean(1), dim=-1)
