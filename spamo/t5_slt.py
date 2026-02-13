@@ -103,7 +103,8 @@ class FlanT5SLT(AbstractSLT):
         
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
-        
+
+        self.eval_prefix = "unknown"
         # <--- FIX: Force disable context if count is 0
         if self.num_in_context == 0:
             self.use_in_context = False
