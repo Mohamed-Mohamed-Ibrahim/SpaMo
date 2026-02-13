@@ -92,9 +92,36 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
         
     def load_pretrained_weights(self, checkpoint_path):
+        print(f"Loading checkpoint from {checkpoint_path}...")
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        self.load_state_dict(checkpoint['state_dict'])
-        print(f'Checkpoint is loaded from {checkpoint_path}.')
+        
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        else:
+            state_dict = checkpoint
+
+        model_dict = self.state_dict()
+        
+        # 1. Filter out keys that have shape mismatches
+        pretrained_dict = {}
+        mismatched_keys = []
+        for k, v in state_dict.items():
+            if k in model_dict:
+                if v.shape == model_dict[k].shape:
+                    pretrained_dict[k] = v
+                else:
+                    mismatched_keys.append(k)
+        
+        # 2. Update the current model with matching weights
+        model_dict.update(pretrained_dict) 
+        
+        # 3. Load with strict=False (Crucial step)
+        self.load_state_dict(model_dict, strict=False)
+        
+        print(f"Successfully loaded {len(pretrained_dict)} layers.")
+        if len(mismatched_keys) > 0:
+            print(f"[WARNING] Skipped {len(mismatched_keys)} layers due to shape mismatch (e.g., {mismatched_keys[0]}).")
+            print("The code will now RUN, but translations will be random because the visual adapter is untrained.")
 
     def _apply_lora(self) -> None:
         """Apply LoRA adapter to the T5 model."""
