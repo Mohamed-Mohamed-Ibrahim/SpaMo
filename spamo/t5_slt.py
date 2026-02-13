@@ -583,14 +583,13 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
 
     def on_test_epoch_end(self) -> None:
-        # Print some examples of generated translations and references with colors
         print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
-            print(f"\033[94mReference: {self.references[i]}\033[0m")  # Blue color for references
-            print(f"\033[92mGenerated: {self.generated[i]}\033[0m")    # Green color for generated
+            print(f"\033[94mReference: {self.references[i]}\033[0m")
+            print(f"\033[92mGenerated: {self.generated[i]}\033[0m")
             print("-" * 50)
             
-        # Calculate evaluation metrics
+        # Calculate evaluation metrics (Returns CPU numbers)
         eval_res = evaluate_results(
             predictions=self.generated,
             references=self.references,
@@ -598,7 +597,22 @@ class FlanT5SLT(AbstractSLT):
             device=self.device
         )
 
-        self.log_dict(eval_res, sync_dist=True)
+        # --- FIX: Convert to GPU Tensors & Rename ---
+        final_res = {}
+        for k, v in eval_res.items():
+            # 1. Create the new key name using your prefix (e.g., "train/bleu4")
+            new_key = f"{self.eval_prefix}/{k}"
+            
+            # 2. FORCE move to GPU to prevent crash
+            if isinstance(v, torch.Tensor):
+                final_res[new_key] = v.to(self.device)
+            else:
+                # Convert float/int to Tensor on GPU
+                final_res[new_key] = torch.tensor(float(v), device=self.device)
+    
+        # Now it is safe to log with sync_dist=True
+        self.log_dict(final_res, sync_dist=True)
+        
         self.set_container()
 
     def configure_optimizers(self):
