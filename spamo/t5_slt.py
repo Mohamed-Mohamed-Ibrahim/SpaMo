@@ -148,7 +148,7 @@ class FlanT5SLT(AbstractSLT):
         self.logit_scale = nn.Parameter(torch.tensor(2.6592)) 
         
         # Learnable Bias (Critical for SigLIP convergence)
-        self.siglip_bias = nn.Parameter(torch.tensor(-10.0))
+        self.siglip_bias = nn.Parameter(torch.tensor(-2.0))
 
         self.set_container()
         
@@ -224,7 +224,7 @@ class FlanT5SLT(AbstractSLT):
         else:
             self.sign_cl = None
 
-        self.logit_scale = nn.Parameter(torch.tensor(2.6592))
+        
 
     def prepare_inputs(
         self, 
