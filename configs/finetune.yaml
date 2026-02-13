@@ -62,7 +62,7 @@ data:
     validation:
       target: dataset.how2sign.How2Sign
       params:
-        anno_root: SpaMo/preprocess/How2Sign
+        anno_root: ./preprocess/How2Sign
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/how2sign_output_test_spatial_features/kaggle/working/clip-vit-large-patch14_feat_How2Sign/test
         mae_feat_root: /kaggle/input/how2sign-features/how2sign_motion_features/kaggle/working/how2sign_motion_features/mae_feat_How2Sign/test
