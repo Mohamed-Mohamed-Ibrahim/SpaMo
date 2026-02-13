@@ -80,6 +80,7 @@ class FlanT5SLT(AbstractSLT):
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
+        self.eval_prefix = "unknown"
         
         self.prepare_models(model_name)
 
@@ -559,11 +560,11 @@ class FlanT5SLT(AbstractSLT):
         return loss, log_dict
 
     def on_validation_epoch_end(self) -> None:
-        # Print some examples of generated translations and references with colors
+        # Print some examples
         print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
-            print(f"\033[94mReference: {self.references[i]}\033[0m")  # Blue color for references
-            print(f"\033[92mGenerated: {self.generated[i]}\033[0m")    # Green color for generated
+            print(f"\033[94mReference: {self.references[i]}\033[0m") 
+            print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
             print("-" * 50)
             
         # Calculate evaluation metrics
@@ -571,17 +572,25 @@ class FlanT5SLT(AbstractSLT):
             predictions=self.generated,
             references=self.references,
             split='val',
-            # tokenizer='zh' if outputs['lang'][0] == 'Chinese' else '13a',
             device=self.device
         )
         
-        # Add evaluation results to logging
-        # log_dict.update(eval_res)
+        # [CRITICAL FIX] Convert CPU numbers to GPU Tensors
+        cuda_res = {}
+        for k, v in eval_res.items():
+            # Use the prefix if you want, or just keep it simple for val
+            # For consistency with your test logic, let's use the prefix:
+            new_key = f"{self.eval_prefix}/{k}"
 
-        self.log_dict(eval_res, sync_dist=True)
+            if isinstance(v, torch.Tensor):
+                cuda_res[new_key] = v.to(self.device)
+            else:
+                cuda_res[new_key] = torch.tensor(float(v), device=self.device)
+
+        # Now safe to log
+        self.log_dict(cuda_res, sync_dist=True)
 
         self.set_container()
-
     def on_test_epoch_end(self) -> None:
         print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
