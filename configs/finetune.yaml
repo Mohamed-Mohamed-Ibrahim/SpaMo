@@ -44,7 +44,7 @@ model:
     use_data_augmentation: true
 
     augmentation_prob: 0.5       # Apply augmentation to 50% of batches
-    aug_frame_prob: 0.15          # Drop frames
+    aug_frame_prob: 0.2          # Drop frames
     aug_span_prob: 0.0           # Mask of spans
     aug_channel_prob: 0.0       # feature channels
     # # Stronger augmentation
