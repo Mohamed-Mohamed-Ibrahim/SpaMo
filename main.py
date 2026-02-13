@@ -329,22 +329,7 @@ def main():
             if not opt.no_test:
                 trainer.test(model, data)
     elif opt.test:
-        # 1. Test on TRAIN data
-        print("!!! OVERRIDE: Testing on TRAIN data set !!!")
-        
-        # Set a custom flag in your model
-        model.eval_prefix = "train" 
-        
-        train_loader = data.train_dataloader()
-        trainer.test(model, dataloaders=train_loader, ckpt_path=ckpt)
-
-        # 2. Validate
-        model.eval_prefix = "val" # Reset
-        trainer.validate(model, data, ckpt_path=ckpt) 
-
-        # # 3. Test on TEST data
-        # model.eval_prefix = "test" # Reset
-        # trainer.test(model, data, ckpt_path=ckpt)
+        trainer.test(model, data, ckpt_path=ckpt)
 
 
 if __name__ == '__main__':
