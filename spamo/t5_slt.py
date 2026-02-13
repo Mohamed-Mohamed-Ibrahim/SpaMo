@@ -140,7 +140,14 @@ class FlanT5SLT(AbstractSLT):
             print(
                 f"[AUG] Enabled | frame={aug_frame_prob}, span={aug_span_prob}, channel={aug_channel_prob}"
             )
-
+            
+        # --- SIGLIP PARAMETERS ---
+        # Initialize logit scale (temperature)
+        # ln(10) ≈ 2.3 is a common starting point for SigLIP
+        self.logit_scale = nn.Parameter(torch.tensor(2.6592)) 
+        
+        # Learnable Bias (Critical for SigLIP convergence)
+        self.siglip_bias = nn.Parameter(torch.tensor(-10.0))
 
         self.set_container()
         
@@ -509,24 +516,29 @@ class FlanT5SLT(AbstractSLT):
         }
 
     def visual_textual_align(self, visual_outputs: torch.Tensor, visual_masks: torch.Tensor, samples: Dict) -> torch.Tensor:
-        output_tokens = self.t5_tokenizer(
-            samples['text'],
-            padding="longest",
-            return_tensors="pt",
-        ).to(self.device)
-        
+        # 1. Get Embeddings (Same as before)
+        output_tokens = self.t5_tokenizer(samples['text'], padding="longest", return_tensors="pt").to(self.device)
         text_embeds = self.t5_model.encoder.embed_tokens(output_tokens.input_ids)
         
-        image_embeds = visual_outputs.mean(1) 
-        text_embeds = text_embeds.mean(1)
+        # 2. Pool and Normalize (Same as before)
+        image_feat = F.normalize(visual_outputs.mean(1), dim=-1)
+        text_feat = F.normalize(text_embeds.mean(1), dim=-1)
+
+        # === CHANGE 2: SigLIP Logic ===
+        # Batch size
+        B = image_feat.size(0)
         
-        image_embeds = F.normalize(image_embeds, dim=-1)
-        text_embeds = F.normalize(text_embeds, dim=-1)
-
-        logit_scale = self.logit_scale.exp()
-        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
-
-        loss = clip_loss(logits_per_text)
+        # Calculate logits: (Text @ Image.T) * Scale + Bias
+        logits = (torch.matmul(text_feat, image_feat.t()) * self.logit_scale.exp()) + self.siglip_bias
+        
+        # Create labels: Diagonal is 1, rest is -1
+        # 2*eye - 1  ->  {1, -1}
+        labels = 2 * torch.eye(B, device=self.device) - 1
+        
+        # SigLIP Loss: -log(sigmoid(logits * labels)) summed and divided by Batch Size
+        loss = -F.logsigmoid(labels * logits).sum() / B
+        # ==============================
+        
         return loss
 
     def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
@@ -646,12 +658,14 @@ class FlanT5SLT(AbstractSLT):
         return loss, log_dict
 
     def on_validation_epoch_end(self) -> None:
+        # Print some examples
         print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
             print(f"\033[94mReference: {self.references[i]}\033[0m") 
             print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
             print("-" * 50)
             
+        # Calculate evaluation metrics
         eval_res = evaluate_results(
             predictions=self.generated,
             references=self.references,
@@ -659,16 +673,30 @@ class FlanT5SLT(AbstractSLT):
             device=self.device
         )
         
-        self.log_dict(eval_res, sync_dist=True)
-        self.set_container()
+        # [CRITICAL FIX] Convert CPU numbers to GPU Tensors
+        cuda_res = {}
+        for k, v in eval_res.items():
+            # Use the prefix if you want, or just keep it simple for val
+            # For consistency with your test logic, let's use the prefix:
+            new_key = f"{self.eval_prefix}/{k}"
 
+            if isinstance(v, torch.Tensor):
+                cuda_res[new_key] = v.to(self.device)
+            else:
+                cuda_res[new_key] = torch.tensor(float(v), device=self.device)
+
+        # Now safe to log
+        self.log_dict(cuda_res, sync_dist=True)
+
+        self.set_container()
     def on_test_epoch_end(self) -> None:
         print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
-            print(f"\033[94mReference: {self.references[i]}\033[0m") 
-            print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
+            print(f"\033[94mReference: {self.references[i]}\033[0m")
+            print(f"\033[92mGenerated: {self.generated[i]}\033[0m")
             print("-" * 50)
             
+        # Calculate evaluation metrics (Returns CPU numbers)
         eval_res = evaluate_results(
             predictions=self.generated,
             references=self.references,
@@ -676,7 +704,22 @@ class FlanT5SLT(AbstractSLT):
             device=self.device
         )
 
-        self.log_dict(eval_res, sync_dist=True)
+        # --- FIX: Convert to GPU Tensors & Rename ---
+        final_res = {}
+        for k, v in eval_res.items():
+            # 1. Create the new key name using your prefix (e.g., "train/bleu4")
+            new_key = f"{self.eval_prefix}/{k}"
+            
+            # 2. FORCE move to GPU to prevent crash
+            if isinstance(v, torch.Tensor):
+                final_res[new_key] = v.to(self.device)
+            else:
+                # Convert float/int to Tensor on GPU
+                final_res[new_key] = torch.tensor(float(v), device=self.device)
+    
+        # Now it is safe to log with sync_dist=True
+        self.log_dict(final_res, sync_dist=True)
+        
         self.set_container()
 
     def configure_optimizers(self):
