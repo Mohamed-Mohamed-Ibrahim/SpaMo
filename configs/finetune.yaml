@@ -57,7 +57,7 @@ data:
         spatial: true
         spatiotemporal: true
         spatial_postfix: ""
-        spatiotemporal_postfix: ""
+        spatiotemporal_postfix: "_overlap-8"
         
     validation:
       target: dataset.how2sign.How2Sign
@@ -70,7 +70,7 @@ data:
         spatial: true
         spatiotemporal: true
         spatial_postfix: ""
-        spatiotemporal_postfix: ""
+        spatiotemporal_postfix: "_overlap-8"
     
     test:
       target: dataset.how2sign.How2Sign
@@ -83,4 +83,4 @@ data:
         spatial: true
         spatiotemporal: true
         spatial_postfix: ""
-        spatiotemporal_postfix: ""
+        spatiotemporal_postfix: "_overlap-8"
