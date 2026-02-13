@@ -3,9 +3,11 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Any, Union
 
+
 class How2Sign(torch.utils.data.Dataset):
     """
     Dataset class for How2Sign test/eval splits.
+    Works similarly to Phoenix14T but adapted to How2Sign metadata structure.
     """
 
     def __init__(
@@ -33,13 +35,11 @@ class How2Sign(torch.utils.data.Dataset):
         self.spatial_postfix = spatial_postfix
         self.spatiotemporal_postfix = spatiotemporal_postfix
 
+        # Load annotation dictionary created during preprocessing
         if not self.anno_root.exists():
             raise FileNotFoundError(f"Annotation file not found: {self.anno_root}")
 
         self.data = np.load(self.anno_root, allow_pickle=True).item()
-
-        # ### FIX 1: Create a list of the actual keys present in the data
-        self.valid_keys = list(self.data.keys())
 
         self.spatial_dir = Path(self.feat_root)
         self.spatiotemporal_dir = Path(self.mae_feat_root)
@@ -86,11 +86,7 @@ class How2Sign(torch.utils.data.Dataset):
     # --------------- MAIN ENTRY ---------------------
 
     def __getitem__(self, idx):
-        # ### FIX 2: Use the valid_keys list to get the correct key
-        # OLD: d = self.data[idx]
-        actual_key = self.valid_keys[idx]
-        d = self.data[actual_key]
-        
+        d = self.data[idx]
         file_id = d["fileid"]
 
         pixel_value = self._load_spatial(file_id) if self.spatial else torch.tensor([])
@@ -116,8 +112,7 @@ class How2Sign(torch.utils.data.Dataset):
         }
 
     def __len__(self):
-        # ### FIX 3: Return length of keys list (safer)
-        return len(self.valid_keys)
+        return len(self.data)
 
     @staticmethod
     def collate_fn(batch):
