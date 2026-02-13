@@ -7,7 +7,7 @@ model:
     model_name: google/flan-t5-xl
     cache_dir: /data3/models
     inter_hidden: 768
-    input_size: 2048
+    input_size: 1024
     beam_size: 5
     max_frame_len: 512
     max_txt_len: 64
