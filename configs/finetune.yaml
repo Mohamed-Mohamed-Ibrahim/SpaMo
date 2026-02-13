@@ -51,7 +51,7 @@ data:
       params:
         anno_root: ./preprocess/How2Sign/test_info.npy
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
-        feat_root: /kaggle/input/how2sign_output_test_spatial_features/kaggle/working/clip-vit-large-patch14_feat_How2Sign/test
+        feat_root: /kaggle/input/how2sign-features/how2sign_output_test_spatial_features/kaggle/working/clip-vit-large-patch14_feat_How2Sign/test
         mae_feat_root: /kaggle/input/how2sign-features/how2sign_motion_features/kaggle/working/how2sign_motion_features/mae_feat_How2Sign/test
         mode: test
         spatial: true
@@ -64,7 +64,7 @@ data:
       params:
         anno_root: ./preprocess/How2Sign/test_info.npy
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
-        feat_root: /kaggle/input/how2sign_output_test_spatial_features/kaggle/working/clip-vit-large-patch14_feat_How2Sign/test
+        feat_root: /kaggle/input/how2sign-features/how2sign_output_test_spatial_features/kaggle/working/clip-vit-large-patch14_feat_How2Sign/test
         mae_feat_root: /kaggle/input/how2sign-features/how2sign_motion_features/kaggle/working/how2sign_motion_features/mae_feat_How2Sign/test
         mode: test
         spatial: true
@@ -77,7 +77,7 @@ data:
       params:
         anno_root: ./preprocess/How2Sign/test_info.npy
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
-        feat_root: /kaggle/input/how2sign_output_test_spatial_features/kaggle/working/clip-vit-large-patch14_feat_How2Sign/test
+        feat_root: /kaggle/input/how2sign-features/how2sign_output_test_spatial_features/kaggle/working/clip-vit-large-patch14_feat_How2Sign/test
         mae_feat_root: /kaggle/input/how2sign-features/how2sign_motion_features/kaggle/working/how2sign_motion_features/mae_feat_How2Sign/test
         mode: test
         spatial: true
