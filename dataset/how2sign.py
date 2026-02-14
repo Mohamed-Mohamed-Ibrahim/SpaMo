@@ -1,119 +1,170 @@
 import torch
+import os
 import numpy as np
+from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
-from typing import Dict, List, Any, Union
+from spamo.constants import *
+import random
 
 
 class How2Sign(torch.utils.data.Dataset):
     """
-    Dataset class for How2Sign test/eval splits.
-    Works similarly to Phoenix14T but adapted to How2Sign metadata structure.
+    Dataset class for the How2Sign sign language dataset.
+    
+    This class handles loading video features and annotations for How2Sign,
+    specifically adapted for the .npy metadata format where clips are pre-trimmed.
     """
-
     def __init__(
         self,
         anno_root: str,
         vid_root: str,
         feat_root: str,
         mae_feat_root: str,
-        mode: str = "test",
+        mode: str = 'test',
         spatial: bool = False,
         spatiotemporal: bool = False,
-        spatial_postfix: str = "",
-        spatiotemporal_postfix: Union[str, List[str]] = "",
+        spatial_postfix: str = '',
+        spatiotemporal_postfix: Union[str, List[str]] = ''
     ):
+        """
+        Initialize the How2Sign dataset.
+        """
         super().__init__()
-
+        
         self.anno_root = Path(anno_root)
         self.vid_root = Path(vid_root)
         self.feat_root = Path(feat_root)
         self.mae_feat_root = Path(mae_feat_root)
-
         self.mode = mode
         self.spatial = spatial
         self.spatiotemporal = spatiotemporal
         self.spatial_postfix = spatial_postfix
         self.spatiotemporal_postfix = spatiotemporal_postfix
-
-        # Load annotation dictionary created during preprocessing
-        if not self.anno_root.exists():
-            raise FileNotFoundError(f"Annotation file not found: {self.anno_root}")
-
-        self.data = np.load(self.anno_root, allow_pickle=True).item()
-
-        self.spatial_dir = Path(self.feat_root)
-        self.spatiotemporal_dir = Path(self.mae_feat_root)
-
+        
+        # Validate inputs
+        if not (spatial or spatiotemporal):
+            raise ValueError("At least one of 'spatial' or 'spatiotemporal' must be True")
+        
+        # Load annotations (Looking for test_info.npy)
+        anno_path = self.anno_root / f'{mode}_info.npy'
+        if not anno_path.exists():
+            raise FileNotFoundError(f"Annotation file not found: {anno_path}")
+        
+        full_data = np.load(anno_path, allow_pickle=True).item()
+        
+        # Filter out 'prefix' key and ensure we only have integer-indexed data
+        self.data = {k: v for k, v in full_data.items() if isinstance(k, (int, np.integer))}
+        
+        # Set up directory paths
+        # Note: If your feature reader saves directly into mode folders:
+        self.spatial_dir = self.feat_root / self.mode
+        self.spatiotemporal_dir = self.mae_feat_root / self.mode
+        
+        # Validate that key directories exist
         self._validate_directories()
 
-    def _validate_directories(self):
+    def _validate_directories(self) -> None:
+        """Validate that all necessary directories exist."""
         if self.spatial and not self.spatial_dir.exists():
-            raise FileNotFoundError(f"Spatial feature dir missing: {self.spatial_dir}")
-
+            raise FileNotFoundError(f"Spatial feature directory not found: {self.spatial_dir}")
+        
         if self.spatiotemporal and not self.spatiotemporal_dir.exists():
-            raise FileNotFoundError(
-                f"Spatiotemporal feature dir missing: {self.spatiotemporal_dir}"
-            )
+            raise FileNotFoundError(f"Spatiotemporal feature directory not found: {self.spatiotemporal_dir}")
 
-    # ------------ FEATURE LOADERS ------------------
+    def _get_feature_filename(self, file_id: str, start_time: Any, postfix: str) -> str:
+        """
+        Reconstruct the filename logic. 
+        If START_REALIGNED is null (None), it omits the timestamp to match standard saving.
+        """
+        if start_time is None or str(start_time).lower() == 'none':
+            return f"{file_id}{postfix}.npy"
+        return f"{file_id}_{start_time}{postfix}.npy"
 
-    def _load_spatial(self, file_id: str):
-        path = self.spatial_dir / f"{file_id}{self.spatial_postfix}.npy"
-        if not path.exists():
-            print(f"[WARN] Missing spatial feature: {path}")
-            return torch.tensor([])
-        return torch.tensor(np.load(path))
+    def _load_spatial_features(self, file_id: str, start_time: Any) -> torch.Tensor:
+        """Load spatial features for a given file ID."""
+        fname = self._get_feature_filename(file_id, start_time, self.spatial_postfix)
+        feat_path = self.spatial_dir / fname
+        
+        if not feat_path.exists():
+            raise FileNotFoundError(f"Spatial feature file not found: {feat_path}")
+        
+        return torch.tensor(np.load(feat_path))
 
-    def _load_spatiotemporal(self, file_id: str):
+    def _load_spatiotemporal_features(self, file_id: str, start_time: Any) -> Union[torch.Tensor, List[torch.Tensor]]:
+        """Load spatiotemporal features for a given file ID."""
         if isinstance(self.spatiotemporal_postfix, str):
-            path = self.spatiotemporal_dir / f"{file_id}{self.spatiotemporal_postfix}.npy"
-            if not path.exists():
-                print(f"[WARN] Missing motion feature: {path}")
-                return torch.tensor([])
-            return torch.tensor(np.load(path))
+            fname = self._get_feature_filename(file_id, start_time, self.spatiotemporal_postfix)
+            glor_path = self.spatiotemporal_dir / fname
+            if not glor_path.exists():
+                raise FileNotFoundError(f"Spatiotemporal feature file not found: {glor_path}")
+            return torch.tensor(np.load(glor_path))
+        else:
+            features = []
+            for postfix in self.spatiotemporal_postfix:
+                fname = self._get_feature_filename(file_id, start_time, postfix)
+                path = self.spatiotemporal_dir / fname
+                if not path.exists():
+                    raise FileNotFoundError(f"Spatiotemporal feature file not found: {path}")
+                features.append(torch.tensor(np.load(path)))
+            return features
 
-        # multiple features
-        tensors = []
-        for p in self.spatiotemporal_postfix:
-           fp = self.spatiotemporal_dir / f"{file_id}{p}.npy"
-           if not fp.exists():
-            print(f"[WARN] Missing motion feature: {fp}")
-            tensors.append(torch.tensor([]))
-           else:
-            tensors.append(torch.tensor(np.load(fp)))
-        return tensors
-
-    # --------------- MAIN ENTRY ---------------------
-
-    def __getitem__(self, idx):
-        d = self.data[idx]
-        file_id = d["fileid"]
-
-        pixel_value = self._load_spatial(file_id) if self.spatial else torch.tensor([])
-        glor_value = (
-            self._load_spatiotemporal(file_id)
-            if self.spatiotemporal
-            else torch.tensor([])
-        )
-
-        return {
-            "pixel_value": pixel_value,
-            "glor_value": glor_value,
-            "bool_mask_pos": None,
-            "text": d.get("text", ""),
-            "gloss": d.get("gloss", ""),
-            "id": file_id,
-            "num_frames": len(pixel_value)
-            if isinstance(pixel_value, torch.Tensor)
-            else 0,
-            "vid_path": str(self.vid_root),
-            "lang": "English",
-            "original_info": d,
+    def __getitem__(self, index: int) -> Dict[str, Any]:
+        """Get a dataset item by index."""
+        data = self.data[index]
+        file_id = data['fileid']
+        start_time = data['original_info'].get('START_REALIGNED', None)
+        
+        pixel_value = None
+        glor_value = None
+        
+        # Load spatial features if enabled
+        if self.spatial:
+            try:
+                pixel_value = self._load_spatial_features(file_id, start_time)
+            except FileNotFoundError as e:
+                print(f"Warning: {e}. Returning empty tensor.")
+                pixel_value = torch.tensor([])
+        
+        # Load spatiotemporal features if enabled
+        if self.spatiotemporal:
+            try:
+                glor_value = self._load_spatiotemporal_features(file_id, start_time)
+            except FileNotFoundError as e:
+                print(f"Warning: {e}. Returning empty tensor.")
+                if isinstance(self.spatiotemporal_postfix, str):
+                    glor_value = torch.tensor([])
+                else:
+                    glor_value = [torch.tensor([])]
+        
+        # Create result dictionary with How2Sign normalization
+        result = {
+            'pixel_value': pixel_value,
+            'glor_value': glor_value,
+            'bool_mask_pos': None,
+            'text': self._normalize_text(data['text']),
+            'gloss': data['gloss'],
+            'id': file_id,
+            'num_frames': len(pixel_value) if pixel_value is not None and pixel_value.numel() > 0 else 0,
+            'vid_path': data['folder'],
+            'lang': 'English'
         }
+        
+        # Store original data for reference
+        result['original_info'] = data
+        
+        return result
 
-    def __len__(self):
+    def _normalize_text(self, text: str) -> str:
+        """Normalize text for SLT (ensure period at end)."""
+        text = text.strip()
+        if not text.endswith('.'):
+            text = f"{text}."
+        return text
+
+    def __len__(self) -> int:
+        """Get the number of items in the dataset (prefix excluded)."""
         return len(self.data)
 
     @staticmethod
-    def collate_fn(batch):
+    def collate_fn(batch: List[Dict]) -> List[Dict]:
         return batch
