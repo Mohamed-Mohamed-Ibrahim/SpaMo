@@ -210,7 +210,7 @@ def main():
         train_loader = data.train_dataloader()
         trainer.test(model, dataloaders=train_loader, ckpt_path=ckpt)
         trainer.validate(model, data, ckpt_path=ckpt) 
-        trainer.test(model, data, ckpt_path=ckpt)
+        #trainer.test(model, data, ckpt_path=ckpt)
 
 
 if __name__ == '__main__':
