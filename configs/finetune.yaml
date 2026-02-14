@@ -4,26 +4,26 @@ model:
   params:     
     lr: 6.0e-4
     monitor: val/bleu4
-    model_name: google/flan-t5-xl
+    model_name: google/flan-t5-small
     cache_dir: /data3/models
-    inter_hidden: 768
-    input_size: 2048
+    inter_hidden: 512
+    input_size: 1024
     beam_size: 5
     max_frame_len: 512
     max_txt_len: 64
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
     tuning_type: lora
-    lora_r: 16
-    lora_alpha: 32
+    lora_r: 64
+    lora_alpha: 128
     lora_dropout: 0.1
     fusion_mode: joint
     warm_up_steps: 0
     cross_modal_align: true
     combined_loss: true
     alpha: 1.0
-    use_in_context: true
-    num_in_context: 3
+    use_in_context: false
+    num_in_context: 0
 
 lightning:
   callback:
@@ -32,10 +32,11 @@ lightning:
       params:
         logging_interval: step
   trainer:
+    strategy: ddp_find_unused_parameters_true
     accumulate_grad_batches: 2
     accelerator: gpu
-    devices: 1
-    max_epochs: 500
+    devices: 2
+    max_epochs: 10
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 2
     precision: bf16
@@ -47,40 +48,40 @@ data:
     num_workers: 4
   
     train:
-      target: dataset.p14t.Phoenix14T
+      target: dataset.how2sign.How2Sign
       params:
-        anno_root: ./preprocess/Phoenix14T
-        vid_root: ./dataset/Phoenix14T
-        feat_root: /data2/sl_datasets/vit_feat_Phoenix14T
-        mae_feat_root: /data2/sl_datasets/mae_feat_Phoenix14T
-        mode: train
+        anno_root: ./preprocess/How2Sign/test_info.npy
+        vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
+        feat_root: /kaggle/input/how2sign-features/how2sign_output_test_spatial_features/kaggle/working/clip-vit-large-patch14_feat_How2Sign/test
+        mae_feat_root: /kaggle/input/how2sign-features/how2sign_motion_features/kaggle/working/how2sign_motion_features/mae_feat_How2Sign/test
+        mode: ""
         spatial: true
         spatiotemporal: true
-        spatial_postfix: _s2wrapping
-        spatiotemporal_postfix: _overlap-8-pretrained
+        spatial_postfix: ""
+        spatiotemporal_postfix: "_overlap-8"
         
     validation:
-      target: dataset.p14t.Phoenix14T
+      target: dataset.how2sign.How2Sign
       params:
-        anno_root: ./preprocess/Phoenix14T
-        vid_root: ./dataset/Phoenix14T
-        feat_root: /data2/sl_datasets/vit_feat_Phoenix14T
-        mae_feat_root: /data2/sl_datasets/mae_feat_Phoenix14T
-        mode: test
+        anno_root: ./preprocess/How2Sign/test_info.npy
+        vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
+        feat_root: /kaggle/input/how2sign-features/how2sign_output_test_spatial_features/kaggle/working/clip-vit-large-patch14_feat_How2Sign/test
+        mae_feat_root: /kaggle/input/how2sign-features/how2sign_motion_features/kaggle/working/how2sign_motion_features/mae_feat_How2Sign/test
+        mode: ""
         spatial: true
         spatiotemporal: true
-        spatial_postfix: _s2wrapping
-        spatiotemporal_postfix: _overlap-8-pretrained
+        spatial_postfix: ""
+        spatiotemporal_postfix: "_overlap-8"
     
     test:
-      target: dataset.p14t.Phoenix14T
+      target: dataset.how2sign.How2Sign
       params:
-        anno_root: ./preprocess/Phoenix14T
-        vid_root: ./dataset/Phoenix14T
-        feat_root: /data2/sl_datasets/vit_feat_Phoenix14T
-        mae_feat_root: /data2/sl_datasets/mae_feat_Phoenix14T
-        mode: test
+        anno_root: ./preprocess/How2Sign/test_info.npy
+        vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
+        feat_root: /kaggle/input/how2sign-features/how2sign_output_test_spatial_features/kaggle/working/clip-vit-large-patch14_feat_How2Sign/test
+        mae_feat_root: /kaggle/input/how2sign-features/how2sign_motion_features/kaggle/working/how2sign_motion_features/mae_feat_How2Sign/test
+        mode: ""
         spatial: true
         spatiotemporal: true
-        spatial_postfix: _s2wrapping
-        spatiotemporal_postfix: _overlap-8-pretrained
+        spatial_postfix: ""
+        spatiotemporal_postfix: "_overlap-8"
