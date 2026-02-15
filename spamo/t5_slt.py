@@ -91,24 +91,6 @@ class FlanT5SLT(AbstractSLT):
 
         self.set_container()
         
-    # def load_pretrained_weights(self, checkpoint_path: str) -> None:
-    #     """Load weights from a pretrained checkpoint."""
-    #     checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
-        
-    #     # Get model's state dict
-    #     model_state_dict = self.state_dict()
-    #     checkpoint_state_dict = checkpoint['state_dict']
-        
-    #     # Filter out mismatched keys
-    #     filtered_state_dict = {}
-    #     for k, v in checkpoint_state_dict.items():
-    #         if k in model_state_dict and v.size() == model_state_dict[k].size():
-    #             filtered_state_dict[k] = v
-        
-    #     # Load the filtered state dict
-    #     self.load_state_dict(filtered_state_dict)
-    #     print(f'Checkpoint loaded from {checkpoint_path}. Loaded {len(filtered_state_dict)}/{len(checkpoint_state_dict)} parameters.')
-    
     def load_pretrained_weights(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         self.load_state_dict(checkpoint['state_dict'])
@@ -343,16 +325,19 @@ class FlanT5SLT(AbstractSLT):
                 # Collect metadata
                 ids.append(sample['id'])
                 texts.append(sample['text'].lower())
-                glosses.append(sample['gloss'])
-                langs.append(sample['lang'])
+                glosses.append(sample.get('gloss', ''))
+                langs.append(sample.get('lang', 'en'))
                 
-                _ex_lang_trans = [
-                    f"{sample['en_text']}={sample['text']}",
-                    f"{sample['fr_text']}={sample['text']}",
-                    f"{sample['es_text']}={sample['text']}"
-                ]
-                _ex_lang_trans = _ex_lang_trans[:self.num_in_context]
-                ex_lang_translations.append(' '.join(_ex_lang_trans))
+                if self.use_in_context and self.num_in_context > 0:
+                    _ex_lang_trans = [
+                        f"{sample.get('en_text', '')}={sample['text']}",
+                        f"{sample.get('fr_text', '')}={sample['text']}",
+                        f"{sample.get('es_text', '')}={sample['text']}"
+                    ]
+                    _ex_lang_trans = _ex_lang_trans[:self.num_in_context]
+                    ex_lang_translations.append(' '.join(_ex_lang_trans))
+                else:
+                    ex_lang_translations.append("")
                 
                 # Handle too long sequences with random cropping
                 if nframe > max_frame_len:
@@ -373,7 +358,8 @@ class FlanT5SLT(AbstractSLT):
                         glor_values.append(sample['glor_value'])
                         glor_lengths.append(len(sample['glor_value']))
         
-        ex_lang_translations = derangement(ex_lang_translations)
+        if self.use_in_context:
+            ex_lang_translations = derangement(ex_lang_translations)
         
         # Return structured dictionary
         return {
