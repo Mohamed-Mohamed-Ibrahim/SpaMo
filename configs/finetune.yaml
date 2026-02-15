@@ -35,7 +35,7 @@ model:
     sign_cl_loss: true
     sign_cl_alpha: 0.1
     sign_cl_temperature: 0.3
-    sign_cl_temporal_window: 3
+    sign_cl_temporal_window: 2
     sign_cl_every_n_steps: 1
 
     use_in_context: false
