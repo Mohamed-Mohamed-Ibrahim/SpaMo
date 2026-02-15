@@ -8,6 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import VideoMAEModel, VideoMAEImageProcessor
 import os.path as osp
 import sys
+import torch.multiprocessing as mp
 
 # --- PATH FIX ---------------------------------------------------------------
 # This adds the parent directory to Python's path
@@ -71,20 +72,34 @@ class VideoDataset(Dataset):
     Loads frames, resizes to 256x256, center-crops to 224x224.
     """
 
-    def __init__(self, args, mode):
+    def __init__(self, args, mode, rank=0, world_size=1):
         self.args = args
         self.mode = mode
 
         # Load annotation file (npy dict)
-        self.data = np.load(
+        full_data = np.load(
             osp.join(args.anno_root, f"{mode}_info.npy"),
             allow_pickle=True
         ).item()
 
+        all_keys = sorted(list(full_data.keys()))
+        total_len = len(all_keys)
+        split_len = total_len // world_size
+        
+        start_idx = rank * split_len
+        if rank == world_size - 1:
+            end_idx = total_len 
+        else:
+            end_idx = (rank + 1) * split_len
+            
+        my_keys = all_keys[start_idx:end_idx]
+        self.data = {k: full_data[k] for k in my_keys}
+
         self.num_videos = len(self.data)
         self.ds_name = osp.split(args.anno_root)[-1]
 
-        print(f"[VideoDataset] '{mode}' initialized with {self.num_videos} videos.")
+        if rank == 0:
+            print(f"[VideoDataset] '{mode}' initialized with {self.num_videos} videos.")
 
         # Preprocessing sizes
         self.resize_size = 256
@@ -116,7 +131,10 @@ class VideoDataset(Dataset):
     # Main loader
     # ------------------------------------------------------------
     def __getitem__(self, idx):
-        entry = self.data[idx]
+        # We need to map the 0..len index to the actual keys in our split
+        key = list(self.data.keys())[idx]
+        entry = self.data[key]
+        
         fname, fileid = entry["folder"], entry["fileid"]
         start_time_str = None
         videos = []
@@ -237,52 +255,60 @@ def get_parser():
 
 
 # ----------------------------------------------------------------------------
-def main():
-    args = get_parser().parse_args()
+def run_extraction(rank, world_size, args):
+    device = f'cuda:{rank}'
+    if rank == 0:
+        print(f"--- Spawning {world_size} processes. Rank {rank} on {device} ---")
 
     # 1. Create the "Chef" (GPU-side model)
     reader = VideoMAEFeatureReader(
         args.model_name,
-        args.device,
+        device,
         args.overlap_size,
         args.nth_layer,
         args.cache_dir
     )
 
-    mode = ["test"]
-    for m in mode:
+    modes = args.mode if isinstance(args.mode, list) else [args.mode]
+    for m in modes:
         ds_name = osp.split(args.anno_root)[-1]
         out_folder = f"mae_feat_{ds_name}"
         
         # FIX: Use _m for the save path
         if ds_name == "How2Sign":    _m = "val" if m == "dev" else m
         elif ds_name == "NIASL2021": _m = "validation" if m == "dev" else m
-        else:                       _m = m
+        else:                        _m = m
         
         # Create the save directory using the correct split name
         save_dir_split = osp.join(args.save_dir, out_folder, _m)
-        os.makedirs(save_dir_split, exist_ok=True)
+        if rank == 0:
+            os.makedirs(save_dir_split, exist_ok=True)
 
         # 2. Create the "Waiter" (CPU-side dataset)
-        dataset = VideoDataset(args, _m)
+        dataset = VideoDataset(args, _m, rank=rank, world_size=world_size)
 
         # 3. Create the "Waiter Team Manager" (DataLoader)
         dataloader = DataLoader(
             dataset,
-            batch_size=1,           # must be 1
+            batch_size=1,            # must be 1
             shuffle=False,
             collate_fn=custom_collate_fn, # Use our custom collate
             num_workers=args.num_workers, # Parallel CPU workers
             pin_memory=True,              # Fast CPU-to-GPU transfer
             persistent_workers=True   # Keep workers alive
         )
-     
-        print(f"Extracting '{_m}' using {args.num_workers} workers... Saving to {save_dir_split}")
+      
+        if rank == 0:
+            print(f"Extracting '{_m}' using {args.num_workers} workers... Saving to {save_dir_split}")
+            iterator = tqdm.tqdm(dataloader, total=len(dataset))
+        else:
+            iterator = dataloader
 
         # 4. Run the main loop
-        for videos, fileid, st in tqdm.tqdm(dataloader, total=len(dataset)):
+        for videos, fileid, st in iterator:
             if not videos: # Skip if video was bad
-                print(f"Warning: Skipping empty video for fileid {fileid}")
+                if rank == 0:
+                    print(f"Warning: Skipping empty video for fileid {fileid}")
                 continue
 
             # This inner loop batches the clips *within* one video
@@ -300,7 +326,24 @@ def main():
             postfix = (f"_{st}" if st is not None else "") + f"_overlap-{args.overlap_size}"
             np.save(osp.join(save_dir_split, f"{fileid}{postfix}.npy"), feats)
 
-        print(f"✅ Extraction for '{_m}' complete.")
+    print(f"✅ Rank {rank} complete.")
+
+
+def main():
+    args = get_parser().parse_args()
+    
+    world_size = torch.cuda.device_count()
+    print(f"Found {world_size} GPUs.")
+    
+    if world_size > 1:
+        mp.spawn(
+            run_extraction,
+            args=(world_size, args),
+            nprocs=world_size,
+            join=True
+        )
+    else:
+        run_extraction(0, 1, args)
 
 
 if __name__ == "__main__":
