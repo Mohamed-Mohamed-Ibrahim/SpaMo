@@ -55,7 +55,9 @@ class VideoMAEFeatureReader(object):
         inputs = inputs.to(self.device, non_blocking=True)
 
         # 3. Run the model
-        outputs = self.model(**inputs, output_hidden_states=True).hidden_states
+        # AMP enabled
+        with torch.cuda.amp.autocast(dtype=torch.float16):
+            outputs = self.model(**inputs, output_hidden_states=True).hidden_states
         
         # 4. Get the last hidden state's [CLS] token
         feats = outputs[self.nth_layer][:, 0]
@@ -65,40 +67,71 @@ class VideoMAEFeatureReader(object):
 # ----------------------------------------------------------------------------
 class VideoDataset(Dataset):
     """
-    This class is the "Waiter" (CPU side).
-    It loads raw PIL frames from disk in background workers.
+    CPU dataset for VideoMAE feature extraction.
+    Loads frames, resizes to 256x256, center-crops to 224x224.
     """
+
     def __init__(self, args, mode):
         self.args = args
         self.mode = mode
 
-        # Load the annotation file
+        # Load annotation file (npy dict)
         self.data = np.load(
             osp.join(args.anno_root, f"{mode}_info.npy"),
             allow_pickle=True
         ).item()
 
-        # FIX: Use len(self.data) to get the correct count
         self.num_videos = len(self.data)
         self.ds_name = osp.split(args.anno_root)[-1]
-        print(f"VideoDataset for '{mode}' initialized with {self.num_videos} videos.")
+
+        print(f"[VideoDataset] '{mode}' initialized with {self.num_videos} videos.")
+
+        # Preprocessing sizes
+        self.resize_size = 256
+        self.crop_size = 224
 
     def __len__(self):
         return self.num_videos
 
+    # ------------------------------------------------------------
+    # Helper: Resize + Center Crop
+    # ------------------------------------------------------------
+    def process_frame(self, img):
+        # Resize to 256×256
+        img = img.resize(
+            (self.resize_size, self.resize_size),
+            resample=Image.BILINEAR
+        )
+
+        # Center crop to 224×224
+        left = (self.resize_size - self.crop_size) // 2
+        top = (self.resize_size - self.crop_size) // 2
+        right = left + self.crop_size
+        bottom = top + self.crop_size
+        img = img.crop((left, top, right, bottom))
+
+        return img
+
+    # ------------------------------------------------------------
+    # Main loader
+    # ------------------------------------------------------------
     def __getitem__(self, idx):
-        """
-        This function runs in a background worker.
-        It does the slow disk I/O and returns raw PIL images.
-        """
         entry = self.data[idx]
         fname, fileid = entry["folder"], entry["fileid"]
-        st_return_str = None
-        videos = [] # This will be a list of clips (which are lists of images)
+        start_time_str = None
+        videos = []
 
+        # ============================================================
+        # CASE 1: Phoenix14T / CSL-Daily
+        # ============================================================
         if self.ds_name in ["Phoenix14T", "CSL-Daily"]:
+
             image_list = get_img_list(self.ds_name, self.args.video_root, fname)
-            image_list = image_list + [image_list[-1]] * max(0, 16 - len(image_list))
+
+            # Pad to minimum 16
+            if len(image_list) < 16:
+                image_list += [image_list[-1]] * (16 - len(image_list))
+
             clips = sliding_window_for_list(image_list, 16, self.args.overlap_size)
 
             for clip in clips:
@@ -106,47 +139,71 @@ class VideoDataset(Dataset):
                 for path in clip:
                     try:
                         img = Image.open(path).convert("RGB")
+                        img = self.process_frame(img)
                         pil_frames.append(img.copy())
-                        img.close() # Prevent "Too many open files" error
+                        img.close()
                     except Exception as e:
                         print(f"Warning: Failed to load image {path}: {e}")
                         continue
-                if pil_frames:
+
+                if len(pil_frames) > 0:
                     videos.append(pil_frames)
 
+        # ============================================================
+        # CASE 2: How2Sign
+        # ============================================================
         elif self.ds_name == "How2Sign":
-            # 1. Get the raw start/end time values
-            start_time_val = entry["original_info"]["START_REALIGNED"]
-            end_time_val = entry["original_info"]["END_REALIGNED"]
 
-            # 2. Convert them to float, handling None, NaN, or empty strings
+            # Get aligned timestamps
+            s_val = entry["original_info"]["START_REALIGNED"]
+            e_val = entry["original_info"]["END_REALIGNED"]
+
+            # Convert safely
             try:
-                start_time_float = float(start_time_val)
+                s = float(s_val)
             except (ValueError, TypeError):
-                start_time_float = None
+                s = None
 
             try:
-                end_time_float = float(end_time_val)
+                e = float(e_val)
             except (ValueError, TypeError):
-                end_time_float = None
+                e = None
 
-            # 3. Pass the FLOATS (or Nones) to read_video
-            frames = read_video(fname, start_time=start_time_float, end_time=end_time_float)
-            
-            # 4. Create the string version for the return value *after* reading
-            st_return_str = str(start_time_float) if start_time_float is not None else "None"
+            # For returning
+            start_time_str = str(s) if s is not None else "None"
+
+            # Read video frames
+            frames = read_video(fname, start_time=s, end_time=e)
 
             if len(frames) == 0:
-                return ([], fileid, st_return_str) # Return empty list if video is bad
+                return [], fileid, start_time_str
 
-            frames = frames + [frames[-1]] * max(0, 16 - len(frames))
-            videos = sliding_window_for_list(frames, 16, self.args.overlap_size)
+            # Pad to 16
+            if len(frames) < 16:
+                frames += [frames[-1]] * (16 - len(frames))
+
+            # Convert → always PIL → resize+crop
+            processed = []
+            for f in frames:
+
+                # Fix: handle BOTH PIL and NumPy frames safely
+                if isinstance(f, np.ndarray):
+                    img = Image.fromarray(f).convert("RGB")
+                elif isinstance(f, Image.Image):
+                    img = f.convert("RGB")
+                else:
+                    raise TypeError(f"Unexpected frame type: {type(f)}")
+
+                img = self.process_frame(img)
+                processed.append(img)
+
+            videos = sliding_window_for_list(processed, 16, self.args.overlap_size)
 
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Unknown dataset: {self.ds_name}")
 
-        # Return the raw PIL images, file ID, and start time string
-        return videos, fileid, st_return_str
+        return videos, fileid, start_time_str
+
 
 
 # ----------------------------------------------------------------------------
@@ -212,14 +269,14 @@ def main():
         # 3. Create the "Waiter Team Manager" (DataLoader)
         dataloader = DataLoader(
             dataset,
-            batch_size=1,           # DataLoader batch size is 1 (one video at a time)
+            batch_size=1,           # must be 1
             shuffle=False,
             collate_fn=custom_collate_fn, # Use our custom collate
             num_workers=args.num_workers, # Parallel CPU workers
             pin_memory=True,              # Fast CPU-to-GPU transfer
             persistent_workers=True   # Keep workers alive
         )
-
+     
         print(f"Extracting '{_m}' using {args.num_workers} workers... Saving to {save_dir_split}")
 
         # 4. Run the main loop
