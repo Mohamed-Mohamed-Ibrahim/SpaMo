@@ -57,7 +57,7 @@ data:
         mode: ""
         spatial: true
         spatiotemporal: true
-        spatial_postfix: ""
+        spatial_postfix: "_s2wrapping"
         spatiotemporal_postfix: "_overlap-8"
         
     validation:
@@ -70,7 +70,7 @@ data:
         mode: ""
         spatial: true
         spatiotemporal: true
-        spatial_postfix: ""
+        spatial_postfix: "_s2wrapping"
         spatiotemporal_postfix: "_overlap-8"
     
     test:
@@ -83,5 +83,5 @@ data:
         mode: ""
         spatial: true
         spatiotemporal: true
-        spatial_postfix: ""
+        spatial_postfix: "_s2wrapping"
         spatiotemporal_postfix: "_overlap-8"
