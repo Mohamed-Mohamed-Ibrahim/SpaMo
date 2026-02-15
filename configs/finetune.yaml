@@ -53,7 +53,7 @@ data:
         anno_root: ./preprocess/How2Sign/test_info.npy
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-spatial-features/clip-vit-large-patch14_feat_How2Sign/test
-        mae_feat_root: /kaggle/input/datasets/omarhany123/how2sign-features/how2sign_motion_features/kaggle/working/how2sign_motion_features/mae_feat_How2Sign/test
+        mae_feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-motion-features/how2sign_motion_features/mae_feat_How2Sign/test
         mode: ""
         spatial: true
         spatiotemporal: true
@@ -66,7 +66,7 @@ data:
         anno_root: ./preprocess/How2Sign/test_info.npy
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-spatial-features/clip-vit-large-patch14_feat_How2Sign/test
-        mae_feat_root: /kaggle/input/datasets/omarhany123/how2sign-features/how2sign_motion_features/kaggle/working/how2sign_motion_features/mae_feat_How2Sign/test
+        mae_feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-motion-features/how2sign_motion_features/mae_feat_How2Sign/test
         mode: ""
         spatial: true
         spatiotemporal: true
@@ -79,7 +79,7 @@ data:
         anno_root: ./preprocess/How2Sign/test_info.npy
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-spatial-features/clip-vit-large-patch14_feat_How2Sign/test
-        mae_feat_root: /kaggle/input/datasets/omarhany123/how2sign-features/how2sign_motion_features/kaggle/working/how2sign_motion_features/mae_feat_How2Sign/test
+        mae_feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-motion-features/how2sign_motion_features/mae_feat_How2Sign/test
         mode: ""
         spatial: true
         spatiotemporal: true
