@@ -18,11 +18,11 @@ model:
     tuning_type: lora
 
     # Reduce model capacity
-    lora_r: 32
-    lora_alpha: 64
+    lora_r: 128
+    lora_alpha: 256
 
     # Increase regularization
-    lora_dropout: 0.05
+    lora_dropout: 0.0
     weight_decay: 0.05
 
     fusion_mode: joint
@@ -45,8 +45,8 @@ model:
 
     augmentation_prob: 0.5       # Apply augmentation to 50% of batches
     aug_frame_prob: 0.1          # Drop 10% of frames
-    aug_span_prob: 0.1           # Mask 10% of spans
-    aug_channel_prob: 0.05       # Drop 5% of feature channels
+    aug_span_prob: 0.0           # Mask 10% of spans
+    aug_channel_prob: 0.0       # Drop 5% of feature channels
     # # Stronger augmentation
     # use_data_augmentation: true
     # augmentation_prob: 0.7
