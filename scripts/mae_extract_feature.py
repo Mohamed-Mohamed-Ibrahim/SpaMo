@@ -11,8 +11,6 @@ import sys
 import torch.multiprocessing as mp
 
 # --- PATH FIX ---------------------------------------------------------------
-# This adds the parent directory to Python's path
-# so it can find the 'utils' folder.
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
@@ -23,16 +21,11 @@ from utils.helpers import sliding_window_for_list, read_video, get_img_list
 _GLOBAL_SEED = 0
 np.random.seed(_GLOBAL_SEED)
 torch.manual_seed(_GLOBAL_SEED)
-# Set benchmark to False for variable input sizes (e.g., different video clip counts)
 torch.backends.cudnn.benchmark = False
 
 
 # ----------------------------------------------------------------------------
 class VideoMAEFeatureReader(object):
-    """
-    This class holds the VideoMAE model ("the Chef").
-    It's responsible for the fast, GPU-bound computation.
-    """
     def __init__(self, model_name, device, overlap_size, nth_layer, cache_dir=None):
         self.device = device
         self.overlap_size = overlap_size
@@ -45,44 +38,34 @@ class VideoMAEFeatureReader(object):
 
     @torch.no_grad()
     def get_feats(self, video_batch):
-        """
-        Processes a batch of raw PIL Image clips and returns feature vectors.
-        """
-        # 1. Transform the images (This is the "transform" step)
         inputs = self.image_processor(images=video_batch, return_tensors="pt")
-
-        # 2. Move tensors to GPU (non_blocking works with pin_memory=True)
-        # The 'inputs' object has its own .to() method
         inputs = inputs.to(self.device, non_blocking=True)
 
-        # 3. Run the model
-        # AMP enabled
         with torch.cuda.amp.autocast(dtype=torch.float16):
             outputs = self.model(**inputs, output_hidden_states=True).hidden_states
         
-        # 4. Get the last hidden state's [CLS] token
         feats = outputs[self.nth_layer][:, 0]
         return feats
 
 
 # ----------------------------------------------------------------------------
 class VideoDataset(Dataset):
-    """
-    CPU dataset for VideoMAE feature extraction.
-    Loads frames, resizes to 256x256, center-crops to 224x224.
-    """
-
     def __init__(self, args, mode, rank=0, world_size=1):
         self.args = args
         self.mode = mode
 
-        # Load annotation file (npy dict)
+        # Load annotation file
         full_data = np.load(
             osp.join(args.anno_root, f"{mode}_info.npy"),
             allow_pickle=True
         ).item()
 
-        all_keys = sorted(list(full_data.keys()))
+        # --- FIX: Filter out non-integer keys (like 'prefix') ---
+        # Only keep keys that are integers (the video entries)
+        valid_keys = [k for k in full_data.keys() if isinstance(k, int)]
+        all_keys = sorted(valid_keys)
+        # --------------------------------------------------------
+
         total_len = len(all_keys)
         split_len = total_len // world_size
         
@@ -99,37 +82,23 @@ class VideoDataset(Dataset):
         self.ds_name = osp.split(args.anno_root)[-1]
 
         if rank == 0:
-            print(f"[VideoDataset] '{mode}' initialized with {self.num_videos} videos.")
+            print(f"[VideoDataset] '{mode}' initialized with {self.num_videos} videos (Total pool: {total_len}).")
 
-        # Preprocessing sizes
         self.resize_size = 256
         self.crop_size = 224
 
     def __len__(self):
         return self.num_videos
 
-    # ------------------------------------------------------------
-    # Helper: Resize + Center Crop
-    # ------------------------------------------------------------
     def process_frame(self, img):
-        # Resize to 256×256
-        img = img.resize(
-            (self.resize_size, self.resize_size),
-            resample=Image.BILINEAR
-        )
-
-        # Center crop to 224×224
+        img = img.resize((self.resize_size, self.resize_size), resample=Image.BILINEAR)
         left = (self.resize_size - self.crop_size) // 2
         top = (self.resize_size - self.crop_size) // 2
         right = left + self.crop_size
         bottom = top + self.crop_size
         img = img.crop((left, top, right, bottom))
-
         return img
 
-    # ------------------------------------------------------------
-    # Main loader
-    # ------------------------------------------------------------
     def __getitem__(self, idx):
         # We need to map the 0..len index to the actual keys in our split
         key = list(self.data.keys())[idx]
@@ -139,17 +108,10 @@ class VideoDataset(Dataset):
         start_time_str = None
         videos = []
 
-        # ============================================================
-        # CASE 1: Phoenix14T / CSL-Daily
-        # ============================================================
         if self.ds_name in ["Phoenix14T", "CSL-Daily"]:
-
             image_list = get_img_list(self.ds_name, self.args.video_root, fname)
-
-            # Pad to minimum 16
             if len(image_list) < 16:
                 image_list += [image_list[-1]] * (16 - len(image_list))
-
             clips = sliding_window_for_list(image_list, 16, self.args.overlap_size)
 
             for clip in clips:
@@ -163,55 +125,37 @@ class VideoDataset(Dataset):
                     except Exception as e:
                         print(f"Warning: Failed to load image {path}: {e}")
                         continue
-
                 if len(pil_frames) > 0:
                     videos.append(pil_frames)
 
-        # ============================================================
-        # CASE 2: How2Sign
-        # ============================================================
         elif self.ds_name == "How2Sign":
-
-            # Get aligned timestamps
             s_val = entry["original_info"]["START_REALIGNED"]
             e_val = entry["original_info"]["END_REALIGNED"]
 
-            # Convert safely
-            try:
-                s = float(s_val)
-            except (ValueError, TypeError):
-                s = None
+            try: s = float(s_val)
+            except (ValueError, TypeError): s = None
 
-            try:
-                e = float(e_val)
-            except (ValueError, TypeError):
-                e = None
+            try: e = float(e_val)
+            except (ValueError, TypeError): e = None
 
-            # For returning
             start_time_str = str(s) if s is not None else "None"
-
-            # Read video frames
             frames = read_video(fname, start_time=s, end_time=e)
 
             if len(frames) == 0:
                 return [], fileid, start_time_str
 
-            # Pad to 16
             if len(frames) < 16:
                 frames += [frames[-1]] * (16 - len(frames))
 
-            # Convert → always PIL → resize+crop
             processed = []
             for f in frames:
-
-                # Fix: handle BOTH PIL and NumPy frames safely
                 if isinstance(f, np.ndarray):
                     img = Image.fromarray(f).convert("RGB")
                 elif isinstance(f, Image.Image):
                     img = f.convert("RGB")
                 else:
                     raise TypeError(f"Unexpected frame type: {type(f)}")
-
+                
                 img = self.process_frame(img)
                 processed.append(img)
 
@@ -223,16 +167,8 @@ class VideoDataset(Dataset):
         return videos, fileid, start_time_str
 
 
-
 # ----------------------------------------------------------------------------
 def custom_collate_fn(batch):
-    """
-    This collate function is necessary because the default collate
-    doesn't know how to handle PIL Images.
-    Since DataLoader batch_size=1, 'batch' is a list with one item:
-    [ (list_of_pil_clips, "file_id", "start_time") ]
-    We just unpack and return that single item.
-    """
     return batch[0]
 # ----------------------------------------------------------------------------
 
@@ -243,24 +179,21 @@ def get_parser():
     parser.add_argument('--video_root', required=True)
     parser.add_argument('--save_dir', required=True)
     parser.add_argument('--model_name', default='MCG-NJU/videomae-large')
-    parser.add_argument('--batch_size', type=int, default=32, help="Batch size for the *GPU* (model processing)")
-    # FIX: Smart default for device
-    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--device', default='cuda')
     parser.add_argument('--overlap_size', type=int, default=8)
     parser.add_argument('--mode', nargs='+', type=str)
     parser.add_argument('--nth_layer', type=int, default=-1)
     parser.add_argument('--cache_dir', default=None)
-    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
+    parser.add_argument('--num_workers', type=int, default=4)
     return parser
 
 
-# ----------------------------------------------------------------------------
 def run_extraction(rank, world_size, args):
     device = f'cuda:{rank}'
     if rank == 0:
         print(f"--- Spawning {world_size} processes. Rank {rank} on {device} ---")
 
-    # 1. Create the "Chef" (GPU-side model)
     reader = VideoMAEFeatureReader(
         args.model_name,
         device,
@@ -274,55 +207,44 @@ def run_extraction(rank, world_size, args):
         ds_name = osp.split(args.anno_root)[-1]
         out_folder = f"mae_feat_{ds_name}"
         
-        # FIX: Use _m for the save path
         if ds_name == "How2Sign":    _m = "val" if m == "dev" else m
         elif ds_name == "NIASL2021": _m = "validation" if m == "dev" else m
         else:                        _m = m
         
-        # Create the save directory using the correct split name
         save_dir_split = osp.join(args.save_dir, out_folder, _m)
         if rank == 0:
             os.makedirs(save_dir_split, exist_ok=True)
 
-        # 2. Create the "Waiter" (CPU-side dataset)
         dataset = VideoDataset(args, _m, rank=rank, world_size=world_size)
 
-        # 3. Create the "Waiter Team Manager" (DataLoader)
         dataloader = DataLoader(
             dataset,
-            batch_size=1,            # must be 1
-            shuffle=False,
-            collate_fn=custom_collate_fn, # Use our custom collate
-            num_workers=args.num_workers, # Parallel CPU workers
-            pin_memory=True,              # Fast CPU-to-GPU transfer
-            persistent_workers=True   # Keep workers alive
+            batch_size=1,
+            shuffle=False, 
+            collate_fn=custom_collate_fn,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            persistent_workers=True
         )
       
         if rank == 0:
-            print(f"Extracting '{_m}' using {args.num_workers} workers... Saving to {save_dir_split}")
+            print(f"Extracting '{_m}' to {save_dir_split}")
             iterator = tqdm.tqdm(dataloader, total=len(dataset))
         else:
             iterator = dataloader
 
-        # 4. Run the main loop
         for videos, fileid, st in iterator:
-            if not videos: # Skip if video was bad
-                if rank == 0:
-                    print(f"Warning: Skipping empty video for fileid {fileid}")
+            if not videos: 
                 continue
 
-            # This inner loop batches the clips *within* one video
-            # 'args.batch_size' is the GPU batch size (e.g., 16 or 32)
             feats_per_video = []
             for j in range(0, len(videos), args.batch_size):
                 chunk = videos[j : j + args.batch_size]
                 feats = reader.get_feats(chunk).cpu().numpy()
                 feats_per_video.append(feats)
 
-            # Concatenate all features for this video
             feats = np.concatenate(feats_per_video, axis=0)
-
-            # Create the final filename and save
+            
             postfix = (f"_{st}" if st is not None else "") + f"_overlap-{args.overlap_size}"
             np.save(osp.join(save_dir_split, f"{fileid}{postfix}.npy"), feats)
 
@@ -344,7 +266,6 @@ def main():
         )
     else:
         run_extraction(0, 1, args)
-
 
 if __name__ == "__main__":
     main()
