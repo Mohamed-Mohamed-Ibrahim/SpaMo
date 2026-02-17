@@ -1,32 +1,32 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 3.0e-4
+    lr: 6.0e-4
     monitor: val/bleu4
 
-    model_name: MBZUAI/LaMini-Flan-T5-783M
+    model_name: google/flan-t5-xl
     cache_dir: /data3/models
 
-    inter_hidden: 1024
+    inter_hidden: 768
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
-    max_txt_len: 128
+    max_txt_len: 64
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
 
     tuning_type: lora
 
     # Reduce model capacity
-    lora_r: 128
-    lora_alpha: 256
+    lora_r: 16
+    lora_alpha: 32
 
     # Increase regularization
-    lora_dropout: 0.0
-    weight_decay: 0.05
+    lora_dropout: 0.1
+    ###weight_decay: 0.05
 
     fusion_mode: joint
-    warm_up_steps: 1000
+    warm_up_steps: 0
     cross_modal_align: true
     combined_loss: true
 
@@ -38,10 +38,10 @@ model:
     sign_cl_temporal_window: 12
     sign_cl_every_n_steps: 1
 
-    use_in_context: false
-    num_in_context: 0
+    use_in_context: true
+    num_in_context: 3
     # NEW AUGMENTATION PARAMETERS
-    use_data_augmentation: true
+    use_data_augmentation: false
 
     augmentation_prob: 0.5       # Apply augmentation to 50% of batches
     aug_frame_prob: 0.1          # Drop 10% of frames
@@ -61,13 +61,13 @@ lightning:
       params:
         logging_interval: step
   trainer:
-    strategy: ddp_find_unused_parameters_true
-    accumulate_grad_batches: 4
+    ###strategy: ddp_find_unused_parameters_true
+    accumulate_grad_batches: 2
     accelerator: gpu
     devices: 2
-    max_epochs: 200
+    max_epochs: 500
     gradient_clip_val: 1.0
-    check_val_every_n_epoch: 1
+    check_val_every_n_epoch: 2
     precision: bf16
 
 data:
@@ -83,14 +83,14 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        ###pose_root: pose_Phoenix14T
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: true
+        ###pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
-        pose_postfix: ""
+        ###pose_postfix: ""
         
     validation:
       target: dataset.p14t.Phoenix14T
@@ -99,14 +99,14 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        ###pose_root: pose_Phoenix14T
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        ###pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
-        pose_postfix: ""
+        ###pose_postfix: ""
     
     test:
       target: dataset.p14t.Phoenix14T
@@ -115,11 +115,11 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        ###pose_root: pose_Phoenix14T
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        ###pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
-        pose_postfix: ""
+        ###pose_postfix: ""
