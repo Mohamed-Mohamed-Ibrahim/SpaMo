@@ -115,7 +115,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        ###pose_root: pose_Phoenix14T
+        pose_root: pose_Phoenix14T
         mode: test
         spatial: true
         spatiotemporal: true
