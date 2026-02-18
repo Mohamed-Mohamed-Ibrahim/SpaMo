@@ -81,6 +81,10 @@ class ViTFeatureReader(object):
             .eval()
         )
 
+        if torch.cuda.device_count() > 1:
+            print(f"Using {torch.cuda.device_count()} GPUs!")
+            self.model = torch.nn.DataParallel(self.model)
+
         # Optimization: PyTorch 2.0+ Graph Compilation (Speed boost after first batch)
         try:
             self.model = torch.compile(self.model)
