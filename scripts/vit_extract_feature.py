@@ -177,7 +177,7 @@ def get_iterator(args, mode):
                 batch_size=args.batch_size,
                 num_workers=0,
                 pin_memory=True,
-                prefetch_factor=2,
+                prefetch_factor=None,
             )
 
             video_feats = []
