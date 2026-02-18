@@ -1,15 +1,16 @@
 import argparse
 import os
 import os.path as osp
-import glob
 import tqdm
 import torch
 import numpy as np
-import torch.nn.functional as F
 from PIL import Image
+from torch.utils.data import Dataset, DataLoader
 from transformers import AutoImageProcessor, CLIPVisionModel
+import torch.multiprocessing as mp
 
 import sys
+
 
 # Get the absolute path to the parent directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -26,13 +27,32 @@ _GLOBAL_SEED = 0
 np.random.seed(_GLOBAL_SEED)
 torch.manual_seed(_GLOBAL_SEED)
 
+torch.set_float32_matmul_precision("high")
+NUM_WORKERS = os.cpu_count()
+
+
+class FrameDataset(Dataset):
+    """Handles parallel image loading and preprocessing on CPU workers."""
+
+    def __init__(self, image_paths, processor):
+        self.image_paths = image_paths
+        self.processor = processor
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img = Image.open(self.image_paths[idx]).convert("RGB")
+        pixel_values = self.processor(img, return_tensors="pt").pixel_values.squeeze(0)
+        return pixel_values
+
 
 class ViTFeatureReader(object):
     def __init__(
         self,
         model_name="openai/clip-vit-large-patch14",
         cache_dir=None,
-        device="cuda:0",
+        device="cuda",
         s2_mode="s2wrapping",
         scales=[1, 2],
         nth_layer=-1,
@@ -50,33 +70,34 @@ class ViTFeatureReader(object):
             .eval()
         )
 
+        # Optimization: PyTorch 2.0+ Graph Compilation (Speed boost after first batch)
+        try:
+            self.model = torch.compile(self.model)
+        except Exception:
+            print("Torch compile not supported; skipping.")
+
         self.image_processor = AutoImageProcessor.from_pretrained(model_name)
 
     @torch.no_grad()
     def forward_features(self, inputs):
-        outputs = self.model(inputs).hidden_states
-        outputs = outputs[self.nth_layer]
+        outputs = self.model(inputs).hidden_states[self.nth_layer]
         return outputs
 
     @torch.no_grad()
-    def get_feats(self, video):
-        inputs = (
-            self.image_processor(list(video), return_tensors="pt")
-            .to(self.device)
-            .pixel_values
-        )
+    def extract_features(self, pixel_values):
+        with torch.cuda.amp.autocast():
+            if self.s2_mode == "s2wrapping":
+                outputs = multiscale_forward(
+                    self.forward_features,
+                    pixel_values,
+                    scales=self.scales,
+                    num_prefix_token=1,
+                )
+            else:
+                outputs = self._forward_logic(pixel_values)
 
-        # FIX: Remove extra dimension if it exists
-        if inputs.dim() == 5:
-            inputs = inputs.squeeze(0)
-
-        if self.s2_mode == "s2wrapping":
-            outputs = multiscale_forward(
-                self.forward_features, inputs, scales=self.scales, num_prefix_token=1
-            )
-        else:
-            outputs = self.forward_features(inputs)
-        return outputs[:, 0]
+            # Return only the [CLS] token (index 0)
+            return outputs[:, 0].half().cpu().numpy()
 
 
 def get_parser():
@@ -101,8 +122,6 @@ def get_parser():
 
 
 def get_iterator(args, mode):
-    batch_size = args.batch_size
-
     data = np.load(
         os.path.join(args.anno_root, f"{mode}_info.npy"), allow_pickle=True
     ).item()
@@ -120,40 +139,39 @@ def get_iterator(args, mode):
     def iterate():
         for i in range(num):
             fname = data[i]["folder"]
+            file_id = data[i]["fileid"]
+            start_time = data[i].get("original_info", {}).get("START_REALIGNED", None)
 
-            if ds_name == "Phoenix14T" or ds_name == "CSL-Daily":
+            if ds_name in ["Phoenix14T", "CSL-Daily"]:
                 image_list = get_img_list(ds_name, args.video_root, fname)
-                videos = [Image.open(image).convert("RGB") for image in image_list]
-
-                video_feats = []
-                for j in range(0, len(videos), batch_size):
-                    video_batch = videos[j : min(j + batch_size, len(videos))]
-                    feats = reader.get_feats(video_batch).cpu().numpy()
-                    video_feats.append(feats)
-
-                yield np.concatenate(video_feats, axis=0), data[i]["fileid"], None
-
             else:
                 if ds_name == "How2Sign":
-                    start_time, end_time = (
-                        data[i]["original_info"]["START_REALIGNED"],
-                        data[i]["original_info"]["END_REALIGNED"],
+                    image_list = read_video(
+                        fname,
+                        start_time=start_time,
+                        end_time=data[i]["original_info"].get("END_REALIGNED"),
                     )
-                    videos = read_video(fname, start_time=start_time, end_time=end_time)
 
-                if len(videos) > 0:
-                    video_feats = []
-                    for j in range(0, len(videos), batch_size):
-                        video_batch = videos[j : min(j + batch_size, len(videos))]
-                        feats = reader.get_feats(video_batch).cpu().numpy()
-                        video_feats.append(feats)
-                    yield (
-                        np.concatenate(video_feats, axis=0),
-                        data[i]["fileid"],
-                        str(start_time),
-                    )
-                else:
-                    yield [], data[i]["fileid"], str(start_time)
+            if not image_list:
+                yield [], file_id, str(start_time)
+                continue
+
+            dataset = FrameDataset(image_list, reader.image_processor)
+            loader = DataLoader(
+                dataset,
+                batch_size=args.batch_size,
+                num_workers=NUM_WORKERS,  
+                pin_memory=True,
+                prefetch_factor=2,
+            )
+
+            video_feats = []
+            for batch in loader:
+                batch = batch.to(args.device, non_blocking=True)
+                feats = reader.extract_features(batch)
+                video_feats.append(feats)
+
+            yield np.concatenate(video_feats, axis=0), file_id, str(start_time)
 
     return iterate, num
 
@@ -200,4 +218,5 @@ def main():
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()
