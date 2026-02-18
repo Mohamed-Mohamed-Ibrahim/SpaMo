@@ -23,7 +23,7 @@ model:
 
     # Increase regularization
     lora_dropout: 0.0
-    weight_decay: 0.05
+    weight_decay: 0.02
 
     fusion_mode: joint
     warm_up_steps: 1000
