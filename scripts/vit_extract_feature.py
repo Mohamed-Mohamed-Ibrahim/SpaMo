@@ -42,7 +42,11 @@ class FrameDataset(Dataset):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
-        img = Image.open(self.image_paths[idx]).convert("RGB")
+        item = self.image_paths[idx]
+        if isinstance(item, str):
+            img = Image.open(item).convert("RGB")
+        else:
+            img = item.convert("RGB")
         pixel_values = self.processor(img, return_tensors="pt").pixel_values.squeeze(0)
         return pixel_values
 
@@ -160,7 +164,7 @@ def get_iterator(args, mode):
             loader = DataLoader(
                 dataset,
                 batch_size=args.batch_size,
-                num_workers=NUM_WORKERS,  
+                num_workers=NUM_WORKERS,
                 pin_memory=True,
                 prefetch_factor=2,
             )
