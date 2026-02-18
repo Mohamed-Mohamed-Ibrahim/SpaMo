@@ -89,7 +89,7 @@ class ViTFeatureReader(object):
 
     @torch.no_grad()
     def extract_features(self, pixel_values):
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda'):
             if self.s2_mode == "s2wrapping":
                 outputs = multiscale_forward(
                     self.forward_features,
