@@ -11,6 +11,13 @@ import torch.multiprocessing as mp
 
 import sys
 
+import warnings
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TORCH_CPP_LOG_LEVEL'] = 'ERROR'
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message="Could not find image processor class")
 
 # Get the absolute path to the parent directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
