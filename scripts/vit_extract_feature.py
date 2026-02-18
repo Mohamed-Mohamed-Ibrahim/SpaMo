@@ -175,7 +175,7 @@ def get_iterator(args, mode):
             loader = DataLoader(
                 dataset,
                 batch_size=args.batch_size,
-                num_workers=NUM_WORKERS,
+                num_workers=0,
                 pin_memory=True,
                 prefetch_factor=2,
             )
