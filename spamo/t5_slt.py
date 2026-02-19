@@ -183,6 +183,9 @@ class FlanT5SLT(AbstractSLT):
             use_safetensors=True 
         )
 
+        self.t5_model.tie_weights()
+        print("--> Weights formally tied to save memory.")
+
         if self.use_gradient_checkpointing:
             self.t5_model.gradient_checkpointing_enable()
             
