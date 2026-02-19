@@ -4,8 +4,7 @@ model:
     lr: 6.0e-4
     monitor: val/bleu4
 
-    #model_name: google/flan-t5-xl
-    model_name: google/flan-t5-base
+    model_name: google/flan-t5-xl
     cache_dir: /data3/models
 
     inter_hidden: 768
