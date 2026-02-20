@@ -18,8 +18,8 @@ model:
     tuning_type: lora
 
     # Reduce model capacity
-    lora_r: 128
-    lora_alpha: 256
+    lora_r: 192
+    lora_alpha: 384
 
     # Increase regularization
     lora_dropout: 0.0
