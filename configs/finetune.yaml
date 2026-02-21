@@ -1,7 +1,7 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 1.5e-4
+    lr: 2.0e-4
     monitor: val/bleu4
 
     model_name: MBZUAI/LaMini-Flan-T5-783M
@@ -19,11 +19,11 @@ model:
 
     # Reduce model capacity
     lora_r: 128
-    lora_alpha: 384
+    lora_alpha: 256
 
     # Increase regularization
-    lora_dropout: 0.05
-    weight_decay: 0.01
+    lora_dropout: 0.1
+    weight_decay: 0.02
 
     fusion_mode: joint
     warm_up_steps: 1000
