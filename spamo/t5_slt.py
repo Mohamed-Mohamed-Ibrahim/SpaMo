@@ -216,6 +216,15 @@ class FlanT5SLT(AbstractSLT):
         else:
             self.sign_cl = None
 
+        # Projection head for contrastive learning (applied only for SignCL)
+        # Simple MLP projection: `hidden_size -> proj_dim -> proj_dim`.
+        proj_dim = self.inter_hidden
+        self.sign_cl_proj = nn.Sequential(
+            nn.Linear(self.t5_model.config.hidden_size, proj_dim),
+            nn.GELU(),
+            nn.Linear(proj_dim, proj_dim),
+        )
+
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
     def prepare_inputs(
@@ -563,7 +572,10 @@ class FlanT5SLT(AbstractSLT):
                     and self.sign_cl is not None
                     and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
                 ):
-                    sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
+                    # Project visual features into the SignCL embedding space (MLP -> normalize)
+                    proj_vis = self.sign_cl_proj(visual_outputs)
+                    proj_vis = F.normalize(proj_vis, dim=2)
+                    sign_cl_loss_val = self.sign_cl(proj_vis, visual_masks)
                     if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
                         loss = loss + self.sign_cl_alpha * sign_cl_loss_val
                         log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
@@ -597,7 +609,10 @@ class FlanT5SLT(AbstractSLT):
                     and self.sign_cl is not None
                     and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
                 ):
-                    sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
+                    # Project visual features into the SignCL embedding space (MLP -> normalize)
+                    proj_vis = self.sign_cl_proj(visual_outputs)
+                    proj_vis = F.normalize(proj_vis, dim=2)
+                    sign_cl_loss_val = self.sign_cl(proj_vis, visual_masks)
                     if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
                         loss = loss + self.sign_cl_alpha * sign_cl_loss_val
                         log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
