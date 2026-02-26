@@ -9,7 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoImageProcessor, CLIPVisionModel
 import torch.multiprocessing as mp
 
-import sys
+import sys, gc
 
 import warnings
 
@@ -186,7 +186,16 @@ def get_iterator(args, mode):
                 feats = reader.extract_features(batch)
                 video_feats.append(feats)
 
-            yield np.concatenate(video_feats, axis=0), file_id, str(start_time)
+            final_feats = np.concatenate(video_feats, axis=0), file_id, str(start_time)
+            yield final_feats
+
+            del video_feats
+            del final_feats
+            del loader
+            del dataset
+            if "cuda" in args.device:
+                torch.cuda.empty_cache()
+            gc.collect()
 
     return iterate, num
 
