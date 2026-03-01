@@ -1,7 +1,7 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 2.0e-4
+    lr: 1.5e-4
     monitor: val/bleu4
 
     model_name: MBZUAI/LaMini-Flan-T5-783M
@@ -32,10 +32,10 @@ model:
 
     alpha: 1.0
 
-    sign_cl_loss: false
+    sign_cl_loss: true
     sign_cl_alpha: 0.1
-    sign_cl_temperature: 0.6
-    sign_cl_temporal_window: 5
+    sign_cl_temperature: 0.3
+    sign_cl_temporal_window: 4
     sign_cl_every_n_steps: 1
 
     use_in_context: false
