@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import random
 import math
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union
 
 import torch.nn.functional as F
 
@@ -18,9 +18,86 @@ from spamo.mm_projector import build_vision_projector
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.asb import AbstractSLT
-from spamo.data_augmentation import FeatureAugmenter
 
+# =========================================================================
+# NEW: SMART FEATURE AUGMENTER CLASS
+# =========================================================================
+class FeatureAugmenter(nn.Module):
+    def __init__(
+        self, 
+        feature_dim: int,
+        aug_prob: float = 0.5,          
+        frame_dropout_prob: float = 0.1, 
+        span_mask_prob: float = 0.1,     
+        channel_drop_prob: float = 0.05, 
+        max_span_length: int = 10        
+    ):
+        super().__init__()
+        self.aug_prob = aug_prob
+        self.frame_dropout_prob = frame_dropout_prob
+        self.span_mask_prob = span_mask_prob
+        self.max_span_length = max_span_length
+        
+        # 1. Native PyTorch Channel Dropout (handles the 1/(1-p) scaling automatically)
+        self.channel_dropout = nn.Dropout(p=channel_drop_prob)
+        
+        # 2. Learnable mask token (Matches the feature dimension)
+        self.mask_token = nn.Parameter(torch.randn(1, 1, feature_dim) * 0.02)
 
+    def forward(
+        self, 
+        features: torch.Tensor, 
+        lengths: Union[List[int], torch.Tensor]
+    ) -> torch.Tensor:
+        
+        if not self.training or torch.rand(1).item() > self.aug_prob:
+            return features
+            
+        B, T, D = features.shape
+        device = features.device
+        aug = features.clone()
+
+        # -------------------------
+        # (1) CHANNEL DROPOUT 
+        # -------------------------
+        if self.channel_dropout.p > 0:
+            aug = self.channel_dropout(aug)
+
+        # -------------------------
+        # (2) SMART FRAME DROPOUT (Using Learnable Token)
+        # -------------------------
+        if self.frame_dropout_prob > 0:
+            drop_mask = torch.rand((B, T, 1), device=device) < self.frame_dropout_prob
+            aug = torch.where(drop_mask, self.mask_token, aug)
+
+        # -------------------------
+        # (3) SPAN MASKING (Using Learnable Token)
+        # -------------------------
+        if self.span_mask_prob > 0:
+            if isinstance(lengths, list):
+                lengths = torch.tensor(lengths, device=device)
+                
+            for b in range(B):
+                L = int(lengths[b])
+                if L <= 1: 
+                    continue
+                    
+                target_mask = int(L * self.span_mask_prob)
+                masked = 0
+                attempts = 0
+                
+                while masked < target_mask and attempts < 20:
+                    attempts += 1
+                    span_len = int(torch.randint(1, self.max_span_length + 1, (1,)))
+                    if span_len >= L: 
+                        break
+                    
+                    start = int(torch.randint(0, L - span_len, (1,)))
+                    aug[b, start:start+span_len] = self.mask_token
+                    masked += span_len
+
+        return aug
+# =========================================================================
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_float32_matmul_precision('high')
@@ -38,8 +115,8 @@ class FlanT5SLT(AbstractSLT):
         weight_decay=0.01,
         frame_sample_rate: int = 1, 
         prompt: str = '',
-        lr: float = 3e-4,             # <--- FIX: Added lr argument
-        input_size: int = 2048,       # Spatial input size
+        lr: float = 3e-4,             
+        input_size: int = 2048,       
         fusion_mode: str = 'joint',
         inter_hidden: int = 512,
         max_frame_len: int = 512,
@@ -58,7 +135,6 @@ class FlanT5SLT(AbstractSLT):
         lora_dropout: float = 0.1,
         use_data_augmentation: bool = True,
 
-        # NEW: 3 Augmentation Parameters
         augmentation_prob: float = 0.5,
         aug_frame_prob: float = 0.1,
         aug_span_prob: float = 0.1,
@@ -68,7 +144,6 @@ class FlanT5SLT(AbstractSLT):
     ):
         super().__init__(**kwargs)
         
-        # Configuration parameters
         self.input_size = input_size
         self.prompt = prompt
         self.model_name = model_name
@@ -89,39 +164,39 @@ class FlanT5SLT(AbstractSLT):
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
         
-        # <--- FIX: Force disable context if count is 0
         if self.num_in_context == 0:
             self.use_in_context = False
 
-        
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
         
-        # Save hyperparameters (ensures self.hparams.lr exists)
         self.save_hyperparameters()
-        
         self.prepare_models(model_name)
 
-        # Apply the selected tuning strategy
         if tuning_type == 'freeze':
             self._freeze_model()
         elif tuning_type == 'lora':
             self._apply_lora()
 
-        # Data augmenter
+        # DUAL DATA AUGMENTERS (Spatial vs Spatiotemporal dimensions)
         if self.use_data_augmentation:
-            self.augmenter = FeatureAugmenter(
+            self.spatial_augmenter = FeatureAugmenter(
+                feature_dim=self.input_size,  # 2048
                 aug_prob=augmentation_prob,
                 frame_dropout_prob=aug_frame_prob,
                 span_mask_prob=aug_span_prob,
                 channel_drop_prob=aug_channel_prob
             )
-            print(
-                f"[AUG] Enabled | frame={aug_frame_prob}, span={aug_span_prob}, channel={aug_channel_prob}"
+            self.spatiotemp_augmenter = FeatureAugmenter(
+                feature_dim=1024,             # 1024
+                aug_prob=augmentation_prob,
+                frame_dropout_prob=aug_frame_prob,
+                span_mask_prob=aug_span_prob,
+                channel_drop_prob=aug_channel_prob
             )
-
+            print(f"[AUG] Enabled Multi-Modal Masking | frame={aug_frame_prob}, span={aug_span_prob}, channel={aug_channel_prob}")
 
         self.set_container()
         
@@ -153,7 +228,6 @@ class FlanT5SLT(AbstractSLT):
         self.references = []
 
     def prepare_models(self, t5_model: str) -> None:
-        # Load the textual model
         self.t5_model = T5ForConditionalGeneration.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
@@ -161,24 +235,17 @@ class FlanT5SLT(AbstractSLT):
             use_safetensors=True 
         )
         
-        # Load the tokenizer
         self.t5_tokenizer = AutoTokenizer.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
             max_length=self.max_txt_len,
         )
 
-        # Load the vision projectors (Spatial + Spatiotemporal ONLY)
         self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
         
-        # Removed Pose and I3D projectors
-
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
-        
-        # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
-
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
     def prepare_inputs(
@@ -191,7 +258,6 @@ class FlanT5SLT(AbstractSLT):
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
         bs = visual_outputs.shape[0]
         
-        # Prepare the prompt
         prompts = [f'{self.prompt}'] * bs
         prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
         
@@ -234,41 +300,38 @@ class FlanT5SLT(AbstractSLT):
         return joint_outputs, joint_mask, output_tokens, targets
 
     def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Determine fusion mode (Only Spatial/Spatiotemporal)
         if self.fusion_mode in ['joint']:
             spatial = spatiotemporal = True
         else:
             spatial = self.fusion_mode == 'spatial'
             spatiotemporal = self.fusion_mode == 'spatiotemporal'
 
-        # Process spatial features
         if spatial:
             pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
 
+            # SPATIAL AUGMENTATION
             if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
-                pixel_values = self.augmenter(pixel_values, samples['num_frames'])
+                pixel_values = self.spatial_augmenter(pixel_values, samples['num_frames'])
 
             spatial_outputs = self.spatio_proj(pixel_values)
             spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
         
-        # Process spatiotemporal features
         if spatiotemporal:
             spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True)
             
+            # SPATIOTEMPORAL AUGMENTATION
             if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
-                spatiotemporal_outputs = self.augmenter(spatiotemporal_outputs, samples['glor_lengths'])
+                spatiotemporal_outputs = self.spatiotemp_augmenter(spatiotemporal_outputs, samples['glor_lengths'])
             
             spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
             spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
         
-        # Combine features
         if self.fusion_mode == 'joint':
             bs = spatial_outputs.shape[0]
             spatial_length = spatial_mask.sum(1)
             spatiotemporal_length = spatiotemporal_mask.sum(1)
             new_length = spatial_length + spatiotemporal_length
 
-            # Concatenate features
             joint_outputs = []
             for i in range(bs):
                 parts = []
@@ -290,7 +353,6 @@ class FlanT5SLT(AbstractSLT):
                 device=self.device
             ) 
         else:
-            # Single feature mode
             if spatial:
                 active_outputs, active_lens = spatial_outputs, samples['num_frames']
             elif spatiotemporal:
@@ -333,7 +395,6 @@ class FlanT5SLT(AbstractSLT):
             glosses.append(sample['gloss'])
             langs.append(sample['lang'])
 
-            # <--- FIX: Clean context handling
             _ex_lang_trans = []
             if self.num_in_context > 0:
                 if 'en_text' in sample and 'text' in sample:
@@ -343,10 +404,7 @@ class FlanT5SLT(AbstractSLT):
                         f"{sample.get('es_text','')}={sample['text']}"
                     ]
             
-                # Keep only the number requested
                 trimmed = _ex_lang_trans[:self.num_in_context]
-            
-                # Join them into one string
                 ex_lang_translations.append(' '.join(trimmed))
             else:
                 ex_lang_translations.append("")
@@ -360,8 +418,6 @@ class FlanT5SLT(AbstractSLT):
             num_frames.append(nframe)
             pixel_values.append(pval)
 
-            # Removed Pose and I3D processing blocks
-
             if sample.get('glor_value') is not None:
                 if isinstance(sample['glor_value'], list):
                     glor_values.append(torch.cat(sample['glor_value'], dim=0))
@@ -370,7 +426,6 @@ class FlanT5SLT(AbstractSLT):
                     glor_values.append(sample['glor_value'])
                     glor_lengths.append(len(sample['glor_value']))
 
-        # Only shuffle if we are actually USING context
         if self.use_in_context and len(ex_lang_translations) > 1:
             ex_lang_translations = derangement(ex_lang_translations)
 
@@ -534,12 +589,10 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
 
     def configure_optimizers(self):
-        # 1. Filter parameters
         trainable_params = [p for p in self.parameters() if p.requires_grad]
         if len(trainable_params) == 0:
             raise RuntimeError("No trainable parameters found.")
 
-        # 2. Setup AdamW 
         optimizer = torch.optim.AdamW(
             trainable_params,
             lr=self.hparams.lr,
@@ -548,7 +601,6 @@ class FlanT5SLT(AbstractSLT):
             betas=(0.9, 0.98)
         )
         
-        # 3. Dynamic Step Calculation
         if hasattr(self.trainer, 'estimated_stepping_batches'):
             total_steps = int(self.trainer.estimated_stepping_batches)
         else:
@@ -560,7 +612,6 @@ class FlanT5SLT(AbstractSLT):
             acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
             total_steps = (batches_per_epoch // acc_batches) * max_epochs
         
-        # 4. Warmup Logic (Priority: YAML value)
         if self.warm_up_steps is not None:
             warmup_steps = self.warm_up_steps
         else:
@@ -568,7 +619,6 @@ class FlanT5SLT(AbstractSLT):
 
         print(f"--> Optimizer Setup: Total Steps={total_steps}, Warmup Steps={warmup_steps}")
 
-        # 5. Cosine Scheduler
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
