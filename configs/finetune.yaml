@@ -50,10 +50,10 @@ data:
     train:
       target: dataset.how2sign.How2Sign
       params:
-        anno_root: ./preprocess/How2Sign/test_info.npy
-        vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
-        feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-spatial-features/clip-vit-large-patch14_feat_How2Sign/test
-        mae_feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-motion-features/how2sign_motion_features/mae_feat_How2Sign/test
+        anno_root: ./preprocess/How2Sign
+        vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/how2sign_clips/train_clips_raw_videos
+        feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
+        mae_feat_root: /kaggle/input/private-dataset/how2sign_motion_features
         mode: "train"
         spatial: true
         spatiotemporal: true
@@ -63,23 +63,23 @@ data:
     validation:
       target: dataset.how2sign.How2Sign
       params:
-        anno_root: ./preprocess/How2Sign/test_info.npy
+        anno_root: ./preprocess/How2Sign
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
-        feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-spatial-features/clip-vit-large-patch14_feat_How2Sign/test
-        mae_feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-motion-features/how2sign_motion_features/mae_feat_How2Sign/test
+        feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
+        mae_feat_root: //kaggle/input/private-dataset/how2sign_motion_features
         mode: "val"
         spatial: true
         spatiotemporal: true
         spatial_postfix: "_None_s2wrapping"
         spatiotemporal_postfix: "_None_overlap-8"
-    
+
     test:
       target: dataset.how2sign.How2Sign
       params:
-        anno_root: ./preprocess/How2Sign/test_info.npy
+        anno_root: ./preprocess/How2Sign
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
-        feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-spatial-features/clip-vit-large-patch14_feat_How2Sign/test
-        mae_feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-motion-features/how2sign_motion_features/mae_feat_How2Sign/test
+        feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
+        mae_feat_root: /kaggle/input/private-dataset/how2sign_motion_features
         mode: "test"
         spatial: true
         spatiotemporal: true
