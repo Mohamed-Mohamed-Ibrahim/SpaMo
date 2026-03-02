@@ -47,7 +47,7 @@ class How2Sign(torch.utils.data.Dataset):
         
         # Load annotations (Looking for test_info.npy)
         anno_path = self.anno_root / f'{mode}_info.npy'
-        anno_path = self.anno_root
+
         if not anno_path.exists():
             raise FileNotFoundError(f"Annotation file not found: {anno_path}")
         
