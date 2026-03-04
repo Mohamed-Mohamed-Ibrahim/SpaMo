@@ -25,14 +25,14 @@ model:
     lora_dropout: 0.05
     weight_decay: 0.0
 
-    fusion_mode: adaptive
+    fusion_mode: joint
     warm_up_steps: 600
     cross_modal_align: true
     combined_loss: true
 
     alpha: 1.0
 
-    sign_cl_loss: true
+    sign_cl_loss: false
     sign_cl_alpha: 0.1
     sign_cl_temperature: 0.3
     sign_cl_temporal_window: 12
@@ -75,7 +75,7 @@ data:
   params:
     batch_size: 8
     num_workers: 4
-  
+
     train:
       target: dataset.p14t.Phoenix14T
       params:
@@ -87,11 +87,11 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
-        
+
     validation:
       target: dataset.p14t.Phoenix14T
       params:
@@ -103,11 +103,11 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
-    
+
     test:
       target: dataset.p14t.Phoenix14T
       params:
@@ -119,7 +119,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
