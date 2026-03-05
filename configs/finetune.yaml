@@ -32,7 +32,7 @@ model:
 
     alpha: 1.0
 
-    sign_cl_loss: true
+    sign_cl_loss: false
     sign_cl_alpha: 0.1
     sign_cl_temperature: 0.3
     sign_cl_temporal_window: 4
@@ -90,7 +90,7 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -106,7 +106,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -122,7 +122,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
