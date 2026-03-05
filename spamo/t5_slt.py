@@ -41,7 +41,7 @@ class FlanT5SLT(AbstractSLT):
         prompt: str = '',
         lr: float = 3e-4,
         input_size: int = 1024,
-        pose_input_size: int = 543*3,
+        pose_input_size: int = 33*3,
         fusion_mode: str = 'joint',
         inter_hidden: int = 512,
         max_frame_len: int = 512,
