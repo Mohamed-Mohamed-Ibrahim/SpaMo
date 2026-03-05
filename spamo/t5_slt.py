@@ -321,6 +321,10 @@ class FlanT5SLT(AbstractSLT):
                 pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=torch.float32)
                 pose_lengths = [0] * B
             pose_outputs = self.pose_proj(pose_padded)
+            # DEBUG: print once
+            if not hasattr(self, '_pose_printed'):
+                print(f"[POSE DEBUG] shape={pose_padded.shape}, mean={pose_padded[0].abs().mean():.6f}, zeros={pose_padded[0].abs().sum()==0}")
+                self._pose_printed = True
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
         
         # Combine features for joint mode
