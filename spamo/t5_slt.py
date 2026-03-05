@@ -41,7 +41,7 @@ class FlanT5SLT(AbstractSLT):
         prompt: str = '',
         lr: float = 3e-4,
         input_size: int = 1024,
-        pose_input_size: int = 33*3,
+        pose_input_size: int = 543*3,
         fusion_mode: str = 'joint',
         inter_hidden: int = 512,
         max_frame_len: int = 512,
@@ -188,9 +188,8 @@ class FlanT5SLT(AbstractSLT):
         )
 
         # Load the vision projectors (Spatial + Spatiotemporal ONLY)
-        self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
-        self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
-        # Pose projector: default pose size is 33 keypoints * 3 coords = 99
+        self.spatio_proj = build_vision_projector('linear', 1024, self.inter_hidden)
+        self.spatiotemp_proj = build_vision_projector('linear', 2048, self.inter_hidden)
         self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
@@ -322,6 +321,10 @@ class FlanT5SLT(AbstractSLT):
                 pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=torch.float32)
                 pose_lengths = [0] * B
             pose_outputs = self.pose_proj(pose_padded)
+            # DEBUG: print once
+            if not hasattr(self, '_pose_printed'):
+                print(f"[POSE DEBUG] shape={pose_padded.shape}, mean={pose_padded[0].abs().mean():.6f}, zeros={pose_padded[0].abs().sum()==0}")
+                self._pose_printed = True
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
         
         # Combine features for joint mode
@@ -480,7 +483,13 @@ class FlanT5SLT(AbstractSLT):
             num_frames.append(nframe)
             pixel_values.append(pval)
 
-            # Removed Pose and I3D processing blocks
+            pv = sample.get('pose_value')
+            if pv is not None and isinstance(pv, torch.Tensor) and pv.numel() > 0:
+                if pv.dim() == 1:
+                    pv = pv.unsqueeze(0)  # [C] → [1, C]
+                pose_values.append(pv.float())
+            else:
+                pose_values.append(torch.zeros(1, self.pose_input_size, dtype=torch.float32))
 
             if sample.get('glor_value') is not None:
                 if isinstance(sample['glor_value'], list):

@@ -9,6 +9,7 @@ model:
 
     inter_hidden: 1024
     input_size: 2048
+    pose_input_size: 1629
     beam_size: 5
     max_frame_len: 512
     max_txt_len: 128
@@ -32,7 +33,7 @@ model:
 
     alpha: 1.0
 
-    sign_cl_loss: true
+    sign_cl_loss: false
     sign_cl_alpha: 0.1
     sign_cl_temperature: 0.3
     sign_cl_temporal_window: 12
@@ -83,7 +84,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: /kaggle/input/phoenix14t-holistic-features/phoenix14t-holistic-features
         mode: train
         spatial: true
         spatiotemporal: true
@@ -99,7 +100,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: /kaggle/input/phoenix14t-holistic-features/phoenix14t-holistic-features
         mode: test
         spatial: true
         spatiotemporal: true
@@ -115,7 +116,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: /kaggle/input/phoenix14t-holistic-features/phoenix14t-holistic-features
         mode: test
         spatial: true
         spatiotemporal: true
