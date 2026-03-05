@@ -84,7 +84,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: /kaggle/input/datasets/muhammad5286/phoenix14t-holistic-features/phoenix14t-holistic-features
+        pose_root: /kaggle/input/phoenix14t-holistic-features/phoenix14t-holistic-features
         mode: train
         spatial: true
         spatiotemporal: true
@@ -100,7 +100,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: /kaggle/input/datasets/muhammad5286/phoenix14t-holistic-features/phoenix14t-holistic-features
+        pose_root: /kaggle/input/phoenix14t-holistic-features/phoenix14t-holistic-features
         mode: test
         spatial: true
         spatiotemporal: true
@@ -116,7 +116,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: /kaggle/input/datasets/muhammad5286/phoenix14t-holistic-features/phoenix14t-holistic-features
+        pose_root: /kaggle/input/phoenix14t-holistic-features/phoenix14t-holistic-features
         mode: test
         spatial: true
         spatiotemporal: true
