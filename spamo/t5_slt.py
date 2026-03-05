@@ -483,7 +483,13 @@ class FlanT5SLT(AbstractSLT):
             num_frames.append(nframe)
             pixel_values.append(pval)
 
-            # Removed Pose and I3D processing blocks
+            pv = sample.get('pose_value')
+            if pv is not None and isinstance(pv, torch.Tensor) and pv.numel() > 0:
+                if pv.dim() == 1:
+                    pv = pv.unsqueeze(0)  # [C] → [1, C]
+                pose_values.append(pv.float())
+            else:
+                pose_values.append(torch.zeros(1, self.pose_input_size, dtype=torch.float32))
 
             if sample.get('glor_value') is not None:
                 if isinstance(sample['glor_value'], list):
