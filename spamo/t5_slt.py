@@ -182,7 +182,7 @@ class FlanT5SLT(AbstractSLT):
             t5_model, 
             cache_dir=self.cache_dir,
             torch_dtype=torch.bfloat16,
-            use_safetensors=True 
+            use_safetensors=False
         )
         
         # Load the tokenizer
