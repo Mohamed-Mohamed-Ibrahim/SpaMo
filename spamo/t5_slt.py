@@ -4,7 +4,6 @@ import torch.nn as nn
 import random
 import math
 from typing import Dict, List, Optional, Tuple, Any
-from ttransformer import TemporalTransformer
 
 import torch.nn.functional as F
 
@@ -21,6 +20,7 @@ from spamo.clip_loss import clip_loss
 from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
+from spamo.ttransformer import TemporalTransformer
 
 
 
