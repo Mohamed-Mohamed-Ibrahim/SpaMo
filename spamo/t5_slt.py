@@ -4,6 +4,7 @@ import torch.nn as nn
 import random
 import math
 from typing import Dict, List, Optional, Tuple, Any
+from ttransformer import TemporalTransformer
 
 import torch.nn.functional as F
 
@@ -71,6 +72,11 @@ class FlanT5SLT(AbstractSLT):
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
+        # Temp Transformer staff
+        transformer_layers: int = 4,
+        transformer_heads: int = 8,
+        dropout_rate: float = 0.1,
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -107,6 +113,12 @@ class FlanT5SLT(AbstractSLT):
         # <--- FIX: Force disable context if count is 0
         if self.num_in_context == 0:
             self.use_in_context = False
+
+        # Temp Transformer staff
+
+        self.transformer_layers = transformer_layers
+        self.transformer_heads = transformer_heads
+        self.dropout_rate = dropout_rate
 
         
         self.lora_r = lora_r
@@ -171,6 +183,12 @@ class FlanT5SLT(AbstractSLT):
         self.generated = []
         self.references = []
 
+    # Temp Transformer staff
+    def create_padding_mask(self, max_len: int, actual_lengths: torch.Tensor) -> torch.Tensor:
+        batch_size = actual_lengths.size(0)
+        indices = torch.arange(max_len, device=self.device).expand(batch_size, max_len)
+        return indices >= actual_lengths.unsqueeze(1)
+
     def prepare_models(self, t5_model: str) -> None:
         # Load the textual model
         self.t5_model = T5ForConditionalGeneration.from_pretrained(
@@ -196,6 +214,15 @@ class FlanT5SLT(AbstractSLT):
         
         # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+
+        # Temp Transformer staff
+        self.temporal_transformer = TemporalTransformer(
+            input_size=self.inter_hidden,
+            num_layers=self.transformer_layers,
+            num_heads=self.transformer_heads,
+            max_seq_len=self.max_frame_len,
+            dropout=0.1
+        )
         
         # Initialize adaptive fusion if fusion_mode is 'adaptive'
         if self.fusion_mode == 'adaptive':
@@ -351,9 +378,14 @@ class FlanT5SLT(AbstractSLT):
                 joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
             )
 
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
+            # Temp Transformer staff
+            feat = visual_conv_outputs['visual_feat'].permute(1,0,2)
+            new_feat_lens = visual_conv_outputs['feat_len'].to(self.device).long()
+            tt_mask = self.create_padding_mask(feat.size(1), new_feat_lens)
+            visual_outputs = self.temporal_transformer(feat, src_key_padding_mask=tt_mask)
+            
             visual_masks = create_mask(
-                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
+                seq_lengths=new_feat_lens.tolist(), 
                 device=self.device
             )
         
@@ -380,9 +412,14 @@ class FlanT5SLT(AbstractSLT):
                 torch.tensor(samples['num_frames'], device=self.device)
             )
 
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
+            # Temp Transformer staff
+            feat = visual_conv_outputs['visual_feat'].permute(1,0,2)
+            new_feat_lens = visual_conv_outputs['feat_len'].to(self.device).long()
+            tt_mask = self.create_padding_mask(feat.size(1), new_feat_lens)
+            visual_outputs = self.temporal_transformer(feat, src_key_padding_mask=tt_mask)
+
             visual_masks = create_mask(
-                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
+                seq_lengths=new_feat_lens.tolist(), 
                 device=self.device
             )
 
@@ -400,9 +437,13 @@ class FlanT5SLT(AbstractSLT):
                 pose_conv_outputs = self.temporal_encoder(
                     pose_outputs.permute(0,2,1), torch.tensor(pose_lengths, device=self.device)
                 )
-                visual_outputs = pose_conv_outputs['visual_feat'].permute(1,0,2)
+                feat = pose_conv_outputs['visual_feat'].permute(1,0,2)
+                new_feat_lens = pose_conv_outputs['feat_len'].to(self.device).long()
+                tt_mask = self.create_padding_mask(feat.size(1), new_feat_lens)
+                visual_outputs = self.temporal_transformer(feat, src_key_padding_mask=tt_mask)
+
                 visual_masks = create_mask(
-                    seq_lengths=pose_conv_outputs['feat_len'].to(torch.int).tolist(), 
+                    seq_lengths=new_feat_lens.tolist(), 
                     device=self.device
                 )
             else:
@@ -415,9 +456,15 @@ class FlanT5SLT(AbstractSLT):
                 conv_outputs = self.temporal_encoder(
                     active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
                 )
-                visual_outputs = conv_outputs['visual_feat'].permute(1,0,2)
+                
+                # Temp Transformer staff
+                feat = conv_outputs['visual_feat'].permute(1,0,2)
+                new_feat_lens = conv_outputs['feat_len'].to(self.device).long()
+                tt_mask = self.create_padding_mask(feat.size(1), new_feat_lens)
+                visual_outputs = self.temporal_transformer(feat, src_key_padding_mask=tt_mask)
+                
                 visual_masks = create_mask(
-                    seq_lengths=conv_outputs['feat_len'].to(torch.int).tolist(), 
+                    seq_lengths=new_feat_lens.tolist(), 
                     device=self.device
                 )
 
