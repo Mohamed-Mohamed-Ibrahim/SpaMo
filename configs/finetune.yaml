@@ -39,7 +39,7 @@ model:
     sign_cl_every_n_steps: 1
 
     use_kt_loss: true
-    kt_lambda: 0.4
+    kt_lambda: 0.7
 
     use_in_context: false
     num_in_context: 0
