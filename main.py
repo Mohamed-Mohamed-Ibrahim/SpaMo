@@ -3,6 +3,7 @@ import datetime
 import glob
 import os
 import sys
+import torch
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Any
 
@@ -76,13 +77,17 @@ def configure_callbacks(opt: argparse.Namespace, model: pl.LightningModule, ckpt
     callbacks.append(MetricsTableCallback())
 
     if opt.evaluation == "bleu":
+        print("\n" + "="*50)
+        print("SAVING WEIGHTS ONLY TO PREVENT STORAGE CRASH")
+        print("="*50 + "\n")
         callbacks.append(ModelCheckpoint(
             dirpath=ckptdir, 
             filename="epoch={epoch:05}-step={step:07}-bleu4={val/bleu4:.2f}", 
             monitor=model.monitor, 
             auto_insert_metric_name=False, 
             save_top_k=1, 
-            mode="max"
+            mode="max",
+            save_weights_only=True
         ))
         callbacks.append(EarlyStopping(
             monitor=model.monitor, verbose=True, patience=15, mode="max"
@@ -94,7 +99,8 @@ def configure_callbacks(opt: argparse.Namespace, model: pl.LightningModule, ckpt
             monitor=model.monitor, 
             auto_insert_metric_name=False, 
             save_top_k=1, 
-            mode="min"
+            mode="min",
+            save_weights_only=True
         ))
         callbacks.append(EarlyStopping(
             monitor=model.monitor, verbose=True, patience=15, mode="min"
@@ -183,6 +189,7 @@ def main():
     data.setup()
     
     model = instantiate_from_config(config.model)
+
     
     if not opt.fast_dev_run:
         logger_cfg = configure_logger("tensorboard", logdir, nowname)
@@ -210,7 +217,7 @@ def main():
         train_loader = data.train_dataloader()
         trainer.test(model, dataloaders=train_loader, ckpt_path=ckpt)
         trainer.validate(model, data, ckpt_path=ckpt) 
-        trainer.test(model, data, ckpt_path=ckpt)
+        #trainer.test(model, data, ckpt_path=ckpt)
 
 
 if __name__ == '__main__':

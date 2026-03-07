@@ -4,29 +4,29 @@ model:
     lr: 6.0e-4
     monitor: val/bleu4
 
-    model_name: google/flan-t5-xl
-    cache_dir: /data3/models
+    model_name: google/flan-t5-small
+    cache_dir: ./huggingface_cache
 
-    inter_hidden: 768
+    inter_hidden: 512
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
-    max_txt_len: 64
+    max_txt_len: 128
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
 
     tuning_type: lora
 
     # Reduce model capacity
-    lora_r: 16
-    lora_alpha: 32
+    lora_r: 64
+    lora_alpha: 128
 
     # Increase regularization
-    lora_dropout: 0.1
-    ###weight_decay: 0.05
+    lora_dropout: 0.05
+    weight_decay: 0.0
 
     fusion_mode: joint
-    warm_up_steps: 0
+    warm_up_steps: 600
     cross_modal_align: true
     combined_loss: true
 
@@ -38,8 +38,8 @@ model:
     sign_cl_temporal_window: 12
     sign_cl_every_n_steps: 1
 
-    use_in_context: true
-    num_in_context: 3
+    use_in_context: false
+    num_in_context: 0
     # NEW AUGMENTATION PARAMETERS
     use_data_augmentation: false
 
@@ -53,8 +53,65 @@ model:
     # aug_frame_prob: 0.15
     # aug_span_prob: 0.2
     # aug_channel_prob: 0.1
+# model:
+#   target: spamo.t5_slt.FlanT5SLT
+#   params:
+#     lr: 6.0e-4
+#     monitor: val/bleu4
 
-    use_gradient_checkpointing: true
+#     model_name: google/flan-t5-xl
+#     cache_dir: ./huggingface_cache
+
+#     inter_hidden: 768
+#     input_size: 2048
+#     beam_size: 5
+#     max_frame_len: 512
+#     max_txt_len: 64
+#     frame_sample_rate: 1
+#     prompt: "Translate the given sentence into {}."
+
+#     tuning_type: lora
+
+#     # Reduce model capacity
+#     lora_r: 16
+#     lora_alpha: 32
+
+#     # Increase regularization
+#     lora_dropout: 0.1
+#     ###weight_decay: 0.05
+
+#     fusion_mode: joint
+#     warm_up_steps: 0
+#     cross_modal_align: true
+#     combined_loss: true
+
+#     alpha: 1.0
+
+#     sign_cl_loss: false
+#     sign_cl_alpha: 0.1
+#     sign_cl_temperature: 0.3
+#     sign_cl_temporal_window: 12
+#     sign_cl_every_n_steps: 1
+
+#     use_in_context: false
+#     num_in_context: 0
+
+    
+#     # NEW AUGMENTATION PARAMETERS
+#     use_data_augmentation: false
+
+#     augmentation_prob: 0.5       # Apply augmentation to 50% of batches
+#     aug_frame_prob: 0.1          # Drop 10% of frames
+#     aug_span_prob: 0.1           # Mask 10% of spans
+#     aug_channel_prob: 0.05       # Drop 5% of feature channels
+#     # # Stronger augmentation
+#     # use_data_augmentation: true
+#     # augmentation_prob: 0.7
+#     # aug_frame_prob: 0.15
+#     # aug_span_prob: 0.2
+#     # aug_channel_prob: 0.1
+
+    use_gradient_checkpointing: false
 
 lightning:
   callback:
@@ -66,7 +123,7 @@ lightning:
     ###strategy: ddp_find_unused_parameters_true
     accumulate_grad_batches: 4
     accelerator: gpu
-    devices: 2
+    devices: 1
     max_epochs: 500
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 2
@@ -75,8 +132,8 @@ lightning:
 data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
-    batch_size: 2
-    num_workers: 4
+    batch_size: 8
+    num_workers: 16
   
     train:
       target: dataset.p14t.Phoenix14T
@@ -102,7 +159,7 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
-        mode: test
+        mode: dev
         spatial: true
         spatiotemporal: true
         pose: false

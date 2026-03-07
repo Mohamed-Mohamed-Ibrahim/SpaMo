@@ -13,6 +13,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
         # Ensure default is safe (4 is standard)
         self.num_workers = num_workers if num_workers is not None else 4
         
+        
         if train is not None:
             self.dataset_configs['train'] = train
             self.train_dataloader = self._train_dataloader
@@ -36,6 +37,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             pin_memory=True,
             num_workers=self.num_workers, # <--- FIXED: Uses YAML value
             persistent_workers=True,
+            prefetch_factor=4,
             shuffle=True,
             collate_fn=self.datasets['train'].collate_fn
         )
@@ -47,6 +49,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers, # <--- FIXED: Uses YAML value
             persistent_workers=True,
+            prefetch_factor=4,
             shuffle=False,
             collate_fn=self.datasets['valid'].collate_fn
         )
@@ -58,6 +61,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             pin_memory=True,
             num_workers=self.num_workers, # <--- FIXED: Uses YAML value
             persistent_workers=True,
+            prefetch_factor=4,
             shuffle=False,
             collate_fn=self.datasets['test'].collate_fn
         )
