@@ -188,8 +188,8 @@ class FlanT5SLT(AbstractSLT):
         )
 
         # Load the vision projectors (Spatial + Spatiotemporal ONLY)
-        self.spatio_proj = build_vision_projector('linear', 1024, self.inter_hidden)
-        self.spatiotemp_proj = build_vision_projector('linear', 2048, self.inter_hidden)
+        self.spatio_proj = build_vision_projector('linear', 2048, self.inter_hidden)
+        self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
         self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
