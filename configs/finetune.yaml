@@ -43,6 +43,11 @@ model:
     # aug_span_prob: 0.2
     # aug_channel_prob: 0.1
 
+    # Temp Transformer staff
+    transformer_layers: 4           
+    transformer_heads: 8             
+    dropout_rate: 0.1           
+
 lightning:
   callback:
     learning_rate_logger:
