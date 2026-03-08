@@ -54,7 +54,7 @@ lightning:
     accumulate_grad_batches: 4
     accelerator: gpu
     devices: 2
-    max_epochs: 2
+    max_epochs: 60
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: bf16
