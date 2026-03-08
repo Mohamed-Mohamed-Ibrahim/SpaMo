@@ -71,7 +71,7 @@ data:
         anno_root: ./preprocess/How2Sign
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/how2sign_clips/train_clips_raw_videos
         feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
-        mae_feat_root: /kaggle/input/private-dataset/how2sign_motion_features
+        mae_feat_root: /kaggle/input/datasets/muhammad5286/spamo-how2sign-motion-features/how2sign_motion_features
         pose_root: pose_Phoenix14T
         mode: "train"
         spatial: true
@@ -87,7 +87,7 @@ data:
         anno_root: ./preprocess/How2Sign
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
-        mae_feat_root: //kaggle/input/private-dataset/how2sign_motion_features
+        mae_feat_root: /kaggle/input/datasets/muhammad5286/spamo-how2sign-motion-features/how2sign_motion_features
         pose_root: pose_Phoenix14T
         mode: "val"
         spatial: true
@@ -103,7 +103,7 @@ data:
         anno_root: ./preprocess/How2Sign
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
-        mae_feat_root: /kaggle/input/private-dataset/how2sign_motion_features
+        mae_feat_root: /kaggle/input/datasets/muhammad5286/spamo-how2sign-motion-features/how2sign_motion_features
         pose_root: pose_Phoenix14T
         mode: "test"
         spatial: true
