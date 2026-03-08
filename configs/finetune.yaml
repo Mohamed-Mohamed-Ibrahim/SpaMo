@@ -30,7 +30,7 @@ model:
     cross_modal_align: true
     combined_loss: true
 
-    alpha: 1.0
+    alpha: 0.7
 
     sign_cl_loss: false
     sign_cl_alpha: 0.1
@@ -39,7 +39,7 @@ model:
     sign_cl_every_n_steps: 1
 
     use_kt_loss: true
-    kt_lambda: 0.9
+    kt_lambda: 0.7
 
     use_in_context: false
     num_in_context: 0
