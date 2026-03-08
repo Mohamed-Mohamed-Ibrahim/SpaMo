@@ -71,3 +71,20 @@ tmp/
 datasets
 
 __pycache__
+
+
+# Datasets
+feat_Phoenix14T/
+mae_feat_Phoenix14T/
+pose_Phoenix14T/
+dataset/Phoenix14T/
+
+# Global Heavy Files
+*.npy
+*.pt
+*.mp4
+
+# Heavy Folders
+logs/
+huggingface_cache/
+__pycache__/
