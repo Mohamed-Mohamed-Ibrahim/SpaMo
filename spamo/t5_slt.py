@@ -20,13 +20,14 @@ from spamo.clip_loss import clip_loss
 from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
+from spamo.ctc_mixin import CTCMixin
 
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_float32_matmul_precision('high')
 
-class FlanT5SLT(AbstractSLT):
+class FlanT5SLT(CTCMixin, AbstractSLT):
     """
     FlanT5-based Sign Language Translation model.
     Features: Spatial (ViT/ResNet) + Spatiotemporal (VideoMAE/C3D).
@@ -71,6 +72,10 @@ class FlanT5SLT(AbstractSLT):
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
+        use_ctc: bool = False,
+        ctc_weight: float = 0.3,
+        ctc_blank_id: int = -1,
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -113,9 +118,15 @@ class FlanT5SLT(AbstractSLT):
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
+        
+        self._ctc_use      = use_ctc
+        self._ctc_weight   = ctc_weight
+        self._ctc_blank_id = ctc_blank_id
+
         print("==="*40)
         print(f"use_data_augmentation: {use_data_augmentation}")
         print(f"sign_cl_loss{sign_cl_loss}")
+        print(f"use_ctc: {use_ctc}  |  ctc_weight: {ctc_weight}")
         print("==="*40)
         
         # Save hyperparameters (ensures self.hparams.lr exists)
@@ -217,6 +228,16 @@ class FlanT5SLT(AbstractSLT):
             self.sign_cl = None
 
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
+
+        # initialise CTC head via mixin 
+        self.init_ctc(
+            hidden_size  = self.t5_model.config.hidden_size,
+            vocab_size   = self.t5_model.config.vocab_size,
+            blank_id_cfg = self._ctc_blank_id,
+            tokenizer    = self.t5_tokenizer,
+            ctc_weight   = self._ctc_weight,
+            use_ctc      = self._ctc_use,
+        )
 
     def prepare_inputs(
         self, 
@@ -619,6 +640,12 @@ class FlanT5SLT(AbstractSLT):
             
             loss = outputs.loss
             log_dict[f"{split}/loss"] = loss
+
+            # TxtCTC loss
+            if split == 'train':
+                ctc_loss = self.compute_ctc_loss(visual_outputs, visual_masks, inputs)
+                loss = loss + ctc_loss
+                log_dict[f"{split}/ctc_loss"] = ctc_loss
 
         if split != "train":
             input_embeds, input_masks, _, _ = self.prepare_inputs(

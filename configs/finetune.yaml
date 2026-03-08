@@ -46,12 +46,11 @@ model:
     aug_frame_prob: 0.05          # Drop 10% of frames
     aug_span_prob: 0.05           # Mask 10% of spans
     aug_channel_prob: 0.05      # Drop 5% of feature channels
-    # # Stronger augmentation
-    # use_data_augmentation: true
-    # augmentation_prob: 0.7
-    # aug_frame_prob: 0.15
-    # aug_span_prob: 0.2
-    # aug_channel_prob: 0.1
+
+    use_ctc: true        # master on/off switch
+    ctc_weight: 0.3      # λ_Txt — weight of L_TxtCTC in total loss
+    ctc_blank_id: -1     # -1 means auto-resolve from tokenizer.pad_token_id
+
 
 lightning:
   callback:
@@ -99,7 +98,7 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
-        mode: test
+        mode: val
         spatial: true
         spatiotemporal: true
         pose: true
