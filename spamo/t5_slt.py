@@ -20,6 +20,7 @@ from spamo.clip_loss import clip_loss
 from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
+from spamo.tlstm import TemporalLSTM
 
 
 
@@ -196,6 +197,14 @@ class FlanT5SLT(AbstractSLT):
         
         # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+
+        # Replace self.temporal_transformer with:
+        self.temporal_lstm = TemporalLSTM(
+            input_size=self.inter_hidden,
+            hidden_size=self.inter_hidden,
+            num_layers=2, # Keep it shallow for Phoenix14T
+            dropout=0.2
+        )
         
         # Initialize adaptive fusion if fusion_mode is 'adaptive'
         if self.fusion_mode == 'adaptive':
@@ -332,59 +341,44 @@ class FlanT5SLT(AbstractSLT):
             pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
             new_length = spatial_length + spatiotemporal_length + pose_length
 
-            # Concatenate spatial, spatiotemporal and pose features for each sample
             joint_outputs = []
             for i in range(bs):
                 parts = []
-                if spatial:
-                    parts.append(spatial_outputs[i, :spatial_length[i], :])
-                if spatiotemporal:
-                    parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
-                if pose:
-                    parts.append(pose_outputs[i, :pose_length[i], :])
+                if spatial: parts.append(spatial_outputs[i, :spatial_length[i], :])
+                if spatiotemporal: parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
+                if pose: parts.append(pose_outputs[i, :pose_length[i], :])
                 concat_sample = torch.cat(parts, dim=0)
                 joint_outputs.append(concat_sample)
             joint_outputs = pad_sequence(joint_outputs, batch_first=True)
 
-            # Apply temporal encoder
             visual_conv_outputs = self.temporal_encoder(
                 joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
             )
 
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
-            visual_masks = create_mask(
-                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                device=self.device
-            )
+            feat = visual_conv_outputs['visual_feat'].permute(1,0,2) # [B, T, C]
+            new_feat_lens = visual_conv_outputs['feat_len'].to(self.device).long()
+            visual_outputs = self.temporal_lstm(feat, new_feat_lens)
+            
+            visual_masks = create_mask(seq_lengths=new_feat_lens.tolist(), device=self.device)
         
         elif self.fusion_mode == 'adaptive':
-            
-            # 1. Align Dimensions: Interpolate spatiotemporal (T_st) to match spatial (T_s) length
-            # Input shapes are (B, T, C). Interpolate expects (B, C, T)
             if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
                 spatiotemporal_outputs = F.interpolate(
                     spatiotemporal_outputs.permute(0, 2, 1), 
-                    size=spatial_outputs.shape[1], 
-                    mode='linear', 
-                    align_corners=False
+                    size=spatial_outputs.shape[1], mode='linear', align_corners=False
                 ).permute(0, 2, 1)
 
-            # 2. Apply Adaptive Fusion
-            # Returns (B, T, C)
             fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
 
-            # 3. Pass through Temporal Encoder
-            # TemporalConv expects (B, C, T) input
             visual_conv_outputs = self.temporal_encoder(
-                fused_outputs.permute(0, 2, 1), 
-                torch.tensor(samples['num_frames'], device=self.device)
+                fused_outputs.permute(0, 2, 1), torch.tensor(samples['num_frames'], device=self.device)
             )
 
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
-            visual_masks = create_mask(
-                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                device=self.device
-            )
+            feat = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
+            new_feat_lens = visual_conv_outputs['feat_len'].to(self.device).long()
+            visual_outputs = self.temporal_lstm(feat, new_feat_lens)
+
+            visual_masks = create_mask(seq_lengths=new_feat_lens.tolist(), device=self.device)
 
         else:
             # Single feature mode
@@ -392,34 +386,20 @@ class FlanT5SLT(AbstractSLT):
                 active_outputs, active_lens = spatial_outputs, samples['num_frames']
             elif spatiotemporal:
                 active_outputs, active_lens = spatiotemporal_outputs, samples['glor_lengths']
-                visual_outputs = spatiotemporal_outputs
-                visual_masks = spatiotemporal_mask
             elif pose:
-                # For pose-only mode, run temporal encoder on pose features
-                # use actual pose lengths computed earlier
-                pose_conv_outputs = self.temporal_encoder(
-                    pose_outputs.permute(0,2,1), torch.tensor(pose_lengths, device=self.device)
-                )
-                visual_outputs = pose_conv_outputs['visual_feat'].permute(1,0,2)
-                visual_masks = create_mask(
-                    seq_lengths=pose_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                    device=self.device
-                )
+                active_outputs, active_lens = pose_outputs, pose_lengths
             else:
                 raise NotImplementedError("Invalid fusion mode")
             
-            if self.fusion_mode == 'spatiotemporal':
-                 visual_outputs = active_outputs
-                 visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
-            else:
-                conv_outputs = self.temporal_encoder(
-                    active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
-                )
-                visual_outputs = conv_outputs['visual_feat'].permute(1,0,2)
-                visual_masks = create_mask(
-                    seq_lengths=conv_outputs['feat_len'].to(torch.int).tolist(), 
-                    device=self.device
-                )
+            conv_outputs = self.temporal_encoder(
+                active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
+            )
+
+            feat = conv_outputs['visual_feat'].permute(1,0,2)
+            new_feat_lens = conv_outputs['feat_len'].to(self.device).long()
+            visual_outputs = self.temporal_lstm(feat, new_feat_lens)
+            
+            visual_masks = create_mask(seq_lengths=new_feat_lens.tolist(), device=self.device)
 
         return visual_outputs, visual_masks
 
