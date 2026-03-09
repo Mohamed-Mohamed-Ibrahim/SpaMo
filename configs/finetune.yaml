@@ -1,13 +1,13 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 2.0e-4
+    lr: 6.0e-4
     monitor: val/bleu4
 
-    model_name: MBZUAI/LaMini-Flan-T5-783M
+    model_name: google/flan-t5-small
     cache_dir: /data3/models
 
-    inter_hidden: 1024
+    inter_hidden: 512
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
@@ -18,15 +18,15 @@ model:
     tuning_type: lora
 
     # Reduce model capacity
-    lora_r: 128
-    lora_alpha: 256
+    lora_r: 64
+    lora_alpha: 128
 
     # Increase regularization
-    lora_dropout: 0.1
-    weight_decay: 0.02
+    lora_dropout: 0.05
+    weight_decay: 0.0
 
     fusion_mode: joint
-    warm_up_steps: 1000
+    warm_up_steps: 600
     cross_modal_align: true
     combined_loss: true
 
@@ -42,10 +42,11 @@ model:
     num_in_context: 0
     # NEW AUGMENTATION PARAMETERS
     use_data_augmentation: false
-    augmentation_prob: 0.1      # Apply augmentation to 50% of batches
-    aug_frame_prob: 0.05          # Drop 10% of frames
-    aug_span_prob: 0.05           # Mask 10% of spans
-    aug_channel_prob: 0.05      # Drop 5% of feature channels
+
+    augmentation_prob: 0.5       # Apply augmentation to 50% of batches
+    aug_frame_prob: 0.1          # Drop 10% of frames
+    aug_span_prob: 0.1           # Mask 10% of spans
+    aug_channel_prob: 0.05       # Drop 5% of feature channels
 
     use_ctc: true        # master on/off switch
     ctc_weight: 0.3      # λ_Txt — weight of L_TxtCTC in total loss
@@ -72,8 +73,8 @@ data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
     batch_size: 8
-    num_workers: 2
-  
+    num_workers: 4
+
     train:
       target: dataset.p14t.Phoenix14T
       params:
@@ -89,7 +90,7 @@ data:
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
-        
+
     validation:
       target: dataset.p14t.Phoenix14T
       params:
@@ -105,7 +106,7 @@ data:
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
-    
+
     test:
       target: dataset.p14t.Phoenix14T
       params:
