@@ -61,12 +61,6 @@ class TemporalConv(nn.Module):
         return feat_len
 
     def forward(self, frame_feat, lgt):
-        B, C, T = frame_feat.shape
-        min_len = 16
-        padding_needed = max(0, min_len - T)
-        if padding_needed > 0:
-            frame_feat = F.pad(frame_feat, (0, padding_needed), mode='constant', value=0)
-            lgt = lgt + padding_needed
         visual_feat = self.temporal_conv(frame_feat)
         lgt = self.update_lgt(lgt)
         logits = None if self.num_classes == -1 \
