@@ -65,7 +65,7 @@ lightning:
     accumulate_grad_batches: 4
     accelerator: gpu
     devices: 2
-    max_epochs: 100
+    max_epochs: 70
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: bf16
@@ -80,11 +80,11 @@ data:
       target: dataset.how2sign.How2Sign
       params:
         anno_root: ./preprocess/How2Sign
-        vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/how2sign_clips/train_clips_raw_videos
+        vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
-        mae_feat_root: /kaggle/input/private-dataset/how2sign_motion_features
+        mae_feat_root: //kaggle/input/private-dataset/how2sign_motion_features
         pose_root: pose_Phoenix14T
-        mode: "train"
+        mode: "val"
         spatial: true
         spatiotemporal: true
         pose: false
@@ -114,9 +114,9 @@ data:
         anno_root: ./preprocess/How2Sign
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
-        mae_feat_root: /kaggle/input/private-dataset/how2sign_motion_features
+        mae_feat_root: //kaggle/input/private-dataset/how2sign_motion_features
         pose_root: pose_Phoenix14T
-        mode: "test"
+        mode: "val"
         spatial: true
         spatiotemporal: true
         pose: false
