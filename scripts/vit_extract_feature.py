@@ -109,10 +109,10 @@ class ViTFeatureReader(object):
                     num_prefix_token=1,
                 )
             else:
-                outputs = self._forward_logic(pixel_values)
+                outputs = self.forward_features(pixel_values)
 
             # Return only the [CLS] token (index 0)
-            return outputs[:, 0].half().cpu().numpy()
+            return outputs[:, 0].float().cpu().numpy()
 
 
 def get_parser():
