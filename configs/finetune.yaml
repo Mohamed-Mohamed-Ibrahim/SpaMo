@@ -61,10 +61,10 @@ lightning:
       params:
         logging_interval: step
   trainer:
-    strategy: ddp_find_unused_parameters_true
+    #strategy: ddp_find_unused_parameters_true
     accumulate_grad_batches: 16
     accelerator: gpu
-    devices: 2
+    devices: 1
     max_epochs: 200
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
