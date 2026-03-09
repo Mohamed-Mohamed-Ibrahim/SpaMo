@@ -84,7 +84,7 @@ data:
         feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-spatial-features/clip-vit-large-patch14_feat_How2Sign/test
         mae_feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-motion-features/how2sign_motion_features/mae_feat_How2Sign/test
         pose_root: pose_Phoenix14T
-        mode: "val"
+        mode: ""
         spatial: true
         spatiotemporal: true
         pose: false
@@ -100,7 +100,7 @@ data:
         feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-spatial-features/clip-vit-large-patch14_feat_How2Sign/test
         mae_feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-motion-features/how2sign_motion_features/mae_feat_How2Sign/test
         pose_root: pose_Phoenix14T
-        mode: "val"
+        mode: ""
         spatial: true
         spatiotemporal: true
         pose: false
@@ -116,7 +116,7 @@ data:
         feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-spatial-features/clip-vit-large-patch14_feat_How2Sign/test
         mae_feat_root: /kaggle/input/notebooks/mohamedmoibrahim/me-spamo-how2sign-motion-features/how2sign_motion_features/mae_feat_How2Sign/test
         pose_root: pose_Phoenix14T
-        mode: "val"
+        mode: ""
         spatial: true
         spatiotemporal: true
         pose: false
