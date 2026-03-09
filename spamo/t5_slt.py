@@ -522,8 +522,7 @@ class FlanT5SLT(AbstractSLT):
             num_frames.append(nframe)
             pixel_values.append(pval)
 
-            # Removed Pose and I3D processing blocks
-
+            # Process glor values if available
             if sample.get("glor_value") is not None:
                 if isinstance(sample["glor_value"], list):
                     glor_values.append(torch.cat(sample["glor_value"], dim=0))
@@ -535,45 +534,6 @@ class FlanT5SLT(AbstractSLT):
         # Only shuffle if we are actually USING context
         if self.use_in_context and len(ex_lang_translations) > 1:
             ex_lang_translations = derangement(ex_lang_translations)
-
-        #         # Collect metadata
-        #         ids.append(sample['id'])
-        #         texts.append(sample['text'].lower())
-        #         glosses.append(sample.get('gloss', ''))
-        #         langs.append(sample.get('lang', 'en'))
-
-        #         if self.use_in_context and self.num_in_context > 0:
-        #             _ex_lang_trans = [
-        #                 f"{sample.get('en_text', '')}={sample['text']}",
-        #                 f"{sample.get('fr_text', '')}={sample['text']}",
-        #                 f"{sample.get('es_text', '')}={sample['text']}"
-        #             ]
-        #             _ex_lang_trans = _ex_lang_trans[:self.num_in_context]
-        #             ex_lang_translations.append(' '.join(_ex_lang_trans))
-        #         else:
-        #             ex_lang_translations.append("")
-
-        #         # Handle too long sequences with random cropping
-        #         if nframe > max_frame_len:
-        #             nframe = max_frame_len
-        #             start_index = random.randint(0, pval.size(0) - max_frame_len)
-        #             pval = pval[start_index:start_index + max_frame_len]
-
-        #         # Store processed visual features
-        #         num_frames.append(nframe)
-        #         pixel_values.append(pval)
-
-        #         # Process glor values if available
-        #         if sample['glor_value'] is not None:
-        #             if isinstance(sample['glor_value'], list):
-        #                 glor_values.append(torch.cat(sample['glor_value'], dim=0))
-        #                 glor_lengths.append(sum(len(g) for g in sample['glor_value']))
-        #             else:
-        #                 glor_values.append(sample['glor_value'])
-        #                 glor_lengths.append(len(sample['glor_value']))
-
-        # if self.use_in_context:
-        #     ex_lang_translations = derangement(ex_lang_translations)
 
         # Return structured dictionary
         return {
