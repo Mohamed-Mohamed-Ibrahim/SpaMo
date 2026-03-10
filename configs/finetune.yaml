@@ -26,7 +26,7 @@ model:
     weight_decay: 0.0
 
     fusion_mode: joint
-    warm_up_steps: 600
+    warm_up_steps: 0
     cross_modal_align: true
     combined_loss: true
 
