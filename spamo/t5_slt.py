@@ -73,7 +73,7 @@ class FlanT5SLT(AbstractSLT):
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
-        use_gradient_checkpointing: bool = False,
+        
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -108,7 +108,7 @@ class FlanT5SLT(AbstractSLT):
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
 
-        self.use_gradient_checkpointing = use_gradient_checkpointing
+        
         
         # <--- FIX: Force disable context if count is 0
         if self.num_in_context == 0:
@@ -203,15 +203,7 @@ class FlanT5SLT(AbstractSLT):
         self.t5_model.tie_weights()
         print("--> Weights formally tied to save memory.")
 
-        if self.use_gradient_checkpointing:
-            self.t5_model.gradient_checkpointing_enable()
-            
-            # Required when combining Checkpointing with LoRA
-            if hasattr(self.t5_model, "enable_input_require_grads"):
-                self.t5_model.enable_input_require_grads()
-                
-            print("--> Gradient Checkpointing ENABLED! Memory will be saved.")
-        
+
         # Load the tokenizer
         self.t5_tokenizer = AutoTokenizer.from_pretrained(
             t5_model, 
