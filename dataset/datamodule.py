@@ -37,7 +37,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             pin_memory=True,
             num_workers=self.num_workers, # <--- FIXED: Uses YAML value
             persistent_workers=True,
-            prefetch_factor=4,
+            prefetch_factor = 8,
             shuffle=True,
             collate_fn=self.datasets['train'].collate_fn
         )
@@ -49,7 +49,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers, # <--- FIXED: Uses YAML value
             persistent_workers=True,
-            prefetch_factor=4,
+            prefetch_factor = 8,
             shuffle=False,
             collate_fn=self.datasets['valid'].collate_fn
         )
@@ -61,7 +61,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             pin_memory=True,
             num_workers=self.num_workers, # <--- FIXED: Uses YAML value
             persistent_workers=True,
-            prefetch_factor=4,
+            prefetch_factor = 8,
             shuffle=False,
             collate_fn=self.datasets['test'].collate_fn
         )

@@ -216,6 +216,26 @@ class Phoenix14T(torch.utils.data.Dataset):
         for lang in ['en', 'es', 'fr']:
             if f'{lang}_text' in data:
                 result[f'{lang}_text'] = data[f'{lang}_text']
+
+        # ---------------------------------------------------------
+        # NEW FIX: ANTI-LEAKAGE CONTEXT GENERATOR
+        # ---------------------------------------------------------
+        # Pick a random DIFFERENT video from the dataset to serve as context.
+        # This guarantees the context translation NEVER matches the target.
+        rand_idx = index
+        max_idx = len(self.data) - 2 # Valid dataset indices
+        
+        while rand_idx == index:
+            rand_idx = random.randint(0, max_idx)
+            
+        rand_data = self.data[rand_idx]
+        
+        # Store the random video's text under special 'ctx_' keys
+        result['ctx_text'] = self._normalize_text(rand_data['text'])
+        for lang in ['en', 'es', 'fr']:
+            if f'{lang}_text' in rand_data:
+                result[f'ctx_{lang}_text'] = rand_data[f'{lang}_text']
+        # ---------------------------------------------------------
         
         # Store original data for reference
         result['original_info'] = data

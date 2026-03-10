@@ -43,7 +43,8 @@ class TemporalConv(nn.Module):
                     nn.Conv1d(input_sz, self.hidden_size, kernel_size=int(ks[1]), stride=1, padding=0)
                     #MultiScale_TemporalConv(input_sz, self.hidden_size)
                 )
-                modules.append(nn.BatchNorm1d(self.hidden_size))
+                #modules.append(nn.BatchNorm1d(self.hidden_size))
+                modules.append(nn.GroupNorm(1, self.hidden_size))
                 modules.append(nn.ReLU(inplace=True))
         self.temporal_conv = nn.Sequential(*modules)
 
@@ -76,7 +77,8 @@ class ResidualBlock(nn.Module):
     def __init__(self, channels, kernel_size=3, padding=1):
         super(ResidualBlock, self).__init__()
         self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=padding, stride=1)
-        self.bn1 = nn.BatchNorm1d(channels)
+        #self.bn1 = nn.BatchNorm1d(channels)
+        self.bn1 = nn.GroupNorm(1, channels)
         self.relu = nn.ReLU(inplace=True)
         
     def forward(self, x):

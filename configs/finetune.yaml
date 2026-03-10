@@ -1,16 +1,18 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 6.0e-4
-    monitor: val/bleu4
 
-    model_name: google/flan-t5-small
+    lr: 1.0e-4
+    monitor: val/bleu4
+    model_name: google/flan-t5-xl
     cache_dir: ./huggingface_cache
 
-    inter_hidden: 512
+    inter_hidden: 2048
+
+    #inter_hidden: 768
     input_size: 2048
     beam_size: 5
-    max_frame_len: 512
+    max_frame_len: 260
     max_txt_len: 128
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
@@ -18,15 +20,22 @@ model:
     tuning_type: lora
 
     # Reduce model capacity
-    lora_r: 64
-    lora_alpha: 128
+    lora_r: 16
+    lora_alpha: 32
+
+    # # Reduce model capacity back to what the checkpoint expects
+    # lora_r: 16
+    # lora_alpha: 32
 
     # Increase regularization
     lora_dropout: 0.05
     weight_decay: 0.0
 
     fusion_mode: joint
-    warm_up_steps: 600
+
+    warm_up_steps: 4000
+    lr_warmup_steps: 10000
+
     cross_modal_align: true
     combined_loss: true
 
@@ -38,8 +47,11 @@ model:
     sign_cl_temporal_window: 12
     sign_cl_every_n_steps: 1
 
-    use_in_context: false
-    num_in_context: 0
+    use_in_context: true
+    num_in_context: 3
+    
+    use_gradient_checkpointing: true
+
     # NEW AUGMENTATION PARAMETERS
     use_data_augmentation: false
 
@@ -120,11 +132,11 @@ lightning:
       params:
         logging_interval: step
   trainer:
-    ###strategy: ddp_find_unused_parameters_true
+    #strategy: ddp_find_unused_parameters_true
     accumulate_grad_batches: 4
     accelerator: gpu
     devices: 1
-    max_epochs: 500
+    max_epochs: 200
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 2
     precision: bf16
@@ -132,8 +144,8 @@ lightning:
 data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
-    batch_size: 8
-    num_workers: 16
+    batch_size: 4
+    num_workers: 8
   
     train:
       target: dataset.p14t.Phoenix14T

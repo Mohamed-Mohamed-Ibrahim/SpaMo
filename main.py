@@ -179,9 +179,9 @@ def main():
     # If not explicitly set, enable DDP find-unused-parameters to avoid
     # runtime errors when some model parameters are intentionally unused
     # (e.g., when freezing the base model or using LoRA adapters).
-    from pytorch_lightning.strategies import DDPStrategy
-    if not hasattr(trainer_opt, "strategy") or trainer_opt.strategy is None:
-        trainer_opt.strategy = DDPStrategy(find_unused_parameters=True)
+    # from pytorch_lightning.strategies import DDPStrategy
+    # if not hasattr(trainer_opt, "strategy") or trainer_opt.strategy is None:
+    #     trainer_opt.strategy = DDPStrategy(find_unused_parameters=True)
 
     lightning_config.trainer = trainer_config
     

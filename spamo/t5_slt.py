@@ -47,7 +47,8 @@ class FlanT5SLT(AbstractSLT):
         max_frame_len: int = 512,
         max_txt_len: int = 64,
         cross_modal_align: bool = False,
-        warm_up_steps: Optional[int] = None,
+        warm_up_steps: Optional[int] = 4000,
+        lr_warmup_steps: Optional[int] = 10000,
         combined_loss: bool = False,
         alpha: float = 0.1,
         sign_cl_loss: bool = False,
@@ -64,6 +65,7 @@ class FlanT5SLT(AbstractSLT):
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
         use_data_augmentation: bool = True,
+        use_gradient_checkpointing: bool = False,
 
         # NEW: 3 Augmentation Parameters
         augmentation_prob: float = 0.5,
@@ -91,6 +93,7 @@ class FlanT5SLT(AbstractSLT):
         self.tuning_type = tuning_type
         self.cross_modal_align = cross_modal_align
         self.warm_up_steps = warm_up_steps
+        self.lr_warmup_steps = lr_warmup_steps
         self.combined_loss = combined_loss
         self.alpha = alpha
         self.sign_cl_loss = sign_cl_loss
@@ -116,8 +119,11 @@ class FlanT5SLT(AbstractSLT):
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
+        self.use_gradient_checkpointing = use_gradient_checkpointing
+
         print("==="*40)
         print(f"use_data_augmentation: {use_data_augmentation}")
+        print(f"use_gradient_checkpointing: {use_gradient_checkpointing}")
         print(f"sign_cl_loss{sign_cl_loss}")
         print("==="*40)
         
@@ -131,6 +137,17 @@ class FlanT5SLT(AbstractSLT):
             self._freeze_model()
         elif tuning_type == 'lora':
             self._apply_lora()
+
+        # ---------------------------------------------------------
+        if self.use_gradient_checkpointing:
+            self.t5_model.gradient_checkpointing_enable()
+            
+            # CRITICAL: Because LoRA freezes the base model, we must force 
+            # the engine to track gradients for the inputs, or it will silently crash!
+            if hasattr(self.t5_model, "enable_input_require_grads"):
+                self.t5_model.enable_input_require_grads()
+            print("Gradient Checkpointing ENABLED for memory savings.")
+        # ---------------------------------------------------------
 
         # Data augmenter
         if self.use_data_augmentation:
@@ -461,6 +478,10 @@ class FlanT5SLT(AbstractSLT):
                 continue
 
             nframe = math.ceil(sample['num_frames'] / self.frame_sample_rate)
+
+            if nframe > max_frame_len:
+                continue
+            
             pval = sample['pixel_value'][::self.frame_sample_rate]
 
             ids.append(sample['id'])
@@ -471,11 +492,11 @@ class FlanT5SLT(AbstractSLT):
             # <--- FIX: Clean context handling
             _ex_lang_trans = []
             if self.num_in_context > 0:
-                if 'en_text' in sample and 'text' in sample:
+                if 'ctx_en_text' in sample and 'ctx_text' in sample:
                     _ex_lang_trans = [
-                        f"{sample.get('en_text','')}={sample['text']}",
-                        f"{sample.get('fr_text','')}={sample['text']}",
-                        f"{sample.get('es_text','')}={sample['text']}"
+                        f"{sample.get('ctx_en_text','')}={sample['ctx_text']}",
+                        f"{sample.get('ctx_fr_text','')}={sample['ctx_text']}",
+                        f"{sample.get('ctx_es_text','')}={sample['ctx_text']}"
                     ]
             
                 # Keep only the number requested
@@ -487,10 +508,7 @@ class FlanT5SLT(AbstractSLT):
                 ex_lang_translations.append("")
 
 
-            if nframe > max_frame_len:
-                nframe = max_frame_len
-                start_index = random.randint(0, pval.size(0) - max_frame_len)
-                pval = pval[start_index:start_index + max_frame_len]
+
 
             num_frames.append(nframe)
             pixel_values.append(pval)
@@ -722,12 +740,12 @@ class FlanT5SLT(AbstractSLT):
             total_steps = (batches_per_epoch // acc_batches) * max_epochs
         
         # 4. Warmup Logic (Priority: YAML value)
-        if self.warm_up_steps is not None:
-            warmup_steps = self.warm_up_steps
+        if self.lr_warmup_steps is not None:
+            warmup_steps = self.lr_warmup_steps
         else:
             warmup_steps = int(total_steps * 0.1)
 
-        print(f"--> Optimizer Setup: Total Steps={total_steps}, Warmup Steps={warmup_steps}")
+        print(f"--> Optimizer Setup: Total Steps={total_steps}, LR Warmup Steps={warmup_steps}, VT-Align Steps={self.warm_up_steps}")
 
         # 5. Cosine Scheduler
         scheduler = get_cosine_schedule_with_warmup(
