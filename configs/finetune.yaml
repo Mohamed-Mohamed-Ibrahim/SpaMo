@@ -50,7 +50,7 @@ data:
     train:
       target: dataset.how2sign.How2Sign
       params:
-        anno_root: ./preprocess/How2Sign
+        anno_root: /kaggle/working/SpaMo/preprocess/How2Sign
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
         mae_feat_root: //kaggle/input/private-dataset/how2sign_motion_features
@@ -63,7 +63,7 @@ data:
     validation:
       target: dataset.how2sign.How2Sign
       params:
-        anno_root: ./preprocess/How2Sign
+        anno_root: /kaggle/working/SpaMo/preprocess/How2Sign
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
         mae_feat_root: //kaggle/input/private-dataset/how2sign_motion_features
@@ -76,7 +76,7 @@ data:
     test:
       target: dataset.how2sign.How2Sign
       params:
-        anno_root: ./preprocess/How2Sign
+        anno_root: /kaggle/working/SpaMo/preprocess/How2Sign
         vid_root: /kaggle/input/datasets/guangwoen/how2sign-clips/testing/testing/test_clips_raw_videos
         feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features
         mae_feat_root: //kaggle/input/private-dataset/how2sign_motion_features
