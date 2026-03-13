@@ -19,7 +19,7 @@ model:
 
     use_spatial: true
     use_spatiotemporal: true
-    use_pose: false
+    use_pose: true
 
     # Reduce model capacity
     lora_r: 32
