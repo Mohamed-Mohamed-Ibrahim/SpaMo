@@ -91,7 +91,7 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -107,7 +107,7 @@ data:
         mode: dev
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -123,7 +123,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: true
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
