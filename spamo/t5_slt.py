@@ -74,6 +74,11 @@ class FlanT5SLT(AbstractSLT):
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
+        # NEW: InfoLOOB Loss Parameters
+        use_infoloob_loss: bool = False,
+        infoloob_temperature: float = 0.07,
+        infoloob_weight: float = 1.0,
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -105,6 +110,11 @@ class FlanT5SLT(AbstractSLT):
         self.use_resampler = use_resampler
         self.sampling_length = sampling_length
         self.cache_dir = cache_dir
+        
+        # InfoLOOB Loss parameters
+        self.use_infoloob_loss = use_infoloob_loss
+        self.infoloob_temperature = infoloob_temperature
+        self.infoloob_weight = infoloob_weight
         
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
@@ -234,10 +244,10 @@ class FlanT5SLT(AbstractSLT):
 
         # Knowledge Transfer components
         if self.use_kt_loss:
-            self.sbert = SentenceTransformer('all-MiniLM-L6-v2')
+            self.sbert = SentenceTransformer('all-mpnet-base-v2')
             for param in self.sbert.parameters():
                 param.requires_grad = False
-            self.kt_proj = nn.Linear(self.t5_model.config.hidden_size, 384)
+            self.kt_proj = nn.Linear(self.t5_model.config.hidden_size, 768)
 
     def prepare_inputs(
         self, 
@@ -529,7 +539,41 @@ class FlanT5SLT(AbstractSLT):
             'glor_lengths': glor_lengths,
         }
 
-    def visual_textual_align(self, visual_outputs: torch.Tensor, visual_masks: torch.Tensor, samples: Dict) -> torch.Tensor:
+    def infoloob_loss(self, sim_matrix: torch.Tensor) -> torch.Tensor:
+        """
+        InfoLOOB Loss: "Improving Contrastive Learning by Leaving Out the Positive"
+        
+        Args:
+            sim_matrix: Similarity matrix of shape [batch_size, batch_size]
+        
+        Returns:
+            Scalar loss value
+        """
+        # Numerical stability: subtract maximum value
+        sim_matrix_stable = sim_matrix - sim_matrix.max(dim=1, keepdim=True)[0]
+        
+        # Compute exponentials
+        exp_sim = torch.exp(sim_matrix_stable)
+        
+        # Positive: diagonal elements
+        pos = torch.diag(exp_sim)
+        
+        # Negative: sum of all exponentials minus the positive
+        neg = exp_sim.sum(dim=1) - pos
+        
+        # Compute loss with epsilon for stability
+        loss = -torch.log(pos / (neg + 1e-8))
+        
+        return loss.mean()
+
+    def visual_textual_align(self, visual_outputs: torch.Tensor, visual_masks: torch.Tensor, samples: Dict) -> Tuple[torch.Tensor, str]:
+        """
+        Visual-textual alignment loss.
+        Supports both CLIP-style loss and InfoLOOB loss based on configuration.
+        
+        Returns:
+            Tuple of (loss, loss_type) where loss_type is 'infoloob' or 'clip'
+        """
         output_tokens = self.t5_tokenizer(
             samples['text'],
             padding="longest",
@@ -544,11 +588,20 @@ class FlanT5SLT(AbstractSLT):
         image_embeds = F.normalize(image_embeds, dim=-1)
         text_embeds = F.normalize(text_embeds, dim=-1)
 
-        logit_scale = self.logit_scale.exp()
-        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
-
-        loss = clip_loss(logits_per_text)
-        return loss
+        # Compute similarity matrix
+        similarity = torch.matmul(text_embeds, image_embeds.t())
+        
+        if self.use_infoloob_loss:
+            # Apply temperature scaling
+            similarity_scaled = similarity / self.infoloob_temperature
+            loss = self.infoloob_loss(similarity_scaled)
+            return loss, 'infoloob'
+        else:
+            # Use original CLIP-style loss
+            logit_scale = self.logit_scale.exp()
+            logits_per_text = similarity * logit_scale
+            loss = clip_loss(logits_per_text)
+            return loss, 'clip'
 
     def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
         visual_outputs, visual_masks = self.prepare_visual_inputs(inputs)
@@ -563,8 +616,9 @@ class FlanT5SLT(AbstractSLT):
                         visual_outputs, visual_masks, inputs, split, batch_idx
                     )
                 
-                cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
-                log_dict[f"{split}/contra_loss"] = cont_loss
+                cont_loss, loss_type = self.visual_textual_align(visual_outputs, visual_masks, inputs)
+                loss_key = f"{split}/infoloob_loss" if loss_type == 'infoloob' else f"{split}/contra_loss"
+                log_dict[loss_key] = cont_loss
                 loss = cont_loss
                 
             elif self.warm_up_steps is not None and self.global_step <= self.warm_up_steps:
@@ -573,9 +627,10 @@ class FlanT5SLT(AbstractSLT):
                         visual_outputs, visual_masks, inputs, split, batch_idx
                     )
                 
-                # Visual-textual contrastive loss (CLIP-style)
-                cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
-                log_dict[f"{split}/contra_loss"] = cont_loss
+                # Visual-textual contrastive loss (CLIP-style or InfoLOOB)
+                cont_loss, loss_type = self.visual_textual_align(visual_outputs, visual_masks, inputs)
+                loss_key = f"{split}/infoloob_loss" if loss_type == 'infoloob' else f"{split}/contra_loss"
+                log_dict[loss_key] = cont_loss
                 loss = cont_loss
                 
                 # Sign Contrastive Learning loss (SignCL) - temporal neighborhoods
@@ -611,9 +666,10 @@ class FlanT5SLT(AbstractSLT):
                 log_dict[f"{split}/loss"] = t5_loss
                 
                 # Add visual-textual contrastive component
-                cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
+                cont_loss, loss_type = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 loss = t5_loss + self.alpha * cont_loss
-                log_dict[f"{split}/contra_loss"] = cont_loss
+                loss_key = f"{split}/infoloob_loss" if loss_type == 'infoloob' else f"{split}/contra_loss"
+                log_dict[loss_key] = cont_loss
                 
                 # Add SignCL loss if enabled (reduces representation density)
                 if (
