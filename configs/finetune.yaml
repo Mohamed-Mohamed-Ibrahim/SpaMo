@@ -15,6 +15,10 @@ model:
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
 
+    use_spatial: true
+    use_spatiotemporal: true
+    use_pose: false
+
     tuning_type: lora
 
     # Reduce model capacity

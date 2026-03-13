@@ -21,17 +21,10 @@ from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
 
-
-
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_float32_matmul_precision('high')
 
 class FlanT5SLT(AbstractSLT):
-    """
-    FlanT5-based Sign Language Translation model.
-    Features: Spatial (ViT/ResNet) + Spatiotemporal (VideoMAE/C3D).
-    Removed: Pose and I3D features.
-    """
     def __init__(
         self, 
         tuning_type: str = 'lora', 
@@ -41,7 +34,7 @@ class FlanT5SLT(AbstractSLT):
         prompt: str = '',
         lr: float = 3e-4,
         input_size: int = 1024,
-        pose_input_size: int = 33*3,
+        pose_input_size: int = 543*3,
         fusion_mode: str = 'joint',
         inter_hidden: int = 512,
         max_frame_len: int = 512,
@@ -64,18 +57,17 @@ class FlanT5SLT(AbstractSLT):
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
         use_data_augmentation: bool = True,
-
-        # NEW: 3 Augmentation Parameters
         augmentation_prob: float = 0.5,
         aug_frame_prob: float = 0.1,
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
-
+        use_spatial: bool = True,
+        use_spatiotemporal: bool = True,
+        use_pose: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
         
-        # Configuration parameters
         self.input_size = input_size
         self.pose_input_size = pose_input_size
         self.prompt = prompt
@@ -104,32 +96,31 @@ class FlanT5SLT(AbstractSLT):
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
         
-        # <--- FIX: Force disable context if count is 0
         if self.num_in_context == 0:
             self.use_in_context = False
 
-        
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
+        
+        self.use_spatial = use_spatial
+        self.use_spatiotemporal = use_spatiotemporal
+        self.use_pose = use_pose
+
         print("==="*40)
         print(f"use_data_augmentation: {use_data_augmentation}")
-        print(f"sign_cl_loss{sign_cl_loss}")
+        print(f"sign_cl_loss: {sign_cl_loss}")
         print("==="*40)
         
-        # Save hyperparameters (ensures self.hparams.lr exists)
         self.save_hyperparameters()
-        
         self.prepare_models(model_name)
 
-        # Apply the selected tuning strategy
         if tuning_type == 'freeze':
             self._freeze_model()
         elif tuning_type == 'lora':
             self._apply_lora()
 
-        # Data augmenter
         if self.use_data_augmentation:
             self.augmenter = FeatureAugmenter(
                 aug_prob=augmentation_prob,
@@ -137,10 +128,7 @@ class FlanT5SLT(AbstractSLT):
                 span_mask_prob=aug_span_prob,
                 channel_drop_prob=aug_channel_prob
             )
-            print(
-                f"[AUG] Enabled | frame={aug_frame_prob}, span={aug_span_prob}, channel={aug_channel_prob}"
-            )
-
+            print(f"[AUG] Enabled | frame={aug_frame_prob}, span={aug_span_prob}, channel={aug_channel_prob}")
 
         self.set_container()
         
@@ -172,7 +160,6 @@ class FlanT5SLT(AbstractSLT):
         self.references = []
 
     def prepare_models(self, t5_model: str) -> None:
-        # Load the textual model
         self.t5_model = T5ForConditionalGeneration.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
@@ -180,24 +167,34 @@ class FlanT5SLT(AbstractSLT):
             use_safetensors=True 
         )
         
-        # Load the tokenizer
         self.t5_tokenizer = AutoTokenizer.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
             max_length=self.max_txt_len,
         )
 
-        # Load the vision projectors (Spatial + Spatiotemporal ONLY)
-        self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
+        self.spatio_proj = build_vision_projector('linear', 2048, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
-        # Pose projector: default pose size is 33 keypoints * 3 coords = 99
         self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
-        # Load the temporal encoder
+        if self.fusion_mode == 'joint':
+            num_active_streams = sum([self.use_spatial, self.use_spatiotemporal, self.use_pose])
+            self.conv_fusion_layer = nn.Linear(self.inter_hidden * num_active_streams, self.inter_hidden)
+            
+            if num_active_streams > 0:
+                identity_matrices = []
+                for _ in range(num_active_streams):
+                    identity_matrices.append(torch.eye(self.inter_hidden))
+                
+                init_weights = torch.cat(identity_matrices, dim=1)
+                
+                with torch.no_grad():
+                    self.conv_fusion_layer.weight.copy_(init_weights)
+                    nn.init.constant_(self.conv_fusion_layer.bias, 0.0)
+        
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
         
-        # Initialize adaptive fusion if fusion_mode is 'adaptive'
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
                 input_size_1=self.inter_hidden, 
@@ -206,8 +203,6 @@ class FlanT5SLT(AbstractSLT):
                 output_size=3
             )
             
-
-        # Initialize SignCL loss if enabled
         if self.sign_cl_loss:
             self.sign_cl = TemporalSignCLLoss(
                 temperature=self.sign_cl_temperature,
@@ -228,7 +223,6 @@ class FlanT5SLT(AbstractSLT):
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
         bs = visual_outputs.shape[0]
         
-        # Prepare the prompt
         prompts = [f'{self.prompt}'] * bs
         prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
         
@@ -271,24 +265,15 @@ class FlanT5SLT(AbstractSLT):
         return joint_outputs, joint_mask, output_tokens, targets
 
     def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Prepare visual inputs based on the fusion mode.
-        
-        Args:
-            samples: Input samples containing visual features
-            
-        Returns:
-            Tuple of (visual_outputs, visual_masks)
-        """
-        # Determine which visual features to use based on fusion mode
         if self.fusion_mode in ['joint', 'adaptive']:
-            spatial = spatiotemporal = pose = True
+            spatial = self.use_spatial
+            spatiotemporal = self.use_spatiotemporal
+            pose = self.use_pose
         else:
             spatial = self.fusion_mode == 'spatial'
             spatiotemporal = self.fusion_mode == 'spatiotemporal'
             pose = self.fusion_mode == 'pose'
 
-        # Process spatial features
         if spatial:
             pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
 
@@ -298,7 +283,6 @@ class FlanT5SLT(AbstractSLT):
             spatial_outputs = self.spatio_proj(pixel_values)
             spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
         
-        # Process spatiotemporal features
         if spatiotemporal:
             spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True)
             
@@ -308,13 +292,10 @@ class FlanT5SLT(AbstractSLT):
             spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
             spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
         
-        # Process pose features if needed
         if pose:
-            # pose_values should be a list of [T, pose_input_size] tensors (cpu tensors from get_inputs)
             raw_pose_values = samples.get('pose_values', [])
             pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in raw_pose_values]
             if len(pose_values_local) > 0:
-                # pad and move to device; ensure float dtype
                 pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.device).float()
                 pose_lengths = [int(p.size(0)) for p in pose_values_local]
             else:
@@ -324,43 +305,55 @@ class FlanT5SLT(AbstractSLT):
             pose_outputs = self.pose_proj(pose_padded)
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
         
-        # Combine features for joint mode
         if self.fusion_mode == 'joint':
-            bs = spatial_outputs.shape[0]
-            spatial_length = spatial_mask.sum(1)
-            spatiotemporal_length = spatiotemporal_mask.sum(1)
-            pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
-            new_length = spatial_length + spatiotemporal_length + pose_length
+            if spatial:
+                target_seq_len = spatial_outputs.shape[1]
+                target_mask = spatial_mask
+            elif spatiotemporal:
+                target_seq_len = spatiotemporal_outputs.shape[1]
+                target_mask = spatiotemporal_mask
+            elif pose:
+                target_seq_len = pose_outputs.shape[1]
+                target_mask = pose_mask
 
-            # Concatenate spatial, spatiotemporal and pose features for each sample
-            joint_outputs = []
-            for i in range(bs):
-                parts = []
-                if spatial:
-                    parts.append(spatial_outputs[i, :spatial_length[i], :])
-                if spatiotemporal:
-                    parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
-                if pose:
-                    parts.append(pose_outputs[i, :pose_length[i], :])
-                concat_sample = torch.cat(parts, dim=0)
-                joint_outputs.append(concat_sample)
-            joint_outputs = pad_sequence(joint_outputs, batch_first=True)
+            parts = []
+            if spatial:
+                parts.append(spatial_outputs)
+            
+            if spatiotemporal:
+                if spatiotemporal_outputs.shape[1] != target_seq_len:
+                    spatiotemporal_outputs = F.interpolate(
+                        spatiotemporal_outputs.permute(0, 2, 1), 
+                        size=target_seq_len, mode='linear', align_corners=False
+                    ).permute(0, 2, 1)
+                parts.append(spatiotemporal_outputs)
+                
+            if pose:
+                if pose_outputs.shape[1] != target_seq_len:
+                    pose_outputs = F.interpolate(
+                        pose_outputs.permute(0, 2, 1), 
+                        size=target_seq_len, mode='linear', align_corners=False
+                    ).permute(0, 2, 1)
+                parts.append(pose_outputs)
 
-            # Apply temporal encoder
+            fused_features = torch.cat(parts, dim=-1)
+            
+            fused_outputs = self.conv_fusion_layer(fused_features)
+
+            target_lengths = target_mask.sum(1)
+            
             visual_conv_outputs = self.temporal_encoder(
-                joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
+                fused_outputs.permute(0, 2, 1), 
+                torch.tensor(target_lengths.tolist(), device=self.device)
             )
 
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
+            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
             visual_masks = create_mask(
                 seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
                 device=self.device
             )
         
         elif self.fusion_mode == 'adaptive':
-            
-            # 1. Align Dimensions: Interpolate spatiotemporal (T_st) to match spatial (T_s) length
-            # Input shapes are (B, T, C). Interpolate expects (B, C, T)
             if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
                 spatiotemporal_outputs = F.interpolate(
                     spatiotemporal_outputs.permute(0, 2, 1), 
@@ -369,12 +362,8 @@ class FlanT5SLT(AbstractSLT):
                     align_corners=False
                 ).permute(0, 2, 1)
 
-            # 2. Apply Adaptive Fusion
-            # Returns (B, T, C)
             fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
 
-            # 3. Pass through Temporal Encoder
-            # TemporalConv expects (B, C, T) input
             visual_conv_outputs = self.temporal_encoder(
                 fused_outputs.permute(0, 2, 1), 
                 torch.tensor(samples['num_frames'], device=self.device)
@@ -387,7 +376,6 @@ class FlanT5SLT(AbstractSLT):
             )
 
         else:
-            # Single feature mode
             if spatial:
                 active_outputs, active_lens = spatial_outputs, samples['num_frames']
             elif spatiotemporal:
@@ -395,8 +383,6 @@ class FlanT5SLT(AbstractSLT):
                 visual_outputs = spatiotemporal_outputs
                 visual_masks = spatiotemporal_mask
             elif pose:
-                # For pose-only mode, run temporal encoder on pose features
-                # use actual pose lengths computed earlier
                 pose_conv_outputs = self.temporal_encoder(
                     pose_outputs.permute(0,2,1), torch.tensor(pose_lengths, device=self.device)
                 )
@@ -424,15 +410,6 @@ class FlanT5SLT(AbstractSLT):
         return visual_outputs, visual_masks
 
     def get_inputs(self, batch: List) -> Dict:
-        """
-        Process batch inputs into a structured dictionary.
-        
-        Args:
-            batch: Raw batch from dataloader
-
-        Returns:
-            Processed inputs dictionary
-        """
         pixel_values, glor_values, masks, ids = [], [], [], []
         pose_values = []
         texts, glosses = [], []
@@ -453,7 +430,6 @@ class FlanT5SLT(AbstractSLT):
             glosses.append(sample['gloss'])
             langs.append(sample['lang'])
 
-            # <--- FIX: Clean context handling
             _ex_lang_trans = []
             if self.num_in_context > 0:
                 if 'en_text' in sample and 'text' in sample:
@@ -463,14 +439,10 @@ class FlanT5SLT(AbstractSLT):
                         f"{sample.get('es_text','')}={sample['text']}"
                     ]
             
-                # Keep only the number requested
                 trimmed = _ex_lang_trans[:self.num_in_context]
-            
-                # Join them into one string
                 ex_lang_translations.append(' '.join(trimmed))
             else:
                 ex_lang_translations.append("")
-
 
             if nframe > max_frame_len:
                 nframe = max_frame_len
@@ -480,7 +452,13 @@ class FlanT5SLT(AbstractSLT):
             num_frames.append(nframe)
             pixel_values.append(pval)
 
-            # Removed Pose and I3D processing blocks
+            pv = sample.get('pose_value')
+            if pv is not None and isinstance(pv, torch.Tensor) and pv.numel() > 0:
+                if pv.dim() == 1:
+                    pv = pv.unsqueeze(0)
+                pose_values.append(pv.float())
+            else:
+                pose_values.append(torch.zeros(1, self.pose_input_size, dtype=torch.float32))
 
             if sample.get('glor_value') is not None:
                 if isinstance(sample['glor_value'], list):
@@ -490,7 +468,6 @@ class FlanT5SLT(AbstractSLT):
                     glor_values.append(sample['glor_value'])
                     glor_lengths.append(len(sample['glor_value']))
 
-        # Only shuffle if we are actually USING context
         if self.use_in_context and len(ex_lang_translations) > 1:
             ex_lang_translations = derangement(ex_lang_translations)
 
@@ -552,12 +529,10 @@ class FlanT5SLT(AbstractSLT):
                         visual_outputs, visual_masks, inputs, split, batch_idx
                     )
                 
-                # Visual-textual contrastive loss (CLIP-style)
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 log_dict[f"{split}/contra_loss"] = cont_loss
                 loss = cont_loss
                 
-                # Sign Contrastive Learning loss (SignCL) - temporal neighborhoods
                 if (
                     self.sign_cl_loss
                     and self.sign_cl is not None
@@ -586,12 +561,10 @@ class FlanT5SLT(AbstractSLT):
                 t5_loss = outputs.loss
                 log_dict[f"{split}/loss"] = t5_loss
                 
-                # Add visual-textual contrastive component
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 loss = t5_loss + self.alpha * cont_loss
                 log_dict[f"{split}/contra_loss"] = cont_loss
                 
-                # Add SignCL loss if enabled (reduces representation density)
                 if (
                     self.sign_cl_loss
                     and self.sign_cl is not None
@@ -680,12 +653,10 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
 
     def configure_optimizers(self):
-        # 1. Filter parameters
         trainable_params = [p for p in self.parameters() if p.requires_grad]
         if len(trainable_params) == 0:
             raise RuntimeError("No trainable parameters found.")
 
-        # 2. Setup AdamW 
         optimizer = torch.optim.AdamW(
             trainable_params,
             lr=self.hparams.lr,
@@ -694,7 +665,6 @@ class FlanT5SLT(AbstractSLT):
             betas=(0.9, 0.98)
         )
         
-        # 3. Dynamic Step Calculation
         if hasattr(self.trainer, 'estimated_stepping_batches'):
             total_steps = int(self.trainer.estimated_stepping_batches)
         else:
@@ -706,7 +676,6 @@ class FlanT5SLT(AbstractSLT):
             acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
             total_steps = (batches_per_epoch // acc_batches) * max_epochs
         
-        # 4. Warmup Logic (Priority: YAML value)
         if self.warm_up_steps is not None:
             warmup_steps = self.warm_up_steps
         else:
@@ -714,21 +683,18 @@ class FlanT5SLT(AbstractSLT):
 
         print(f"--> Optimizer Setup: Total Steps={total_steps}, Warmup Steps={warmup_steps}")
 
-        # 5. Cosine Scheduler
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
             num_training_steps=total_steps,
         )
 
-        # log parameter counts for debugging DDP issues
         try:
             total = sum(p.numel() for p in self.parameters())
             trainable = sum(p.numel() for p in trainable_params)
             self.log('model/total_params', float(total), prog_bar=False)
             self.log('model/trainable_params', float(trainable), prog_bar=False)
         except Exception:
-            # logging may not be available at construction time in some contexts
             pass
 
         return {
