@@ -17,6 +17,10 @@ model:
 
     tuning_type: lora
 
+    use_spatial: true
+    use_spatiotemporal: true
+    use_pose: false
+
     # Reduce model capacity
     lora_r: 32
     lora_alpha: 64
