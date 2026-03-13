@@ -180,6 +180,12 @@ class FlanT5SLT(AbstractSLT):
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+
+        # Learnable separator token between visual features and text prompt.
+        # Shape: (1, t5_hidden_size) — initialized to zeros, trained during backprop.
+        self.text_sep_token = nn.Parameter(
+            torch.zeros(1, self.t5_model.config.hidden_size)
+        )
         
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
@@ -225,16 +231,17 @@ class FlanT5SLT(AbstractSLT):
         visual_lengths = visual_mask.sum(1)
         prompt_lengths = input_tokens.attention_mask.sum(1)
         new_lengths = visual_lengths + prompt_lengths + 1
-        
+
         input_embeds = self.t5_model.encoder.embed_tokens(input_tokens.input_ids)
-        
-        fixed_text_sep = torch.zeros(1, visual_outputs.size(-1), device=self.device, dtype=visual_outputs.dtype)
+
+        # Learnable visual-to-text separator: cast to match visual_outputs dtype for mixed precision
+        text_sep = self.text_sep_token.to(dtype=visual_outputs.dtype)
 
         joint_outputs = []
         for i in range(bs):
             vis_out = visual_outputs[i, :visual_lengths[i], :]
             prompt_embeds = input_embeds[i, :prompt_lengths[i], :]
-            concat_sample = torch.cat((vis_out, fixed_text_sep, prompt_embeds), dim=0)
+            concat_sample = torch.cat((vis_out, text_sep, prompt_embeds), dim=0)
             joint_outputs.append(concat_sample)
         
         joint_outputs = pad_sequence(joint_outputs, batch_first=True)
