@@ -303,13 +303,19 @@ class FlanT5SLT(AbstractSLT):
             spatial_length = spatial_mask.sum(1)
             spatiotemporal_length = spatiotemporal_mask.sum(1)
             pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
-            new_length = spatial_length + spatiotemporal_length + pose_length
+
+            buffer_size = 5 
+            fixed_vis_sep = torch.zeros(buffer_size, self.inter_hidden, device=self.device, dtype=spatial_outputs.dtype)
+            sep_length = buffer_size
+
+            new_length = spatial_length + spatiotemporal_length + pose_length + sep_length
 
             joint_outputs = []
             for i in range(bs):
                 parts = []
                 if spatial:
                     parts.append(spatial_outputs[i, :int(spatial_length[i]), :])
+                parts.append(fixed_vis_sep)
                 if spatiotemporal:
                     parts.append(spatiotemporal_outputs[i, :int(spatiotemporal_length[i]), :])
                 if pose:
