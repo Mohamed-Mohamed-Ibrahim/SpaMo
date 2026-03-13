@@ -100,7 +100,7 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
-        mode: test
+        mode: dev
         spatial: true
         spatiotemporal: true
         pose: false
