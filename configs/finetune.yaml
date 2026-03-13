@@ -4,10 +4,10 @@ model:
     lr: 3.0e-4
     monitor: val/bleu4
 
-    model_name: google/flan-t5-base
+    model_name: MBZUAI/LaMini-Flan-T5-783M
     cache_dir: /data3/models
 
-    inter_hidden: 768
+    inter_hidden: 1024
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
@@ -22,8 +22,8 @@ model:
     lora_alpha: 64
 
     # Increase regularization
-    lora_dropout: 0.1
-    weight_decay: 0.01
+    lora_dropout: 0.05
+    weight_decay: 0.05
 
     fusion_mode: joint
     warm_up_steps: 1000
@@ -100,7 +100,7 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
-        mode: test
+        mode: dev
         spatial: true
         spatiotemporal: true
         pose: false
