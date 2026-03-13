@@ -181,6 +181,9 @@ class FlanT5SLT(AbstractSLT):
         
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
         
+        self.vis_sep = nn.Parameter(torch.zeros(5, self.inter_hidden))
+        self.text_sep = nn.Parameter(torch.zeros(1, self.t5_model.config.hidden_size))
+
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
                 input_size_1=self.inter_hidden, 
@@ -228,13 +231,13 @@ class FlanT5SLT(AbstractSLT):
         
         input_embeds = self.t5_model.encoder.embed_tokens(input_tokens.input_ids)
         
-        fixed_text_sep = torch.zeros(1, visual_outputs.size(-1), device=self.device, dtype=visual_outputs.dtype)
+        text_sep = self.text_sep.to(dtype=visual_outputs.dtype)
 
         joint_outputs = []
         for i in range(bs):
             vis_out = visual_outputs[i, :visual_lengths[i], :]
             prompt_embeds = input_embeds[i, :prompt_lengths[i], :]
-            concat_sample = torch.cat((vis_out, fixed_text_sep, prompt_embeds), dim=0)
+            concat_sample = torch.cat((vis_out, text_sep, prompt_embeds), dim=0)
             joint_outputs.append(concat_sample)
         
         joint_outputs = pad_sequence(joint_outputs, batch_first=True)
@@ -304,9 +307,8 @@ class FlanT5SLT(AbstractSLT):
             spatiotemporal_length = spatiotemporal_mask.sum(1)
             pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
 
-            buffer_size = 5 
-            fixed_vis_sep = torch.zeros(buffer_size, self.inter_hidden, device=self.device, dtype=spatial_outputs.dtype)
-            sep_length = buffer_size
+            sep_length = self.vis_sep.shape[0]
+            vis_sep = self.vis_sep.to(dtype=spatial_outputs.dtype)
 
             new_length = spatial_length + spatiotemporal_length + pose_length + sep_length
 
@@ -315,7 +317,7 @@ class FlanT5SLT(AbstractSLT):
                 parts = []
                 if spatial:
                     parts.append(spatial_outputs[i, :int(spatial_length[i]), :])
-                parts.append(fixed_vis_sep)
+                parts.append(vis_sep)
                 if spatiotemporal:
                     parts.append(spatiotemporal_outputs[i, :int(spatiotemporal_length[i]), :])
                 if pose:
