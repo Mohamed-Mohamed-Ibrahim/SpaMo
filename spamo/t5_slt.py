@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import random
 import math
+
 from typing import Dict, List, Optional, Tuple, Any
 
 import torch.nn.functional as F
@@ -13,6 +14,11 @@ from transformers import BertConfig, BertModel
 from peft import LoraConfig, get_peft_model, TaskType
 
 from spamo.tconv import TemporalConv
+from spamo.encoders import (
+    DeformableTransformerEncoder,
+    TransformerEncoder,
+    RecurrentEncoder,
+)
 from utils.helpers import create_mask, derangement
 from spamo.mm_projector import build_vision_projector, AdaptiveFusion
 from utils.evaluate import evaluate_results
@@ -25,6 +31,48 @@ from spamo.data_augmentation import FeatureAugmenter
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_float32_matmul_precision('high')
+
+
+def build_encoder(cfg: Dict) -> 'RecurrentEncoder | TransformerEncoder | DeformableTransformerEncoder':
+    """
+    Build a second-stage encoder from a config dict, mirroring the pattern in
+    GASLT/signjoey/model.py (build_model, L506-L536).
+
+    Supported ``type`` values:
+      - ``'deformable_transformer'``  – DeformableTransformerEncoder
+      - ``'transformer'``             – TransformerEncoder
+      - ``'recurrent'``               – RecurrentEncoder (default)
+
+    All remaining keys are forwarded verbatim to the chosen encoder class
+    (same as the ``**cfg["encoder"]`` style used in model.py).
+    """
+    enc_dropout = cfg.get("dropout", 0.0)
+    enc_emb_dropout = cfg.get("emb_dropout", enc_dropout)
+    encoder_type = cfg.get("type", "recurrent")
+
+    # Strip meta-keys that must not be forwarded to encoder constructors
+    fwd_cfg = {k: v for k, v in cfg.items() if k not in ("type", "emb_dropout")}
+
+    if encoder_type == "deformable_transformer":
+        encoder = DeformableTransformerEncoder(
+            **fwd_cfg,
+            emb_size=fwd_cfg["hidden_size"],
+            emb_dropout=enc_emb_dropout,
+        )
+    elif encoder_type == "transformer":
+        encoder = TransformerEncoder(
+            **fwd_cfg,
+            emb_size=fwd_cfg["hidden_size"],
+            emb_dropout=enc_emb_dropout,
+        )
+    else:  # 'recurrent' (default)
+        encoder = RecurrentEncoder(
+            **fwd_cfg,
+            emb_size=fwd_cfg["hidden_size"],
+            emb_dropout=enc_emb_dropout,
+        )
+    return encoder
+
 
 class FlanT5SLT(AbstractSLT):
     """
@@ -71,6 +119,20 @@ class FlanT5SLT(AbstractSLT):
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
+        # Second-stage encoder applied after TemporalConv.
+        # Mirrors GASLT model.py build_model() pattern (L506-L536).
+        # Set use_second_encoder=True and provide encoder_cfg dict to activate.
+        # encoder_cfg example (deformable_transformer):
+        #   {type: deformable_transformer, hidden_size: 768, num_layers: 2,
+        #    num_heads: 8, ff_size: 2048, dropout: 0.1,
+        #    query_type: mean, query_nb: 3,
+        #    num_keys: [5, 5], attentions_type: weighted_local_global}
+        use_second_encoder: bool = False,
+        encoder_cfg: Optional[Dict] = None,
+
+        # Primary TemporalConv encoder toggle
+        use_temporal_conv: bool = True,
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -113,6 +175,14 @@ class FlanT5SLT(AbstractSLT):
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
+        self.use_temporal_conv = use_temporal_conv
+
+        self.use_second_encoder = use_second_encoder
+        if use_second_encoder:
+            self._encoder_cfg = dict(encoder_cfg) if encoder_cfg else {}
+            self._encoder_cfg.setdefault("hidden_size", self.inter_hidden)
+        else:
+            self._encoder_cfg = {}
         print("==="*40)
         print(f"use_data_augmentation: {use_data_augmentation}")
         print(f"sign_cl_loss{sign_cl_loss}")
@@ -194,8 +264,13 @@ class FlanT5SLT(AbstractSLT):
         self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
-        # Load the temporal encoder
-        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+        if self.use_temporal_conv:
+            self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+
+        if self.use_second_encoder:
+            print(f"[SecondEncoder] Building encoder type='{self._encoder_cfg.get('type', 'recurrent')}' "
+                  f"hidden_size={self._encoder_cfg.get('hidden_size', self.inter_hidden)}")
+            self.second_encoder = build_encoder(self._encoder_cfg)
         
         # Initialize adaptive fusion if fusion_mode is 'adaptive'
         if self.fusion_mode == 'adaptive':
@@ -346,16 +421,26 @@ class FlanT5SLT(AbstractSLT):
                 joint_outputs.append(concat_sample)
             joint_outputs = pad_sequence(joint_outputs, batch_first=True)
 
-            # Apply temporal encoder
-            visual_conv_outputs = self.temporal_encoder(
-                joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
-            )
+            if self.use_temporal_conv:
+                visual_conv_outputs = self.temporal_encoder(
+                    joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
+                )
+                visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
+                visual_masks = create_mask(
+                    seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
+                    device=self.device
+                )
+            else:
+                visual_outputs = joint_outputs
+                visual_masks = create_mask(seq_lengths=new_length.tolist(), device=self.device)
 
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
-            visual_masks = create_mask(
-                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                device=self.device
-            )
+            if self.use_second_encoder:
+                enc_mask = visual_masks.unsqueeze(1)
+                visual_outputs, _ = self.second_encoder(
+                    embed_src=visual_outputs,
+                    src_length=visual_masks.sum(1).long(),
+                    mask=enc_mask,
+                )
         
         elif self.fusion_mode == 'adaptive':
             
@@ -373,18 +458,27 @@ class FlanT5SLT(AbstractSLT):
             # Returns (B, T, C)
             fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
 
-            # 3. Pass through Temporal Encoder
-            # TemporalConv expects (B, C, T) input
-            visual_conv_outputs = self.temporal_encoder(
-                fused_outputs.permute(0, 2, 1), 
-                torch.tensor(samples['num_frames'], device=self.device)
-            )
+            if self.use_temporal_conv:
+                visual_conv_outputs = self.temporal_encoder(
+                    fused_outputs.permute(0, 2, 1),
+                    torch.tensor(samples['num_frames'], device=self.device)
+                )
+                visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
+                visual_masks = create_mask(
+                    seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
+                    device=self.device
+                )
+            else:
+                visual_outputs = fused_outputs
+                visual_masks = create_mask(seq_lengths=samples['num_frames'], device=self.device)
 
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
-            visual_masks = create_mask(
-                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                device=self.device
-            )
+            if self.use_second_encoder:
+                enc_mask = visual_masks.unsqueeze(1)
+                visual_outputs, _ = self.second_encoder(
+                    embed_src=visual_outputs,
+                    src_length=visual_masks.sum(1).long(),
+                    mask=enc_mask,
+                )
 
         else:
             # Single feature mode
@@ -396,30 +490,53 @@ class FlanT5SLT(AbstractSLT):
                 visual_masks = spatiotemporal_mask
             elif pose:
                 # For pose-only mode, run temporal encoder on pose features
-                # use actual pose lengths computed earlier
-                pose_conv_outputs = self.temporal_encoder(
-                    pose_outputs.permute(0,2,1), torch.tensor(pose_lengths, device=self.device)
-                )
-                visual_outputs = pose_conv_outputs['visual_feat'].permute(1,0,2)
-                visual_masks = create_mask(
-                    seq_lengths=pose_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                    device=self.device
-                )
+                if self.use_temporal_conv:
+                    pose_conv_outputs = self.temporal_encoder(
+                        pose_outputs.permute(0,2,1), torch.tensor(pose_lengths, device=self.device)
+                    )
+                    visual_outputs = pose_conv_outputs['visual_feat'].permute(1,0,2)
+                    visual_masks = create_mask(
+                        seq_lengths=pose_conv_outputs['feat_len'].to(torch.int).tolist(),
+                        device=self.device
+                    )
+                else:
+                    visual_outputs = pose_outputs
+                    visual_masks = create_mask(seq_lengths=pose_lengths, device=self.device)
+
+                if self.use_second_encoder:
+                    enc_mask = visual_masks.unsqueeze(1)
+                    visual_outputs, _ = self.second_encoder(
+                        embed_src=visual_outputs,
+                        src_length=visual_masks.sum(1).long(),
+                        mask=enc_mask,
+                    )
             else:
                 raise NotImplementedError("Invalid fusion mode")
             
             if self.fusion_mode == 'spatiotemporal':
-                 visual_outputs = active_outputs
-                 visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
+                visual_outputs = active_outputs
+                visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
             else:
-                conv_outputs = self.temporal_encoder(
-                    active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
-                )
-                visual_outputs = conv_outputs['visual_feat'].permute(1,0,2)
-                visual_masks = create_mask(
-                    seq_lengths=conv_outputs['feat_len'].to(torch.int).tolist(), 
-                    device=self.device
-                )
+                if self.use_temporal_conv:
+                    conv_outputs = self.temporal_encoder(
+                        active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
+                    )
+                    visual_outputs = conv_outputs['visual_feat'].permute(1,0,2)
+                    visual_masks = create_mask(
+                        seq_lengths=conv_outputs['feat_len'].to(torch.int).tolist(),
+                        device=self.device
+                    )
+                else:
+                    visual_outputs = active_outputs
+                    visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
+
+                if self.use_second_encoder:
+                    enc_mask = visual_masks.unsqueeze(1)
+                    visual_outputs, _ = self.second_encoder(
+                        embed_src=visual_outputs,
+                        src_length=visual_masks.sum(1).long(),
+                        mask=enc_mask,
+                    )
 
         return visual_outputs, visual_masks
 
