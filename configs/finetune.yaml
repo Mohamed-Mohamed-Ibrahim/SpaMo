@@ -48,26 +48,26 @@ model:
     use_second_encoder: true
 
     # ── Option A: Deformable Transformer (local+global deformable attention) ─
-    encoder_cfg:
-      type: deformable_transformer
-      hidden_size: 768          # must match inter_hidden
-      num_layers: 2
-      num_heads: 8
-      ff_size: 2048
-      dropout: 0.1
-      query_type: mean          # 'mean' | 'attention'
-      query_nb: 3
-      num_keys: [5, 5]          # one entry per num_layers
-      attentions_type: weighted_local_global   # 'weighted_local_global' | 'local' | 'global'
-
-    # ── Option B: Standard Transformer ───────────────────────────────────────
     # encoder_cfg:
-    #   type: transformer
-    #   hidden_size: 768
+    #   type: deformable_transformer
+    #   hidden_size: 768          # must match inter_hidden
     #   num_layers: 2
     #   num_heads: 8
     #   ff_size: 2048
     #   dropout: 0.1
+    #   query_type: mean          # 'mean' | 'attention'
+    #   query_nb: 3
+    #   num_keys: [5, 5]          # one entry per num_layers
+    #   attentions_type: weighted_local_global   # 'weighted_local_global' | 'local' | 'global'
+
+    # ── Option B: Standard Transformer ───────────────────────────────────────
+    encoder_cfg:
+      type: transformer
+      hidden_size: 768
+      num_layers: 2
+      num_heads: 8
+      ff_size: 2048
+      dropout: 0.1
 
     # ── Option C: Recurrent (GRU / LSTM) ─────────────────────────────────────
     # encoder_cfg:
