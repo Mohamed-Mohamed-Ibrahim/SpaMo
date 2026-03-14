@@ -25,14 +25,16 @@ class SpatialGCNLayer(nn.Module):
     def __init__(self, in_channels, out_channels, num_nodes):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
-        self.A = nn.Parameter(torch.randn(num_nodes, num_nodes) * 0.01)
+        self.A = nn.Parameter(torch.eye(num_nodes) + torch.randn(num_nodes, num_nodes) * 0.01)
         self.bn = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
+        self.residual = nn.Conv2d(in_channels, out_channels, kernel_size=1) if in_channels != out_channels else nn.Identity()
 
     def forward(self, x):
+        res = self.residual(x)
         x = self.conv(x)
         x = torch.einsum('nctv,vw->nctw', x, self.A)
-        return self.relu(self.bn(x))
+        return self.relu(self.bn(x) + res)
 
 class TemporalGCNLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=5):
@@ -40,9 +42,11 @@ class TemporalGCNLayer(nn.Module):
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=(kernel_size, 1), padding=(kernel_size//2, 0))
         self.bn = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
+        self.residual = nn.Conv2d(in_channels, out_channels, kernel_size=1) if in_channels != out_channels else nn.Identity()
 
     def forward(self, x):
-        return self.relu(self.bn(self.conv(x)))
+        res = self.residual(x)
+        return self.relu(self.bn(self.conv(x)) + res)
 
 class SubPoseStream(nn.Module):
     def __init__(self, in_channels=3, hidden_dim=64, out_dim=256, num_nodes=21):
