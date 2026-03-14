@@ -181,9 +181,8 @@ class FlanT5SLT(AbstractSLT):
         
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
         
-        self.vis_sep = nn.Parameter(torch.zeros(5, self.inter_hidden))
-        self.text_sep = nn.Parameter(torch.zeros(1, self.t5_model.config.hidden_size))
-
+        self.vis_sep = nn.Parameter(torch.randn(5, self.inter_hidden) * 0.02)
+        
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
                 input_size_1=self.inter_hidden, 
@@ -231,13 +230,13 @@ class FlanT5SLT(AbstractSLT):
         
         input_embeds = self.t5_model.encoder.embed_tokens(input_tokens.input_ids)
         
-        text_sep = self.text_sep.to(dtype=visual_outputs.dtype)
+        fixed_text_sep = torch.zeros(1, visual_outputs.size(-1), device=self.device, dtype=visual_outputs.dtype)
 
         joint_outputs = []
         for i in range(bs):
             vis_out = visual_outputs[i, :visual_lengths[i], :]
             prompt_embeds = input_embeds[i, :prompt_lengths[i], :]
-            concat_sample = torch.cat((vis_out, text_sep, prompt_embeds), dim=0)
+            concat_sample = torch.cat((vis_out, fixed_text_sep, prompt_embeds), dim=0)
             joint_outputs.append(concat_sample)
         
         joint_outputs = pad_sequence(joint_outputs, batch_first=True)
