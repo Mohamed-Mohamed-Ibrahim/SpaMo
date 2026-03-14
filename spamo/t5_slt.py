@@ -183,9 +183,7 @@ class FlanT5SLT(AbstractSLT):
 
         # Learnable separator token between visual features and text prompt.
         # Shape: (1, t5_hidden_size) — initialized to zeros, trained during backprop.
-        self.text_sep_token = nn.Parameter(
-            torch.zeros(1, self.t5_model.config.hidden_size)
-        )
+        self.text_sep_token = nn.Parameter(torch.randn(1, self.t5_model.config.hidden_size) * 0.02)
         
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
