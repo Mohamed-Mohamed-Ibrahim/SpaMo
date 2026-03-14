@@ -304,7 +304,7 @@ class FlanT5SLT(AbstractSLT):
             spatiotemporal_length = spatiotemporal_mask.sum(1)
             pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
 
-            buffer_size = 5 
+            buffer_size = 16 
             fixed_vis_sep = torch.zeros(buffer_size, self.inter_hidden, device=self.device, dtype=spatial_outputs.dtype)
             sep_length = buffer_size
 
