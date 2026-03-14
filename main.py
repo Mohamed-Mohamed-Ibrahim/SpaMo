@@ -13,7 +13,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.trainer import Trainer
 
 from utils.helpers import instantiate_from_config
-from spamo.callbacks import SetupCallback, MetricsTableCallback
+from spamo.callbacks import SetupCallback, MetricsTableCallback, MetricsPlotCallback
 
 def str2bool(v: Any) -> bool:
     if isinstance(v, bool):
@@ -108,6 +108,12 @@ def configure_callbacks(opt: argparse.Namespace, model: pl.LightningModule, ckpt
         cfgdir=os.path.join(logdir, "configs"),
         config=config, 
         lightning_config=lightning_config
+    ))
+
+    # Plot monitor metric (train & val) across epochs after training
+    callbacks.append(MetricsPlotCallback(
+        logdir=logdir,
+        monitor=model.monitor,
     ))
     
     return callbacks
