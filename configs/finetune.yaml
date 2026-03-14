@@ -62,7 +62,7 @@ lightning:
         logging_interval: step
   trainer:
     strategy: ddp_find_unused_parameters_true
-    accumulate_grad_batches: 4
+    accumulate_grad_batches: 2
     accelerator: gpu
     devices: 2
     max_epochs: 200
@@ -73,7 +73,7 @@ lightning:
 data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
-    batch_size: 4
+    batch_size: 8
     num_workers: 4
   
     train:
