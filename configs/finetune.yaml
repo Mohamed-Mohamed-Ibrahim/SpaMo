@@ -69,7 +69,7 @@ lightning:
     accumulate_grad_batches: 4
     accelerator: gpu
     devices: 2
-    max_epochs: 200
+    max_epochs: 37
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: bf16
@@ -87,7 +87,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: /kaggle/input/datasets/muhammad5286/phoenix14t-holistic-features/phoenix14t-holistic-features
         mode: train
         spatial: true
         spatiotemporal: true
@@ -103,7 +103,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: /kaggle/input/datasets/muhammad5286/phoenix14t-holistic-features/phoenix14t-holistic-features
         mode: dev
         spatial: true
         spatiotemporal: true
@@ -119,7 +119,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: /kaggle/input/datasets/muhammad5286/phoenix14t-holistic-features/phoenix14t-holistic-features
         mode: test
         spatial: true
         spatiotemporal: true

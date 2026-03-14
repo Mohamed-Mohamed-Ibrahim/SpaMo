@@ -78,7 +78,7 @@ class FlanT5SLT(AbstractSLT):
         prompt: str = '',
         lr: float = 3e-4,
         input_size: int = 1024,
-        pose_input_size: int = 33*3,
+        pose_input_size: int = 1629,
         fusion_mode: str = 'joint',
         inter_hidden: int = 512,
         max_frame_len: int = 512,
@@ -199,10 +199,10 @@ class FlanT5SLT(AbstractSLT):
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
         
         out_dim_per_stream = self.inter_hidden // 4
-        self.pose_stream_face = SubPoseStream(in_channels=3, out_dim=out_dim_per_stream, num_nodes=11)
-        self.pose_stream_lhand = SubPoseStream(in_channels=3, out_dim=out_dim_per_stream, num_nodes=6)
-        self.pose_stream_rhand = SubPoseStream(in_channels=3, out_dim=out_dim_per_stream, num_nodes=6)
-        self.pose_stream_body = SubPoseStream(in_channels=3, out_dim=out_dim_per_stream, num_nodes=10)
+        self.pose_stream_face = SubPoseStream(in_channels=3, out_dim=out_dim_per_stream, num_nodes=468)
+        self.pose_stream_lhand = SubPoseStream(in_channels=3, out_dim=out_dim_per_stream, num_nodes=21)
+        self.pose_stream_rhand = SubPoseStream(in_channels=3, out_dim=out_dim_per_stream, num_nodes=21)
+        self.pose_stream_body = SubPoseStream(in_channels=3, out_dim=out_dim_per_stream, num_nodes=33)
         
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
@@ -268,8 +268,8 @@ class FlanT5SLT(AbstractSLT):
             raw_pose_values = samples.get('pose_values', [])
             pose_values_local = []
             for pv in raw_pose_values:
-                if pv.dim() == 1: pv = pv.view(-1, 33, 3)
-                elif pv.dim() == 2: pv = pv.view(pv.shape[0], 33, 3)
+                if pv.dim() == 1: pv = pv.view(-1, 543, 3)
+                elif pv.dim() == 2: pv = pv.view(pv.shape[0], 543, 3)
                 pose_values_local.append(pv)
                 
             if len(pose_values_local) > 0:
@@ -277,13 +277,13 @@ class FlanT5SLT(AbstractSLT):
                 pose_lengths = [int(p.size(0)) for p in pose_values_local]
             else:
                 B = len(samples['pixel_values'])
-                pose_padded = torch.zeros((B, 1, 33, 3), device=self.device, dtype=torch.float32)
+                pose_padded = torch.zeros((B, 1, 543, 3), device=self.device, dtype=torch.float32)
                 pose_lengths = [0] * B
                 
-            face_kps = pose_padded[:, :, 0:11, :] 
-            lhand_kps = pose_padded[:, :, [11, 13, 15, 17, 19, 21], :]
-            rhand_kps = pose_padded[:, :, [12, 14, 16, 18, 20, 22], :]
-            body_kps = pose_padded[:, :, 23:33, :]
+            body_kps = pose_padded[:, :, 0:33, :]
+            face_kps = pose_padded[:, :, 33:501, :]
+            lhand_kps = pose_padded[:, :, 501:522, :]
+            rhand_kps = pose_padded[:, :, 522:543, :]
 
             face_root = face_kps[:, :, 0:1, :].clone()
             lhand_root = lhand_kps[:, :, 0:1, :].clone()
