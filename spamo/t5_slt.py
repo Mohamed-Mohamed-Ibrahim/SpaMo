@@ -181,8 +181,8 @@ class FlanT5SLT(AbstractSLT):
         
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
         
-        self.vis_sep = nn.Parameter(torch.zeros(5, self.inter_hidden))
-        self.text_sep = nn.Parameter(torch.zeros(1, self.t5_model.config.hidden_size))
+        self.vis_sep = nn.Parameter(torch.randn(16, self.inter_hidden) * 0.02)
+        self.text_sep = nn.Parameter(torch.randn(1, self.t5_model.config.hidden_size) * 0.02)
 
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
