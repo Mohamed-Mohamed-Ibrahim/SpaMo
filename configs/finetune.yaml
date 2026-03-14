@@ -45,7 +45,7 @@ model:
 
     use_temporal_conv: false
 
-    use_second_encoder: false
+    use_second_encoder: true
 
     # ── Option A: Deformable Transformer (local+global deformable attention) ─
     encoder_cfg:
