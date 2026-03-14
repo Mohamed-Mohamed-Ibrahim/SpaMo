@@ -43,6 +43,8 @@ model:
     # aug_span_prob: 0.2
     # aug_channel_prob: 0.1
 
+    use_temporal_conv: true
+
 lightning:
   callback:
     learning_rate_logger:

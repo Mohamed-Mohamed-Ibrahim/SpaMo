@@ -72,6 +72,8 @@ class FlanT5SLT(AbstractSLT):
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
+        use_temporal_conv: bool = True,
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -114,6 +116,8 @@ class FlanT5SLT(AbstractSLT):
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
+        self.use_temporal_conv = use_temporal_conv
+
         print("==="*40)
         print(f"use_data_augmentation: {use_data_augmentation}")
         print(f"sign_cl_loss{sign_cl_loss}")
@@ -196,7 +200,8 @@ class FlanT5SLT(AbstractSLT):
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
         # Load the temporal encoder
-        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+        if self.use_temporal_conv:
+            self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
 
         # Replace self.temporal_transformer with:
         self.temporal_lstm = TemporalLSTM(
@@ -205,7 +210,7 @@ class FlanT5SLT(AbstractSLT):
             num_layers=2, # Keep it shallow for Phoenix14T
             dropout=0.2
         )
-        
+
         # Initialize adaptive fusion if fusion_mode is 'adaptive'
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
@@ -351,16 +356,25 @@ class FlanT5SLT(AbstractSLT):
                 joint_outputs.append(concat_sample)
             joint_outputs = pad_sequence(joint_outputs, batch_first=True)
 
-            visual_conv_outputs = self.temporal_encoder(
-                joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
-            )
+            if self.use_temporal_conv:
+                visual_conv_outputs = self.temporal_encoder(
+                    joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
+                )
+                visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
+                visual_masks = create_mask(
+                    seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
+                    device=self.device
+                )
+                feat = visual_conv_outputs['visual_feat'].permute(1,0,2) # [B, T, C]
+                new_feat_lens = visual_conv_outputs['feat_len'].to(self.device).long()
+                visual_outputs = self.temporal_lstm(feat, new_feat_lens)
+                visual_masks = create_mask(seq_lengths=new_feat_lens.tolist(), device=self.device)
+                
+            else:
+                visual_outputs = joint_outputs
+                visual_masks = create_mask(seq_lengths=new_length.tolist(), device=self.device)
 
-            feat = visual_conv_outputs['visual_feat'].permute(1,0,2) # [B, T, C]
-            new_feat_lens = visual_conv_outputs['feat_len'].to(self.device).long()
-            visual_outputs = self.temporal_lstm(feat, new_feat_lens)
-            
-            visual_masks = create_mask(seq_lengths=new_feat_lens.tolist(), device=self.device)
-        
+
         elif self.fusion_mode == 'adaptive':
             if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
                 spatiotemporal_outputs = F.interpolate(
@@ -370,15 +384,24 @@ class FlanT5SLT(AbstractSLT):
 
             fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
 
-            visual_conv_outputs = self.temporal_encoder(
-                fused_outputs.permute(0, 2, 1), torch.tensor(samples['num_frames'], device=self.device)
-            )
-
-            feat = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
-            new_feat_lens = visual_conv_outputs['feat_len'].to(self.device).long()
-            visual_outputs = self.temporal_lstm(feat, new_feat_lens)
-
-            visual_masks = create_mask(seq_lengths=new_feat_lens.tolist(), device=self.device)
+            if self.use_temporal_conv:
+                visual_conv_outputs = self.temporal_encoder(
+                    fused_outputs.permute(0, 2, 1),
+                    torch.tensor(samples['num_frames'], device=self.device)
+                )
+                visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
+                visual_masks = create_mask(
+                    seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
+                    device=self.device
+                )
+                feat = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
+                new_feat_lens = visual_conv_outputs['feat_len'].to(self.device).long()
+                visual_outputs = self.temporal_lstm(feat, new_feat_lens)
+                visual_masks = create_mask(seq_lengths=new_feat_lens.tolist(), device=self.device)
+            else:
+                visual_outputs = fused_outputs
+                visual_masks = create_mask(seq_lengths=samples['num_frames'], device=self.device)
+                
 
         else:
             # Single feature mode
@@ -387,19 +410,51 @@ class FlanT5SLT(AbstractSLT):
             elif spatiotemporal:
                 active_outputs, active_lens = spatiotemporal_outputs, samples['glor_lengths']
             elif pose:
-                active_outputs, active_lens = pose_outputs, pose_lengths
+                # For pose-only mode, run temporal encoder on pose features
+                if self.use_temporal_conv:
+                    pose_conv_outputs = self.temporal_encoder(
+                        pose_outputs.permute(0,2,1), torch.tensor(pose_lengths, device=self.device)
+                    )
+                    visual_outputs = pose_conv_outputs['visual_feat'].permute(1,0,2)
+                    visual_masks = create_mask(
+                        seq_lengths=pose_conv_outputs['feat_len'].to(torch.int).tolist(),
+                        device=self.device
+                    )
+                    feat = visual_outputs['visual_feat'].permute(1,0,2)
+                    new_feat_lens = visual_outputs['feat_len'].to(self.device).long()
+                    visual_outputs = self.temporal_lstm(feat, new_feat_lens)
+                    
+                    visual_masks = create_mask(seq_lengths=new_feat_lens.tolist(), device=self.device)
+                else:
+                    visual_outputs = pose_outputs
+                    visual_masks = create_mask(seq_lengths=pose_lengths, device=self.device)
+
+                if self.use_second_encoder:
+                    enc_mask = visual_masks.unsqueeze(1)
+                    visual_outputs, _ = self.second_encoder(
+                        embed_src=visual_outputs,
+                        src_length=visual_masks.sum(1).long(),
+                        mask=enc_mask,
+                    )
             else:
                 raise NotImplementedError("Invalid fusion mode")
             
-            conv_outputs = self.temporal_encoder(
-                active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
-            )
-
-            feat = conv_outputs['visual_feat'].permute(1,0,2)
-            new_feat_lens = conv_outputs['feat_len'].to(self.device).long()
-            visual_outputs = self.temporal_lstm(feat, new_feat_lens)
-            
-            visual_masks = create_mask(seq_lengths=new_feat_lens.tolist(), device=self.device)
+            if self.fusion_mode == 'spatiotemporal':
+                visual_outputs = active_outputs
+                visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
+            else:
+                if self.use_temporal_conv:
+                    conv_outputs = self.temporal_encoder(
+                        active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
+                    )
+                    visual_outputs = conv_outputs['visual_feat'].permute(1,0,2)
+                    visual_masks = create_mask(
+                        seq_lengths=conv_outputs['feat_len'].to(torch.int).tolist(),
+                        device=self.device
+                    )
+                else:
+                    visual_outputs = active_outputs
+                    visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
 
         return visual_outputs, visual_masks
 
