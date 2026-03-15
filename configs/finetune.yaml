@@ -59,8 +59,8 @@ model:
 
     # InfoLOOB loss for visual-textual alignment
     use_infoloob_loss: true
-    infoloob_temperature: 0.1
-    infoloob_weight: 1.0
+    infoloob_temperature: 0.2
+    infoloob_weight: 1.5
 
 lightning:
   callback:
