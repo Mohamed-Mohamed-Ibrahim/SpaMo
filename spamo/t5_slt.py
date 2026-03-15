@@ -541,29 +541,25 @@ class FlanT5SLT(AbstractSLT):
 
     def infoloob_loss(self, sim_matrix: torch.Tensor) -> torch.Tensor:
         """
-        InfoLOOB Loss: "Improving Contrastive Learning by Leaving Out the Positive"
-        
-        Args:
-            sim_matrix: Similarity matrix of shape [batch_size, batch_size]
-        
-        Returns:
-            Scalar loss value
+        InfoLOOB Loss: Improving Contrastive Learning by Leaving Out the Positive
+        sim_matrix: [B, B] similarity matrix
         """
-        # Numerical stability: subtract maximum value
-        sim_matrix_stable = sim_matrix - sim_matrix.max(dim=1, keepdim=True)[0]
-        
-        # Compute exponentials
-        exp_sim = torch.exp(sim_matrix_stable)
-        
-        # Positive: diagonal elements
+
+        # numerical stability
+        sim_matrix = sim_matrix - sim_matrix.max(dim=1, keepdim=True)[0]
+
+        exp_sim = torch.exp(sim_matrix)
+
+        # positive similarity
         pos = torch.diag(exp_sim)
-        
-        # Negative: sum of all exponentials minus the positive
-        neg = exp_sim.sum(dim=1) - pos
-        
-        # Compute loss with epsilon for stability
-        loss = -torch.log(pos / (neg + 1e-8))
-        
+
+        # remove positive from denominator
+        mask = ~torch.eye(sim_matrix.size(0), dtype=torch.bool, device=sim_matrix.device)
+
+        neg = exp_sim[mask].view(sim_matrix.size(0), -1).sum(dim=1)
+
+        loss = -(torch.log(pos + 1e-8) - torch.log(neg + 1e-8))
+
         return loss.mean()
 
     def visual_textual_align(self, visual_outputs: torch.Tensor, visual_masks: torch.Tensor, samples: Dict) -> Tuple[torch.Tensor, str]:
@@ -589,7 +585,7 @@ class FlanT5SLT(AbstractSLT):
         text_embeds = F.normalize(text_embeds, dim=-1)
 
         # Compute similarity matrix
-        similarity = torch.matmul(text_embeds, image_embeds.t())
+        similarity = torch.matmul(text_embeds, image_embeds.t()).float()
         
         if self.use_infoloob_loss:
             # Apply temperature scaling
