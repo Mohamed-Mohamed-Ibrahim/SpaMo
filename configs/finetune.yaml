@@ -11,7 +11,7 @@ model:
     beam_size: 5
     max_frame_len: 512
     max_txt_len: 64
-    frame_sample_rate: 1
+    frame_sample_rate: 2
     prompt: "Translate the given sentence into {}."
     tuning_type: lora
     lora_r: 8
