@@ -514,6 +514,7 @@ class FlanT5SLT(AbstractSLT):
         visual_outputs = self.fusion_proj(visual_outputs)
         
         log_dict = {}
+        outputs = None
         
         if self.cross_modal_align:
             if self.warm_up_steps is None and not self.combined_loss:
@@ -600,30 +601,59 @@ class FlanT5SLT(AbstractSLT):
             loss = outputs.loss
             log_dict[f"{split}/loss"] = loss
 
-        if split != "train":
-            input_embeds, input_masks, _, _ = self.prepare_inputs(
-                visual_outputs, visual_masks, inputs, split, batch_idx
-            )
-            
-            generated = self.t5_model.generate(
-                inputs_embeds=input_embeds,
-                attention_mask=input_masks,
-                num_beams=5,
-                max_length=self.max_txt_len,
-                top_p=0.9,
-                do_sample=True,
-            )
-            
-            generated_strings = self.t5_tokenizer.batch_decode(generated, skip_special_tokens=True)
-            generated_strings = [gen.lower() for gen in generated_strings]
-            
+        if split == "train" and outputs is not None:
+            predicted_ids = outputs.logits.argmax(-1)
+
+            generated_strings = self.t5_tokenizer.batch_decode(predicted_ids, skip_special_tokens=True)
+            generated_strings = [g.lower() for g in generated_strings]
+
             reference_strings = self.t5_tokenizer.batch_decode(output_tokens.input_ids, skip_special_tokens=True)
-            reference_strings = [ref.lower() for ref in reference_strings]
+            reference_strings = [r.lower() for r in reference_strings]
+
+            self.generated.extend(generated_strings)
+            self.references.extend(reference_strings)
+            
+        elif split != "train":
+            with torch.no_grad():
+                predicted_ids = self.t5_model.generate(
+                    inputs_embeds=input_embeds,
+                    attention_mask=input_masks,
+                    num_beams=5,
+                    max_length=self.max_txt_len,
+                    top_p=0.9,
+                    do_sample=True,
+                )
+
+            generated_strings = self.t5_tokenizer.batch_decode(predicted_ids, skip_special_tokens=True)
+            generated_strings = [g.lower() for g in generated_strings]
+
+            reference_strings = self.t5_tokenizer.batch_decode(output_tokens.input_ids, skip_special_tokens=True)
+            reference_strings = [r.lower() for r in reference_strings]
 
             self.generated.extend(generated_strings)
             self.references.extend(reference_strings)
 
         return loss, log_dict
+
+    def on_train_epoch_end(self) -> None:
+        if not self.generated:
+            return
+
+        print("\n===== Train Examples =====")
+        for i in range(min(5, len(self.generated))):
+            print(f"\033[94mReference: {self.references[i]}\033[0m")
+            print(f"\033[92mGenerated: {self.generated[i]}\033[0m")
+            print("-" * 50)
+
+        eval_res = evaluate_results(
+            predictions=self.generated,
+            references=self.references,
+            split='train',
+            device=self.device
+        )
+
+        self.log_dict(eval_res, sync_dist=True)
+        self.set_container()
 
     def on_validation_epoch_end(self) -> None:
         print("\n===== Validation Examples =====")
