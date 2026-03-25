@@ -14,8 +14,8 @@ model:
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
     tuning_type: lora
-    lora_r: 16
-    lora_alpha: 32
+    lora_r: 8
+    lora_alpha: 16
     lora_dropout: 0.05
     fusion_mode: joint
     warm_up_steps: 1000
