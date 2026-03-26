@@ -44,6 +44,7 @@ model:
     # aug_channel_prob: 0.1
 
     use_temporal_conv: true
+    use_temporal_lstm: true
 
 lightning:
   callback:
