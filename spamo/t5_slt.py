@@ -194,6 +194,10 @@ class FlanT5SLT(AbstractSLT):
             max_length=self.max_txt_len,
         )
 
+        # Enable gradient checkpointing to reduce peak activation memory
+        self.t5_model.gradient_checkpointing_enable()
+        print("[MEM] Gradient checkpointing enabled on T5.")
+
         # Load the vision projectors (Spatial + Spatiotemporal ONLY)
         self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
