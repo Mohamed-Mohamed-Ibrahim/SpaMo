@@ -8,6 +8,8 @@ model:
     cache_dir: /data3/models
     inter_hidden: 768
     input_size: 2048
+    # beam_size: 4
+    # max_frame_len: 300
     beam_size: 5
     max_frame_len: 512
     max_txt_len: 64
@@ -54,7 +56,7 @@ lightning:
         logging_interval: step
   trainer:
     strategy: ddp_find_unused_parameters_true
-    accumulate_grad_batches: 8
+    accumulate_grad_batches: 16
     accelerator: gpu
     devices: 2
     max_epochs: 60
@@ -65,7 +67,7 @@ lightning:
 data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
-    batch_size: 4
+    batch_size: 2
     num_workers: 4
   
     train:
