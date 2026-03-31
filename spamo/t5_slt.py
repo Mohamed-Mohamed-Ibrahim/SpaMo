@@ -512,6 +512,9 @@ class FlanT5SLT(AbstractSLT):
                 start_index = random.randint(0, pval.size(0) - max_frame_len)
                 pval = pval[start_index:start_index + max_frame_len]
 
+            if nframe > max_frame_len:
+                print(f"[WARN] Long sample: id={sample['id']}, frames={nframe}, max no of frames={max_frame_len}")
+
             num_frames.append(nframe)
             pixel_values.append(pval)
 
