@@ -1,7 +1,19 @@
 import torch
 import torch.nn as nn
 import re
+import math
 import torch.nn.functional as F
+
+
+def _init_linear(m: nn.Module) -> None:
+    """Xavier Uniform init for Linear layers; zeros for biases."""
+    if isinstance(m, nn.Linear):
+        nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.LayerNorm):
+        nn.init.ones_(m.weight)
+        nn.init.zeros_(m.bias)
 
 
 # Credit by https://github1s.com/haotian-liu/LLaVA/blob/main/llava/model/multimodal_projector/builder.py
@@ -27,6 +39,14 @@ class SimpleResBlock(nn.Module):
             nn.GELU(),
             nn.Linear(channels, channels)
         )
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        # Xavier for both Linear layers; LayerNorm reset
+        self.proj.apply(_init_linear)
+        nn.init.ones_(self.pre_norm.weight)
+        nn.init.zeros_(self.pre_norm.bias)
+
     def forward(self, x):
         x = self.pre_norm(x)
         return x + self.proj(x)
@@ -52,6 +72,16 @@ class AdaptiveFusion(nn.Module):
         self.weight_input_2 = nn.Linear(input_size_2, output_size, bias=bias)
         self.weight_input_3 = nn.Linear(input_size_3, output_size, bias=bias)
         self.layer_norm = nn.LayerNorm(input_size_1, eps=1e-5)
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        # Xavier Uniform for Linear layers feeding into Sigmoid
+        for linear in [self.weight_input_1, self.weight_input_2, self.weight_input_3]:
+            nn.init.xavier_uniform_(linear.weight)
+            if linear.bias is not None:
+                nn.init.zeros_(linear.bias)
+        nn.init.ones_(self.layer_norm.weight)
+        nn.init.zeros_(self.layer_norm.bias)
         
     def forward(self, input_1, input_2, input_3):
         """
@@ -105,7 +135,10 @@ class AdaptiveFusionWithProjection(nn.Module):
 
 def build_vision_projector(mm_projector_type='linear', mm_hidden_size=512, hidden_size=768, mlp_depth=1):
     if mm_projector_type == 'linear':
-        return nn.Linear(mm_hidden_size, hidden_size)
+        proj = nn.Linear(mm_hidden_size, hidden_size)
+        nn.init.xavier_uniform_(proj.weight)
+        nn.init.zeros_(proj.bias)
+        return proj
 
     mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', mm_projector_type)
     if mlp_gelu_match:
@@ -114,7 +147,9 @@ def build_vision_projector(mm_projector_type='linear', mm_hidden_size=512, hidde
         for _ in range(1, mlp_depth):
             modules.append(nn.GELU())
             modules.append(nn.Linear(hidden_size, hidden_size))
-        return nn.Sequential(*modules)
+        projector = nn.Sequential(*modules)
+        projector.apply(_init_linear)
+        return projector
 
     if mm_projector_type == 'identity':
         return IdentityMap()
@@ -139,6 +174,19 @@ class CrossAttention(nn.Module):
         self.kv = nn.Linear(dim, int(dim*2), bias=qkv_bias)
         self.proj = nn.Linear(dim, dim)
         self.use_sdpa = use_sdpa
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        # Truncated normal (std = 1/sqrt(dim)) for Q/K/V — standard transformer practice
+        std = self.scale  # head_dim ** -0.5
+        for linear in [self.q, self.kv]:
+            nn.init.trunc_normal_(linear.weight, std=std, a=-2*std, b=2*std)
+            if linear.bias is not None:
+                nn.init.zeros_(linear.bias)
+        # Xavier for the output projection
+        nn.init.xavier_uniform_(self.proj.weight)
+        if self.proj.bias is not None:
+            nn.init.zeros_(self.proj.bias)
 
     def forward(self, q, x):
         B, n, C = q.shape
@@ -178,6 +226,14 @@ class MLP(nn.Module):
         self.act = act_layer()
         self.fc2 = nn.Linear(hidden_features, out_features)
         self.drop = nn.Dropout(drop)
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        # Xavier Uniform for Linear layers with GELU activation
+        for linear in [self.fc1, self.fc2]:
+            nn.init.xavier_uniform_(linear.weight)
+            if linear.bias is not None:
+                nn.init.zeros_(linear.bias)
 
     def forward(self, x):
         x = self.fc1(x)
