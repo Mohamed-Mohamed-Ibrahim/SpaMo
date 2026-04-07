@@ -2,7 +2,7 @@ model:
   target: spamo.t5_slt.FlanT5SLT
   params:
     lr: 3.0e-4
-    weight_decay: 0.1
+    weight_decay: 0.3
     monitor: val/bleu4
     model_name: MBZUAI/LaMini-Flan-T5-783M
     cache_dir: /data3/models
@@ -16,7 +16,7 @@ model:
     tuning_type: lora
     lora_r: 8
     lora_alpha: 16
-    lora_dropout: 0.2
+    lora_dropout: 0.3
     fusion_mode: joint
     warm_up_steps: 1000
     cross_modal_align: true
