@@ -103,9 +103,13 @@ class AdaptiveFusionWithProjection(nn.Module):
         proj_2 = self.proj_2(input_2)
         return self.adaptive_fusion(proj_1, proj_2)
 
-def build_vision_projector(mm_projector_type='linear', mm_hidden_size=512, hidden_size=768, mlp_depth=1):
+def build_vision_projector(mm_projector_type='linear', mm_hidden_size=512, hidden_size=768, mlp_depth=1, dropout=0.0):
     if mm_projector_type == 'linear':
-        return nn.Linear(mm_hidden_size, hidden_size)
+        layers: list = [nn.Linear(mm_hidden_size, hidden_size)]
+        if dropout > 0.0:
+            layers.append(nn.Dropout(p=dropout))
+        proj = nn.Sequential(*layers) if dropout > 0.0 else layers[0]
+        return proj
 
     mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', mm_projector_type)
     if mlp_gelu_match:
@@ -113,7 +117,12 @@ def build_vision_projector(mm_projector_type='linear', mm_hidden_size=512, hidde
         modules = [nn.Linear(mm_hidden_size, hidden_size)]
         for _ in range(1, mlp_depth):
             modules.append(nn.GELU())
+            if dropout > 0.0:
+                modules.append(nn.Dropout(p=dropout))
             modules.append(nn.Linear(hidden_size, hidden_size))
+
+        if dropout > 0.0:
+            modules.append(nn.Dropout(p=dropout))
         return nn.Sequential(*modules)
 
     if mm_projector_type == 'identity':

@@ -72,6 +72,8 @@ class FlanT5SLT(AbstractSLT):
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
+        proj_dropout: float = 0.0,
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -114,6 +116,7 @@ class FlanT5SLT(AbstractSLT):
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
+        self.proj_dropout = proj_dropout
         print("==="*40)
         print(f"use_data_augmentation: {use_data_augmentation}")
         print(f"sign_cl_loss{sign_cl_loss}")
@@ -189,11 +192,19 @@ class FlanT5SLT(AbstractSLT):
         )
 
         # Load the vision projectors (Spatial + Spatiotemporal ONLY)
-        self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
-        self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
+        self.spatio_proj = build_vision_projector(
+            'linear', self.input_size, self.inter_hidden, dropout=self.proj_dropout
+        )
+        self.spatiotemp_proj = build_vision_projector(
+            'linear', 1024, self.inter_hidden, dropout=self.proj_dropout
+        )
         # Pose projector: default pose size is 33 keypoints * 3 coords = 99
-        self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
-        self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
+        self.pose_proj = build_vision_projector(
+            'linear', self.pose_input_size, self.inter_hidden, dropout=self.proj_dropout
+        )
+        self.fusion_proj = build_vision_projector(
+            'mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size, dropout=self.proj_dropout
+        )
         
         # Load the temporal encoder
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)

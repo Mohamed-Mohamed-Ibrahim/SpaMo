@@ -17,6 +17,7 @@ model:
     lora_r: 32
     lora_alpha: 64
     lora_dropout: 0.1
+    proj_dropout: 0.1
     fusion_mode: joint
     warm_up_steps: 1000
     cross_modal_align: true
