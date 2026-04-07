@@ -603,6 +603,23 @@ class FlanT5SLT(AbstractSLT):
                         log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
                 
                 log_dict[f"{split}/combined_loss"] = loss
+                if split == "train":
+                    generated = self.t5_model.generate(
+                        inputs_embeds=input_embeds,
+                        attention_mask=input_masks,
+                        num_beams=5,
+                        max_length=self.max_txt_len,
+                        top_p=0.9,
+                        do_sample=True,
+                    )
+                    generated_strings = self.t5_tokenizer.batch_decode(generated, skip_special_tokens=True)
+                    generated_strings = [gen.lower() for gen in generated_strings]
+                    
+                    reference_strings = self.t5_tokenizer.batch_decode(output_tokens.input_ids, skip_special_tokens=True)
+                    reference_strings = [ref.lower() for ref in reference_strings]
+
+                    self.generated.extend(generated_strings)
+                    self.references.extend(reference_strings)
         else:
             input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
                 visual_outputs, visual_masks, inputs, split, batch_idx
@@ -644,6 +661,17 @@ class FlanT5SLT(AbstractSLT):
             self.references.extend(reference_strings)
 
         return loss, log_dict
+
+    def on_train_epoch_end(self) -> None:
+        if self.generated:
+            eval_res = evaluate_results(
+                predictions=self.generated,
+                references=self.references,
+                split='train',
+                device=self.device
+            )
+            self.log_dict(eval_res, sync_dist=True)
+        self.set_container()
 
     def on_validation_epoch_end(self) -> None:
         print("\n===== Validation Examples =====")
