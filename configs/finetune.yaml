@@ -2,11 +2,11 @@ model:
   target: spamo.t5_slt.FlanT5SLT
   params:
     lr: 3.0e-4
-    weight_decay: 0.05
+    weight_decay: 0.01
     monitor: val/bleu4
-    model_name: MBZUAI/LaMini-Flan-T5-783M
+    model_name: google/flan-t5-base
     cache_dir: /data3/models
-    inter_hidden: 512
+    inter_hidden: 768
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
@@ -15,8 +15,8 @@ model:
     prompt: "Translate the given sentence into {}."
     tuning_type: lora
     lora_r: 32
-    lora_alpha: 64
-    lora_dropout: 0.05
+    lora_alpha: 128
+    lora_dropout: 0.1
     fusion_mode: joint
     warm_up_steps: 0
     cross_modal_align: true
