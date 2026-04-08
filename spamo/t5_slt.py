@@ -224,15 +224,17 @@ class FlanT5SLT(AbstractSLT):
         
         visual_lengths = visual_mask.sum(1)
         prompt_lengths = input_tokens.attention_mask.sum(1)
-        new_lengths = visual_lengths + prompt_lengths
+        new_lengths = visual_lengths + prompt_lengths + 1
         
         input_embeds = self.t5_model.encoder.embed_tokens(input_tokens.input_ids)
         
+        fixed_text_sep = torch.zeros(1, visual_outputs.size(-1), device=self.device, dtype=visual_outputs.dtype)
+
         joint_outputs = []
         for i in range(bs):
             vis_out = visual_outputs[i, :visual_lengths[i], :]
             prompt_embeds = input_embeds[i, :prompt_lengths[i], :]
-            concat_sample = torch.cat((vis_out, prompt_embeds), dim=0)
+            concat_sample = torch.cat((vis_out, fixed_text_sep, prompt_embeds), dim=0)
             joint_outputs.append(concat_sample)
         
         joint_outputs = pad_sequence(joint_outputs, batch_first=True)
@@ -307,11 +309,11 @@ class FlanT5SLT(AbstractSLT):
             for i in range(bs):
                 parts = []
                 if spatial:
-                    parts.append(spatial_outputs[i, :spatial_length[i], :])
+                    parts.append(spatial_outputs[i, :int(spatial_length[i]), :])
                 if spatiotemporal:
-                    parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
+                    parts.append(spatiotemporal_outputs[i, :int(spatiotemporal_length[i]), :])
                 if pose:
-                    parts.append(pose_outputs[i, :pose_length[i], :])
+                    parts.append(pose_outputs[i, :int(pose_length[i]), :])
                 concat_sample = torch.cat(parts, dim=0)
                 joint_outputs.append(concat_sample)
             joint_outputs = pad_sequence(joint_outputs, batch_first=True)
