@@ -30,7 +30,7 @@ model:
     cross_modal_align: true
     combined_loss: true
 
-    alpha: 0.7
+    alpha: 1
 
     sign_cl_loss: false
     sign_cl_alpha: 0.1
@@ -58,7 +58,7 @@ model:
     # aug_channel_prob: 0.1
 
     # InfoLOOB loss for visual-textual alignment
-    use_infoloob_loss: true
+    use_infoloob_loss: false
     infoloob_temperature: 0.1
     infoloob_weight: 1.0
 
