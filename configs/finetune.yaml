@@ -41,8 +41,8 @@ model:
     use_kt_loss: false
     kt_lambda: 0.7
 
-    use_in_context: true
-    num_in_context: 3
+    use_in_context: false
+    num_in_context: 0
     # NEW AUGMENTATION PARAMETERS
     use_data_augmentation: false
 
