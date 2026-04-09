@@ -6,7 +6,7 @@ model:
     monitor: val/bleu4
     model_name: MBZUAI/LaMini-Flan-T5-783M
     cache_dir: /data3/models
-    inter_hidden: 768
+    inter_hidden: 1024
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
@@ -50,12 +50,12 @@ model:
     # ── Option A: Deformable Transformer (local+global deformable attention) ─
     encoder_cfg:
       type: deformable_transformer
-      hidden_size: 768          # must match inter_hidden
+      hidden_size: 1024          # must match inter_hidden
       num_layers: 2
       num_heads: 8
       ff_size: 2048
       dropout: 0.1
-      query_type: mean          # 'mean' | 'attention'
+      query_type: attention          # 'mean' | 'attention'
       query_nb: 3
       num_keys: [5, 5]          # one entry per num_layers
       attentions_type: weighted_local_global   # 'weighted_local_global' | 'local' | 'global'
