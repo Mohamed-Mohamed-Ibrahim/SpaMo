@@ -41,8 +41,15 @@ model:
     use_kt_loss: false
     kt_lambda: 0.7
 
-    use_in_context: false
-    num_in_context: 0
+    use_in_context: true
+    num_in_context: 3
+    
+    # Context Retrieval Configuration (NO DATA LEAKAGE!)
+    # Modes: 'random' (simple, efficient) or 'similarity' (semantically relevant)
+    context_retrieval_mode: random
+    context_format_type: gloss_text  # 'gloss_text', 'text_only', or 'gloss_only'
+    embedding_cache_path: null  # Path to embeddings for similarity-based retrieval (optional)
+    
     # NEW AUGMENTATION PARAMETERS
     use_data_augmentation: false
 

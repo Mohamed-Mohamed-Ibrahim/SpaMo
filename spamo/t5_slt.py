@@ -21,6 +21,7 @@ from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
 from sentence_transformers import SentenceTransformer
+from dataset.context_retriever import ContextRetriever, DatasetMetadataBuilder
 
 
 
@@ -79,6 +80,11 @@ class FlanT5SLT(AbstractSLT):
         infoloob_temperature: float = 0.07,
         infoloob_weight: float = 1.0,
 
+        # NEW: Context Retrieval Parameters (NO DATA LEAKAGE)
+        context_retrieval_mode: str = 'random',  # 'random' or 'similarity'
+        context_format_type: str = 'gloss_text',  # 'gloss_text', 'text_only', or 'gloss_only'
+        embedding_cache_path: Optional[str] = None,  # For similarity-based retrieval
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -123,6 +129,11 @@ class FlanT5SLT(AbstractSLT):
         if self.num_in_context == 0:
             self.use_in_context = False
 
+        # Context Retrieval parameters (NO DATA LEAKAGE)
+        self.context_retrieval_mode = context_retrieval_mode
+        self.context_format_type = context_format_type
+        self.embedding_cache_path = embedding_cache_path
+        self.context_retriever: Optional[ContextRetriever] = None
         
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
@@ -185,6 +196,48 @@ class FlanT5SLT(AbstractSLT):
     def set_container(self) -> None:
         self.generated = []
         self.references = []
+
+    def on_train_start(self) -> None:
+        """
+        Initialize the context retriever with training dataset metadata.
+        Called once at the beginning of training.
+        """
+        if not self.use_in_context or self.num_in_context <= 0:
+            return  # Context not enabled
+        
+        try:
+            # Extract training dataset from trainer
+            train_dl = self.trainer.train_dataloader
+            
+            # Handle DataLoader wrapping (e.g., DistributedSampler)
+            if hasattr(train_dl, 'dataset'):
+                train_dataset = train_dl.dataset
+            else:
+                train_dataset = train_dl
+            
+            # Build metadata from training dataset
+            print("[Context Retriever] Building metadata from training dataset...")
+            metadata = DatasetMetadataBuilder.build_from_dataset(train_dataset)
+            print(f"[Context Retriever] Loaded metadata for {len(metadata)} training samples")
+            
+            # Initialize the context retriever
+            self.context_retriever = ContextRetriever(
+                dataset_metadata=metadata,
+                num_context=self.num_in_context,
+                mode=self.context_retrieval_mode,
+                embedding_cache_path=self.embedding_cache_path,
+            )
+            
+            print(
+                f"[Context Retriever] Initialized in '{self.context_retrieval_mode}' mode "
+                f"({self.num_in_context} examples per sample)"
+            )
+        
+        except Exception as e:
+            print(f"[Context Retriever] WARNING: Failed to initialize context retriever: {e}")
+            print("[Context Retriever] Continuing without in-context learning...")
+            self.use_in_context = False
+            self.context_retriever = None
 
     def prepare_models(self, t5_model: str) -> None:
         # Load the textual model
@@ -484,23 +537,19 @@ class FlanT5SLT(AbstractSLT):
             glosses.append(sample['gloss'])
             langs.append(sample['lang'])
 
-            # <--- FIX: Clean context handling
-            _ex_lang_trans = []
-            if self.num_in_context > 0:
-                if 'en_text' in sample and 'text' in sample:
-                    _ex_lang_trans = [
-                        f"{sample.get('en_text','')}={sample['text']}",
-                        f"{sample.get('fr_text','')}={sample['text']}",
-                        f"{sample.get('es_text','')}={sample['text']}"
-                    ]
+            # <--- FIX: Clean context handling (No Data Leakage!)
+            _ex_lang_trans = ""
+            if self.use_in_context and self.context_retriever is not None:
+                # Use the context retriever to get OTHER examples (not current sample)
+                context_examples = self.context_retriever.retrieve(sample_id=sample['id'])
+                
+                # Format context examples as a string
+                _ex_lang_trans = ContextRetriever.format_context(
+                    context_examples,
+                    format_type=self.context_format_type
+                )
             
-                # Keep only the number requested
-                trimmed = _ex_lang_trans[:self.num_in_context]
-            
-                # Join them into one string
-                ex_lang_translations.append(' '.join(trimmed))
-            else:
-                ex_lang_translations.append("")
+            ex_lang_translations.append(_ex_lang_trans)
 
 
             if nframe > max_frame_len:
@@ -521,9 +570,8 @@ class FlanT5SLT(AbstractSLT):
                     glor_values.append(sample['glor_value'])
                     glor_lengths.append(len(sample['glor_value']))
 
-        # Only shuffle if we are actually USING context
-        if self.use_in_context and len(ex_lang_translations) > 1:
-            ex_lang_translations = derangement(ex_lang_translations)
+        # Context is now retrieved independently for each sample
+        # No need for global shuffling (derangement) anymore
 
         return {
             'pixel_values': pixel_values,
