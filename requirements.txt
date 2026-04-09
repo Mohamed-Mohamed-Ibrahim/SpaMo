@@ -4,7 +4,8 @@ torchaudio==2.4.0
 pytorch-lightning==2.3.0
 
 # Hugging Face Ecosystem
-transformers>=4.35.0
+transformers==5.2.0
+tokenizers==0.22.2
 peft==0.7.1
 accelerate==1.4.0
 datasets==3.4.1
@@ -17,10 +18,10 @@ pillow==10.2.0
 
 # Metrics & Evaluation
 sacrebleu==2.2.0
-rouge-score
+rouge-score==0.1.2
 
 # Configuration & Logging
-omegaconf
+omegaconf==2.3.0
 wandb==0.16.0
 
 # Utilities
