@@ -42,7 +42,7 @@ model:
     kt_lambda: 0.7
 
     use_in_context: true
-    num_in_context: 1
+    num_in_context: 3
     
     # Context Retrieval Configuration (NO DATA LEAKAGE!)
     # Modes: 'random' (simple, efficient) or 'similarity' (semantically relevant)
