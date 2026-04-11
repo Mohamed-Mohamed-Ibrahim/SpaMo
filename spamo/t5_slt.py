@@ -81,9 +81,8 @@ class FlanT5SLT(AbstractSLT):
         infoloob_weight: float = 1.0,
 
         # NEW: Context Retrieval Parameters (NO DATA LEAKAGE)
-        context_retrieval_mode: str = 'random',  # 'random' or 'similarity'
-        context_format_type: str = 'gloss_text',  # 'gloss_text', 'text_only', or 'gloss_only'
-        embedding_cache_path: Optional[str] = None,  # For similarity-based retrieval
+        context_mode: str = 'random',  # 'random' or 'similarity'
+        context_format_type: str = 'text_only',  # 'gloss_text', 'text_only', or 'gloss_only'
 
         **kwargs
     ):
@@ -130,10 +129,13 @@ class FlanT5SLT(AbstractSLT):
             self.use_in_context = False
 
         # Context Retrieval parameters (NO DATA LEAKAGE)
-        self.context_retrieval_mode = context_retrieval_mode
+        self.context_mode = context_mode
         self.context_format_type = context_format_type
-        self.embedding_cache_path = embedding_cache_path
+        self.embedding_cache_path = None  # Will be set automatically for similarity
         self.context_retriever: Optional[ContextRetriever] = None
+        
+        # NEW: Similarity Context Choice
+        self.use_similarity_context = (self.context_mode == 'similarity')
         
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
@@ -220,16 +222,24 @@ class FlanT5SLT(AbstractSLT):
             metadata = DatasetMetadataBuilder.build_from_dataset(train_dataset)
             print(f"[Context Retriever] Loaded metadata for {len(metadata)} training samples")
             
+            # NEW: Compute embeddings if using similarity and no cache provided
+            if self.use_similarity_context and self.embedding_cache_path is None:
+                print("[Context Retriever] Computing embeddings for similarity-based retrieval...")
+                embeddings = self.compute_embeddings_for_similarity(metadata)
+                self.embedding_cache_path = './computed_embeddings.pt'
+                torch.save(embeddings, self.embedding_cache_path)
+                print(f"[Context Retriever] Saved embeddings to {self.embedding_cache_path}")
+            
             # Initialize the context retriever
             self.context_retriever = ContextRetriever(
                 dataset_metadata=metadata,
                 num_context=self.num_in_context,
-                mode=self.context_retrieval_mode,
+                mode=self.context_mode,
                 embedding_cache_path=self.embedding_cache_path,
             )
             
             print(
-                f"[Context Retriever] Initialized in '{self.context_retrieval_mode}' mode "
+                f"[Context Retriever] Initialized in '{self.context_mode}' mode "
                 f"({self.num_in_context} examples per sample)"
             )
         
@@ -301,6 +311,43 @@ class FlanT5SLT(AbstractSLT):
             for param in self.sbert.parameters():
                 param.requires_grad = False
             self.kt_proj = nn.Linear(self.t5_model.config.hidden_size, 384)
+
+        # Similarity Context components (like KT)
+        if self.use_similarity_context:
+            self.similarity_model = SentenceTransformer('all-MiniLM-L6-v2')
+            for param in self.similarity_model.parameters():
+                param.requires_grad = False
+
+    def compute_embeddings_for_similarity(self, metadata: List[Dict]) -> torch.Tensor:
+        """
+        Compute embeddings for similarity-based context retrieval.
+        Similar to compute_embeddings.py but integrated into the model.
+        """
+        print("[Embeddings] Computing embeddings using sentence-transformers...")
+        
+        # Prepare texts (combine gloss + text for richer representation)
+        texts = []
+        for sample in metadata:
+            gloss = sample.get('gloss', '').strip()
+            text = sample.get('text', '').strip()
+            combined = f"{gloss} {text}".strip()
+            if not combined:
+                combined = "unknown"
+            texts.append(combined)
+        
+        # Compute embeddings in batches to avoid memory issues
+        batch_size = 100
+        all_embeddings = []
+        
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i+batch_size]
+            batch_embeddings = self.similarity_model.encode(batch_texts, convert_to_tensor=True)
+            all_embeddings.append(batch_embeddings)
+        
+        embeddings = torch.cat(all_embeddings, dim=0)
+        print(f"[Embeddings] Computed embeddings for {len(metadata)} samples, shape: {embeddings.shape}")
+        
+        return embeddings
 
     def prepare_inputs(
         self, 
