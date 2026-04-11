@@ -2,6 +2,8 @@
 node_modules/
 jspm_packages/
 
+huggingface_cache/
+
 # Build outputs
 dist/
 build/
