@@ -493,7 +493,7 @@ class FlanT5SLT(AbstractSLT):
         # Only shuffle if we are actually USING context
         if self.use_in_context and len(ex_lang_translations) > 1:
             ex_lang_translations = derangement(ex_lang_translations)
-
+        print(ex_lang_translations)
         return {
             'pixel_values': pixel_values,
             'glor_values': glor_values,

@@ -38,8 +38,8 @@ model:
     sign_cl_temporal_window: 12
     sign_cl_every_n_steps: 1
 
-    use_in_context: false
-    num_in_context: 0
+    use_in_context: true
+    num_in_context: 3
     # NEW AUGMENTATION PARAMETERS
     use_data_augmentation: false
 
@@ -64,8 +64,8 @@ lightning:
     strategy: ddp_find_unused_parameters_true
     accumulate_grad_batches: 4
     accelerator: gpu
-    devices: 2
-    max_epochs: 10
+    devices: 1
+    max_epochs: 2
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: bf16
