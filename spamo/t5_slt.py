@@ -622,6 +622,11 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                     if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
                         loss = loss + self.sign_cl_alpha * sign_cl_loss_val
                         log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
+
+                # Add CTC loss if enabled (alignment supervision)
+                ctc_loss = self.compute_ctc_loss(visual_outputs, visual_masks, inputs)
+                loss = loss + ctc_loss
+                log_dict[f"{split}/ctc_loss"] = ctc_loss
                 
                 log_dict[f"{split}/combined_loss"] = loss
         else:
