@@ -42,10 +42,10 @@ model:
     kt_lambda: 0.7
 
     use_in_context: true
-    num_in_context: 5
+    num_in_context: 3
     
     # Context Mode: 'random' (fast) or 'similarity' (better quality, auto-computes embeddings)
-    context_mode: random  # Choose: 'random' or 'similarity'
+    context_mode: similarity  # Choose: 'random' or 'similarity'
     
     # Context Format: 'text_only' for gloss-free SLT
     context_format_type: text_only
