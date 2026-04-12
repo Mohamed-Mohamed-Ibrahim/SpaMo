@@ -102,9 +102,14 @@ class ContextRetriever:
             return self._retrieve_random(candidate_indices)
         
         elif self.mode == 'similarity':
+            # Auto-lookup index from sample_id if not provided
             if current_idx is None:
-                print("Warning: current_idx required for similarity mode, falling back to random")
+                current_idx = self.id_to_idx.get(sample_id)
+            
+            if current_idx is None:
+                print("Warning: current_idx could not be determined from sample_id, falling back to random")
                 return self._retrieve_random(candidate_indices)
+            
             return self._retrieve_similar(current_idx, candidate_indices)
         
         else:
