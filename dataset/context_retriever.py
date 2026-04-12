@@ -50,7 +50,7 @@ class ContextRetriever:
         self.seed = seed
         
         # Build index for O(1) lookup by ID
-        self.id_to_idx = {meta['id']: idx for idx, meta in enumerate(dataset_metadata)}
+        self.id_to_idx = {str(meta['id']): idx for idx, meta in enumerate(dataset_metadata)}
         
         # Load embeddings if using similarity-based retrieval
         self.embeddings = None
@@ -88,14 +88,24 @@ class ContextRetriever:
         if self.num_context <= 0:
             return []
         
+        # Handle None or invalid sample_id
+        if sample_id is None:
+            print("Warning: sample_id is None, falling back to random sampling")
+            # Get all indices as candidates since we can't exclude the current sample
+            candidate_indices = list(range(len(self.dataset_metadata)))
+            return self._retrieve_random(candidate_indices)
+        
+        # Ensure sample_id is a string for consistent lookup
+        sample_id = str(sample_id)
+        
         # Get candidate indices (all except current sample)
         candidate_indices = [
             idx for idx, meta in enumerate(self.dataset_metadata)
-            if meta['id'] != sample_id
+            if str(meta['id']) != sample_id
         ]
         
         if len(candidate_indices) == 0:
-            print(f"Warning: No candidate context examples found (only 1 sample in dataset?)")
+            print(f"Warning: No candidate context examples found for sample_id '{sample_id}'")
             return []
         
         if self.mode == 'random':
@@ -104,10 +114,14 @@ class ContextRetriever:
         elif self.mode == 'similarity':
             # Auto-lookup index from sample_id if not provided
             if current_idx is None:
-                current_idx = self.id_to_idx.get(sample_id)
+                # Find the index of the current sample
+                for idx, meta in enumerate(self.dataset_metadata):
+                    if str(meta['id']) == sample_id:
+                        current_idx = idx
+                        break
             
             if current_idx is None:
-                print("Warning: current_idx could not be determined from sample_id, falling back to random")
+                print(f"Warning: current_idx could not be determined from sample_id='{sample_id}', falling back to random")
                 return self._retrieve_random(candidate_indices)
             
             return self._retrieve_similar(current_idx, candidate_indices)
@@ -252,11 +266,14 @@ class DatasetMetadataBuilder:
             try:
                 sample = dataset[idx]
                 meta = {
-                    'id': sample.get('id', str(idx)),
+                    'id': str(sample.get('id', str(idx))),
                     'text': sample.get('text', ''),
                     'gloss': sample.get('gloss', ''),
                     'lang': sample.get('lang', 'German'),
                 }
+                if meta['id'] is None:
+                    print(f"Warning: Sample {idx} has None id, using fallback '{str(idx)}'")
+                    meta['id'] = str(idx)
                 metadata.append(meta)
             except Exception as e:
                 print(f"Warning: Failed to extract metadata for sample {idx}: {e}")
