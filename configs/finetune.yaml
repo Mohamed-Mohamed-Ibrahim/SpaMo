@@ -54,7 +54,7 @@ lightning:
     accumulate_grad_batches: 4
     accelerator: gpu
     devices: 2
-    max_epochs: 50
+    max_epochs: 60
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: bf16
@@ -89,7 +89,7 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
-        mode: test
+        mode: dev
         spatial: true
         spatiotemporal: true
         pose: false
