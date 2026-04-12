@@ -33,6 +33,7 @@ class ContextRetriever:
         mode: str = 'random',
         seed: int = 42,
         embedding_cache_path: Optional[str] = None,
+        similarity_model: Optional[Any] = None,
     ):
         """
         Initialize the ContextRetriever.
@@ -43,6 +44,7 @@ class ContextRetriever:
             mode: 'random' or 'similarity'
             seed: Random seed for reproducibility
             embedding_cache_path: Path to pre-computed embeddings for similarity mode
+            similarity_model: Pre-loaded SentenceTransformer model for similarity mode
         """
         self.dataset_metadata = dataset_metadata
         self.num_context = num_context
@@ -54,8 +56,14 @@ class ContextRetriever:
         
         # Load embeddings if using similarity-based retrieval
         self.embeddings = None
+        self.similarity_model = similarity_model
         if self.mode == 'similarity' and embedding_cache_path:
             self.embeddings = self._load_embeddings(embedding_cache_path)
+            # Load the similarity model if not provided
+            if self.similarity_model is None:
+                from sentence_transformers import SentenceTransformer
+                self.similarity_model = SentenceTransformer('all-MiniLM-L6-v2')
+            self.similarity_model.eval()  # Set to eval mode
         
         random.seed(seed)
         np.random.seed(seed)
@@ -74,13 +82,13 @@ class ContextRetriever:
             print(f"Warning: Failed to load embeddings from {cache_path}: {e}")
             return None
     
-    def retrieve(self, sample_id: str, current_idx: int = None) -> List[Dict]:
+    def retrieve(self, sample_id: str, current_sample: Dict = None) -> List[Dict]:
         """
         Retrieve k context examples for a given sample.
         
         Args:
             sample_id: ID of the current sample (will be excluded from context)
-            current_idx: Optional index of current sample in dataset (for similarity mode)
+            current_sample: Optional dict with current sample data for similarity mode
             
         Returns:
             List of context examples (each is a dict with 'gloss' and 'text')
@@ -112,19 +120,10 @@ class ContextRetriever:
             return self._retrieve_random(candidate_indices)
         
         elif self.mode == 'similarity':
-            # Auto-lookup index from sample_id if not provided
-            if current_idx is None:
-                # Find the index of the current sample
-                for idx, meta in enumerate(self.dataset_metadata):
-                    if str(meta['id']) == sample_id:
-                        current_idx = idx
-                        break
-            
-            if current_idx is None:
-                print(f"Warning: current_idx could not be determined from sample_id='{sample_id}', falling back to random")
+            if current_sample is None:
+                print("Warning: current_sample required for similarity mode, falling back to random")
                 return self._retrieve_random(candidate_indices)
-            
-            return self._retrieve_similar(current_idx, candidate_indices)
+            return self._retrieve_similar_from_sample(current_sample, candidate_indices)
         
         else:
             raise ValueError(f"Unknown retrieval mode: {self.mode}")
@@ -145,29 +144,38 @@ class ContextRetriever:
             for idx in selected_indices
         ]
     
-    def _retrieve_similar(
+    def _retrieve_similar_from_sample(
         self,
-        current_idx: int,
+        current_sample: Dict,
         candidate_indices: List[int],
         temperature: float = 1.0
     ) -> List[Dict]:
         """
-        Select k most similar examples using embeddings.
+        Select k most similar examples using embeddings, computing current sample embedding on the fly.
         
         Args:
-            current_idx: Index of current sample
+            current_sample: Dict with current sample data
             candidate_indices: List of valid candidate indices
             temperature: Temperature for softmax (lower = sharper distribution)
             
         Returns:
             List of k most similar context examples
         """
-        if self.embeddings is None:
-            print("Warning: Embeddings not available, falling back to random sampling")
+        if self.embeddings is None or self.similarity_model is None:
+            print("Warning: Embeddings or similarity model not available, falling back to random sampling")
             return self._retrieve_random(candidate_indices)
         
+        # Prepare current sample text for embedding
+        gloss = current_sample.get('gloss', '').strip()
+        text = current_sample.get('text', '').strip()
+        combined = f"{gloss} {text}".strip()
+        if not combined:
+            combined = "unknown"
+        
+        # Compute embedding for current sample
+        current_embedding = self.similarity_model.encode(combined, convert_to_tensor=True).to(self.embeddings.device)
+        
         # Compute similarity scores
-        current_embedding = self.embeddings[current_idx]  # Shape: (D,)
         candidate_embeddings = self.embeddings[candidate_indices]  # Shape: (K, D)
         
         # Cosine similarity

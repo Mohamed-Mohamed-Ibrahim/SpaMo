@@ -236,6 +236,7 @@ class FlanT5SLT(AbstractSLT):
                 num_context=self.num_in_context,
                 mode=self.context_mode,
                 embedding_cache_path=self.embedding_cache_path,
+                similarity_model=self.similarity_model if hasattr(self, 'similarity_model') else None,
             )
             
             print(
@@ -588,7 +589,10 @@ class FlanT5SLT(AbstractSLT):
             _ex_lang_trans = ""
             if self.use_in_context and self.context_retriever is not None:
                 # Use the context retriever to get OTHER examples (not current sample)
-                context_examples = self.context_retriever.retrieve(sample_id=sample['id'])
+                context_examples = self.context_retriever.retrieve(
+                    sample_id=sample['id'], 
+                    current_sample=sample
+                )
                 
                 # Format context examples as a string
                 _ex_lang_trans = ContextRetriever.format_context(
