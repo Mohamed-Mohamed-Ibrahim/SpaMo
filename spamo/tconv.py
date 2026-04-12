@@ -6,6 +6,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _init_conv(m: nn.Module) -> None:
+    """Kaiming He (fan_out, relu) init for Conv1d + BatchNorm1d."""
+    if isinstance(m, nn.Conv1d):
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.BatchNorm1d):
+        nn.init.ones_(m.weight)
+        nn.init.zeros_(m.bias)
+
+
+
 class TemporalConv(nn.Module):
     def __init__(self, input_size, hidden_size, conv_type=2, num_classes=-1):
         super(TemporalConv, self).__init__()
@@ -50,6 +62,15 @@ class TemporalConv(nn.Module):
         if self.num_classes != -1:
             self.fc = nn.Linear(self.hidden_size, self.num_classes)
 
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        self.temporal_conv.apply(_init_conv)
+        if self.num_classes != -1:
+            nn.init.xavier_uniform_(self.fc.weight)
+            if self.fc.bias is not None:
+                nn.init.zeros_(self.fc.bias)
+
     def update_lgt(self, lgt):
         feat_len = copy.deepcopy(lgt)
         for ks in self.kernel_size:
@@ -78,6 +99,14 @@ class ResidualBlock(nn.Module):
         self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=padding, stride=1)
         self.bn1 = nn.BatchNorm1d(channels)
         self.relu = nn.ReLU(inplace=True)
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        nn.init.kaiming_normal_(self.conv1.weight, mode='fan_out', nonlinearity='relu')
+        if self.conv1.bias is not None:
+            nn.init.zeros_(self.conv1.bias)
+        nn.init.ones_(self.bn1.weight)
+        nn.init.zeros_(self.bn1.bias)
         
     def forward(self, x):
         residual = x
@@ -92,12 +121,20 @@ class ResidualBlock(nn.Module):
 class GlorTemporalConv(nn.Module):
     def __init__(self, input_channels, output_channels, dilation_rate=1):
         super().__init__()
-        
+
         self.layers = nn.ModuleList()
         self.layers.append(
             nn.Conv1d(input_channels, output_channels, kernel_size=3, stride=1, padding=dilation_rate, dilation=dilation_rate)
         )
         self.layers.append(ResidualBlock(output_channels))
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        # Only the first Conv1d is directly ours; ResidualBlock handles its own.
+        first_conv = self.layers[0]
+        nn.init.kaiming_normal_(first_conv.weight, mode='fan_out', nonlinearity='relu')
+        if first_conv.bias is not None:
+            nn.init.zeros_(first_conv.bias)
 
     def forward(self, x):
         for layer in self.layers:

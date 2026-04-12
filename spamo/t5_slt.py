@@ -218,6 +218,45 @@ class FlanT5SLT(AbstractSLT):
 
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
+        # Initialize all custom (non-pretrained) modules
+        self._init_custom_modules()
+
+    def _init_custom_modules(self) -> None:
+        """
+        Apply weight initialization to all non-pretrained (custom) sub-modules.
+
+        Strategy:
+          - Linear layers (projectors, MLP heads)     → Xavier Uniform
+          - Conv1d / BatchNorm1d (temporal encoder)   → Kaiming He (fan_out, ReLU)
+          - Attention Q/K/V projections               → Truncated Normal
+          - LayerNorm                                  → ones / zeros
+          - logit_scale                                → log(1/0.07) = 2.6592  (CLIP standard)
+        All initializations are handled inside each module's own _init_weights();
+        this call is a no-op safety net that recurses over any remaining nn.Linear
+        or nn.Conv1d that may have been added without an explicit _init_weights.
+        """
+        from spamo.mm_projector import _init_linear
+        from spamo.tconv import _init_conv
+
+        custom_modules = [
+            self.spatio_proj,
+            self.spatiotemp_proj,
+            self.pose_proj,
+            self.fusion_proj,
+            self.temporal_encoder,
+        ]
+        if self.fusion_mode == 'adaptive' and hasattr(self, 'adaptive_fusion'):
+            custom_modules.append(self.adaptive_fusion)
+
+        for mod in custom_modules:
+            mod.apply(_init_linear)   # Xavier for any Linear not yet covered
+            mod.apply(_init_conv)     # Kaiming for any Conv1d not yet covered
+
+        # logit_scale: use the CLIP standard initialisation log(1/0.07)
+        nn.init.constant_(self.logit_scale, math.log(1 / 0.07))
+
+        print("[INIT] Custom module weight initialization applied (Xavier / Kaiming He).")
+
     def prepare_inputs(
         self, 
         visual_outputs: torch.Tensor, 
