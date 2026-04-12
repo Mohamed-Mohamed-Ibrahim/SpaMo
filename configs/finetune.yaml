@@ -25,7 +25,7 @@ model:
     use_in_context: false
     num_in_context: 0
 
-    sign_cl_loss: true
+    sign_cl_loss: false
     sign_cl_alpha: 0.1
     sign_cl_temperature: 0.3
     sign_cl_temporal_window: 12
@@ -54,7 +54,7 @@ lightning:
     accumulate_grad_batches: 4
     accelerator: gpu
     devices: 2
-    max_epochs: 50
+    max_epochs: 60
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: bf16
@@ -76,7 +76,7 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -89,10 +89,10 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
-        mode: test
+        mode: dev
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -108,7 +108,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
