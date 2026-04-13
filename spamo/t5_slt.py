@@ -206,7 +206,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
         # Load the temporal encoder
-        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden, conv_type=3)
+        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
         
         # Initialize adaptive fusion if fusion_mode is 'adaptive'
         if self.fusion_mode == 'adaptive':
