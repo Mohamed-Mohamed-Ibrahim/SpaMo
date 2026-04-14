@@ -67,6 +67,7 @@ class ContextRetriever:
         
         random.seed(seed)
         np.random.seed(seed)
+        torch.manual_seed(seed)
     
     def _load_embeddings(self, cache_path: str) -> Optional[torch.Tensor]:
         """Load pre-computed embeddings for similarity-based retrieval."""
@@ -198,11 +199,16 @@ class ContextRetriever:
         # Apply temperature and select top-k
         similarities = similarities / temperature
         
-        # Get the k indices with highest similarity
+        # Convert to probabilities and sample to add diversity (prevent overfitting)
+        probs = torch.softmax(similarities, dim=0).cpu().numpy()
         k = min(self.num_context, len(candidate_indices))
-        _, top_k_relative_indices = torch.topk(similarities, k)
         
-        top_k_absolute_indices = [candidate_indices[i] for i in top_k_relative_indices.tolist()]
+        # Sample k indices without replacement using probabilities
+        selected_relative_indices = np.random.choice(
+            len(candidate_indices), size=k, replace=False, p=probs
+        )
+        
+        top_k_absolute_indices = [candidate_indices[i] for i in selected_relative_indices]
         
         return [
             {
