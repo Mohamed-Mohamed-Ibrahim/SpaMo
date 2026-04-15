@@ -72,6 +72,10 @@ class FlanT5SLT(AbstractSLT):
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
+        # TemporalLSTM hyperparameters (flat, so they don't leak into AbstractSLT)
+        temporal_lstm_num_layers: int = 1,
+        temporal_lstm_dropout: float = 0.1,
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -90,8 +94,8 @@ class FlanT5SLT(AbstractSLT):
         self.max_txt_len = max_txt_len
         self.tuning_type = tuning_type
         self.cross_modal_align = cross_modal_align
-        self.temporal_lstm_num_layers = self.hparams.temporal_lstm.num_layers
-        self.temporal_lstm_dropout = self.hparams.temporal_lstm.dropout
+        self.temporal_lstm_num_layers = temporal_lstm_num_layers
+        self.temporal_lstm_dropout = temporal_lstm_dropout
         self.warm_up_steps = warm_up_steps
         self.combined_loss = combined_loss
         self.alpha = alpha
