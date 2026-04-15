@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 
 class TemporalConv(nn.Module):
-    def __init__(self, input_size, hidden_size, conv_type=2, num_classes=-1):
+    def __init__(self, input_size, hidden_size, conv_type=1, num_classes=-1):
         super(TemporalConv, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
