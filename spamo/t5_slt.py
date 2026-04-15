@@ -90,6 +90,8 @@ class FlanT5SLT(AbstractSLT):
         self.max_txt_len = max_txt_len
         self.tuning_type = tuning_type
         self.cross_modal_align = cross_modal_align
+        self.temporal_lstm_num_layers = self.hparams.temporal_lstm.num_layers
+        self.temporal_lstm_dropout = self.hparams.temporal_lstm.dropout
         self.warm_up_steps = warm_up_steps
         self.combined_loss = combined_loss
         self.alpha = alpha
@@ -202,8 +204,8 @@ class FlanT5SLT(AbstractSLT):
         self.temporal_lstm = TemporalLSTM(
             input_size=self.inter_hidden,
             hidden_size=self.inter_hidden,
-            num_layers=2, # Keep it shallow for Phoenix14T
-            dropout=0.2
+            num_layers=self.temporal_lstm_num_layers,  # Keep it shallow for Phoenix14T
+            dropout=self.temporal_lstm_dropout
         )
         
         # Initialize adaptive fusion if fusion_mode is 'adaptive'

@@ -13,6 +13,9 @@ model:
     max_txt_len: 64
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
+    temporal_lstm:
+      num_layers: 2
+      dropout: 0.05
     tuning_type: lora
     lora_r: 32
     lora_alpha: 64
