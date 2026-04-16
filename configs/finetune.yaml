@@ -106,7 +106,7 @@ data:
         pose_root: pose_Phoenix14T
         mode: dev
         spatial: true
-        spatiotemporal: true
+        spatiotemporal: false
         pose: false
         spatial_postfix: "_features"
         spatiotemporal_postfix: ""
