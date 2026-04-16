@@ -29,7 +29,7 @@ model:
     lora_dropout: 0.05
     weight_decay: 0.05
 
-    fusion_mode: joint
+    fusion_mode: spatial
     warm_up_steps: 1000
     cross_modal_align: true
     combined_loss: true
