@@ -85,7 +85,7 @@ data:
       params:
         anno_root: ./preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: slowfast-feat_p14t
+        feat_root: /kaggle/input/notebooks/hamzahassan5286/data-processing/slowfast-feat_p14t
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
         mode: train
@@ -101,7 +101,7 @@ data:
       params:
         anno_root: ./preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: slowfast-feat_p14t
+        feat_root: /kaggle/input/notebooks/hamzahassan5286/data-processing/slowfast-feat_p14t
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
         mode: dev
@@ -117,7 +117,7 @@ data:
       params:
         anno_root: ./preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: slowfast-feat_p14t
+        feat_root: /kaggle/input/notebooks/hamzahassan5286/data-processing/slowfast-feat_p14t
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
         mode: test
