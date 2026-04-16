@@ -112,7 +112,28 @@ class Phoenix14T(torch.utils.data.Dataset):
         if not feat_path.exists():
             raise FileNotFoundError(f"Spatial feature file not found: {feat_path}")
         
-        return torch.tensor(np.load(feat_path))
+        raw_data = np.load(feat_path, allow_pickle=True)
+        
+        if raw_data.shape == () and raw_data.dtype == object:
+            raw_data = raw_data.item()
+            
+        if isinstance(raw_data, dict):
+            if 'features' in raw_data:
+                feat_matrix = raw_data['features']
+            elif 'sign' in raw_data:
+                feat_matrix = raw_data['sign']
+            else:
+                for v in raw_data.values():
+                    if hasattr(v, 'shape') and len(v.shape) == 2:
+                        feat_matrix = v
+                        break
+        else:
+            feat_matrix = raw_data
+            
+        if not isinstance(feat_matrix, torch.Tensor):
+            feat_matrix = torch.tensor(feat_matrix)
+            
+        return feat_matrix.float()
 
     def _load_spatiotemporal_features(self, file_id: str) -> Union[torch.Tensor, List[torch.Tensor]]:
         """
@@ -244,8 +265,3 @@ class Phoenix14T(torch.utils.data.Dataset):
     @staticmethod
     def collate_fn(batch: List[Dict]) -> List[Dict]:
         return batch
-
-
-
-
-
