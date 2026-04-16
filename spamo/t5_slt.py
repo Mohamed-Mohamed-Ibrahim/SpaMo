@@ -20,6 +20,8 @@ from spamo.clip_loss import clip_loss
 from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
+from torch.optim.lr_scheduler import LambdaLR
+from spamo.lr_scheduler import LambdaWarmUpCosineScheduler
 
 
 
@@ -40,6 +42,7 @@ class FlanT5SLT(AbstractSLT):
         frame_sample_rate: int = 1, 
         prompt: str = '',
         lr: float = 3e-4,
+        min_lr: float = 5e-5,
         input_size: int = 1024,
         pose_input_size: int = 33*3,
         fusion_mode: str = 'joint',
@@ -83,6 +86,7 @@ class FlanT5SLT(AbstractSLT):
         self.pose_input_size = pose_input_size
         self.prompt = prompt
         self.lr = lr
+        self.min_lr = min_lr
         self.weight_decay = weight_decay
         self.model_name = model_name
         self.frame_sample_rate = frame_sample_rate
@@ -487,8 +491,8 @@ class FlanT5SLT(AbstractSLT):
                 if 'ctx_en_text' in sample and 'ctx_text' in sample:
                     _ex_lang_trans = [
                         f"{sample.get('ctx_en_text','')}={sample['ctx_text']}",
-                        f"{sample.get('ctx_fr_text','')}={sample['ctx_text']}",
-                        f"{sample.get('ctx_es_text','')}={sample['ctx_text']}"
+                        # f"{sample.get('ctx_fr_text','')}={sample['ctx_text']}",
+                        # f"{sample.get('ctx_es_text','')}={sample['ctx_text']}"
                     ]
             
                 # Keep only the number requested
@@ -704,16 +708,17 @@ class FlanT5SLT(AbstractSLT):
         self.log_dict(eval_res, sync_dist=True)
         self.set_container()
 
+
     def configure_optimizers(self):
         # 1. Filter parameters
         trainable_params = [p for p in self.parameters() if p.requires_grad]
         if len(trainable_params) == 0:
             raise RuntimeError("No trainable parameters found.")
 
-        # 2. Setup AdamW 
+        # 2. Setup AdamW (CRITICAL: lr MUST be 1.0 for the custom scheduler)
         optimizer = torch.optim.AdamW(
             trainable_params,
-            lr=self.hparams.lr,
+            lr=1.0,  # <--- MAGIC NUMBER: Required by LambdaWarmUpCosineScheduler
             weight_decay=self.hparams.weight_decay,
             eps=1e-8,
             betas=(0.9, 0.98)
@@ -731,20 +736,25 @@ class FlanT5SLT(AbstractSLT):
             acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
             total_steps = (batches_per_epoch // acc_batches) * max_epochs
         
-        # 4. Warmup Logic (Priority: YAML value)
+        # 4. Warmup Logic
         if self.lr_warmup_steps is not None:
             warmup_steps = self.lr_warmup_steps
         else:
             warmup_steps = int(total_steps * 0.1)
 
-        print(f"--> Optimizer Setup: Total Steps={total_steps}, LR Warmup Steps={warmup_steps}, VT-Align Steps={self.warm_up_steps}")
+        print(f"--> Optimizer Setup: Total Steps={total_steps}, LR Warmup Steps={warmup_steps}")
 
-        # 5. Cosine Scheduler
-        scheduler = get_cosine_schedule_with_warmup(
-            optimizer=optimizer,
-            num_warmup_steps=warmup_steps,
-            num_training_steps=total_steps,
+        # 5. Initialize the Custom SpaMo Scheduler
+        custom_scheduler_fn = LambdaWarmUpCosineScheduler(
+            warm_up_steps=warmup_steps,
+            lr_min=self.hparams.min_lr,               # Falls back to 5e-5 if missing
+            lr_max=self.hparams.lr,                   # Your peak YAML lr (e.g., 1e-4)
+            lr_start=1e-6,                            # Near-zero start
+            max_decay_steps=total_steps
         )
+
+        # 6. Wrap it in PyTorch's native LambdaLR
+        scheduler = LambdaLR(optimizer, lr_lambda=custom_scheduler_fn)
 
         # log parameter counts for debugging DDP issues
         try:
@@ -753,7 +763,6 @@ class FlanT5SLT(AbstractSLT):
             self.log('model/total_params', float(total), prog_bar=False)
             self.log('model/trainable_params', float(trainable), prog_bar=False)
         except Exception:
-            # logging may not be available at construction time in some contexts
             pass
 
         return {
@@ -764,3 +773,64 @@ class FlanT5SLT(AbstractSLT):
                 "frequency": 1,
             },
         }
+
+    # def configure_optimizers(self):
+    #     # 1. Filter parameters
+    #     trainable_params = [p for p in self.parameters() if p.requires_grad]
+    #     if len(trainable_params) == 0:
+    #         raise RuntimeError("No trainable parameters found.")
+
+    #     # 2. Setup AdamW 
+    #     optimizer = torch.optim.AdamW(
+    #         trainable_params,
+    #         lr=self.hparams.lr,
+    #         weight_decay=self.hparams.weight_decay,
+    #         eps=1e-8,
+    #         betas=(0.9, 0.98)
+    #     )
+        
+    #     # 3. Dynamic Step Calculation
+    #     if hasattr(self.trainer, 'estimated_stepping_batches'):
+    #         total_steps = int(self.trainer.estimated_stepping_batches)
+    #     else:
+    #         max_epochs = self.trainer.max_epochs
+    #         train_loader = self.trainer.train_dataloader
+    #         if hasattr(train_loader, 'dataloader'): 
+    #             train_loader = train_loader.dataloader
+    #         batches_per_epoch = len(train_loader)
+    #         acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
+    #         total_steps = (batches_per_epoch // acc_batches) * max_epochs
+        
+    #     # 4. Warmup Logic (Priority: YAML value)
+    #     if self.lr_warmup_steps is not None:
+    #         warmup_steps = self.lr_warmup_steps
+    #     else:
+    #         warmup_steps = int(total_steps * 0.1)
+
+    #     print(f"--> Optimizer Setup: Total Steps={total_steps}, LR Warmup Steps={warmup_steps}, VT-Align Steps={self.warm_up_steps}")
+
+    #     # 5. Cosine Scheduler
+    #     scheduler = get_cosine_schedule_with_warmup(
+    #         optimizer=optimizer,
+    #         num_warmup_steps=warmup_steps,
+    #         num_training_steps=total_steps,
+    #     )
+
+    #     # log parameter counts for debugging DDP issues
+    #     try:
+    #         total = sum(p.numel() for p in self.parameters())
+    #         trainable = sum(p.numel() for p in trainable_params)
+    #         self.log('model/total_params', float(total), prog_bar=False)
+    #         self.log('model/trainable_params', float(trainable), prog_bar=False)
+    #     except Exception:
+    #         # logging may not be available at construction time in some contexts
+    #         pass
+
+    #     return {
+    #         "optimizer": optimizer,
+    #         "lr_scheduler": {
+    #             "scheduler": scheduler,
+    #             "interval": "step",
+    #             "frequency": 1,
+    #         },
+    #     }
