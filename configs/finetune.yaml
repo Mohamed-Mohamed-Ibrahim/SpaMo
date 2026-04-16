@@ -92,7 +92,7 @@ data:
         spatial: true
         spatiotemporal: false
         pose: false
-        spatial_postfix: ""
+        spatial_postfix: "_features"
         spatiotemporal_postfix: ""
         pose_postfix: ""
         
@@ -108,7 +108,7 @@ data:
         spatial: true
         spatiotemporal: true
         pose: false
-        spatial_postfix: ""
+        spatial_postfix: "_features"
         spatiotemporal_postfix: ""
         pose_postfix: ""
     
@@ -124,6 +124,6 @@ data:
         spatial: true
         spatiotemporal: false
         pose: false
-        spatial_postfix: ""
+        spatial_postfix: "_features"
         spatiotemporal_postfix: ""
         pose_postfix: ""
