@@ -15,12 +15,9 @@ sys.path.append('./')
 from utils.s2wrapper import forward as multiscale_forward
 from utils.helpers import read_video, get_img_list
 
-
 _GLOBAL_SEED = 0
 np.random.seed(_GLOBAL_SEED)
 torch.manual_seed(_GLOBAL_SEED)
-
-
 
 class ViTFeatureReader(object):
     def __init__(
@@ -53,10 +50,19 @@ class ViTFeatureReader(object):
     def get_feats(self, video):
         inputs = self.image_processor(list(video), return_tensors="pt").to(self.device).pixel_values
         if self.s2_mode == "s2wrapping":
-            outputs = multiscale_forward(self.forward_features, inputs, scales=self.scales, num_prefix_token=1)
+            # [MODIFIED] Forces the wrapper to output the features at the highest scale index
+            outputs = multiscale_forward(
+                self.forward_features, 
+                inputs, 
+                scales=self.scales, 
+                num_prefix_token=1,
+                resize_output_to_idx=1 
+            )
         else:
             outputs = self.forward_features(inputs)
-        return outputs[:, 0]
+            
+        # [MODIFIED] Return the high-res patches, drop the CLS token
+        return outputs[:, 1:]
 
 
 def get_parser():
