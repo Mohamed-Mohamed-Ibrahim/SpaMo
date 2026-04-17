@@ -6,15 +6,13 @@ import math
 from typing import Dict, List, Optional, Tuple, Any
 
 import torch.nn.functional as F
-
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, get_cosine_schedule_with_warmup
-from transformers import BertConfig, BertModel
+from transformers import AutoTokenizer, T5ForConditionalGeneration, MT5ForConditionalGeneration
 from peft import LoraConfig, get_peft_model, TaskType
 
 from spamo.tconv import TemporalConv
 from utils.helpers import create_mask, derangement
-from spamo.mm_projector import build_vision_projector, AdaptiveFusion
+from spamo.mm_projector import build_vision_projector
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.sign_cl import TemporalSignCLLoss
@@ -23,29 +21,38 @@ from spamo.data_augmentation import FeatureAugmenter
 from torch.optim.lr_scheduler import LambdaLR
 from spamo.lr_scheduler import LambdaWarmUpCosineScheduler
 
-
+# NEW IMPORTS FOR UNI-SIGN PGF & ST-GCN HYBRID
+from deformable_attention_2d import DeformableAttention2D
+from stgcn_layers import Graph, get_stgcn_chain
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_float32_matmul_precision('high')
 
+# MMPose 133 to Uni-Sign 69 Keypoint Mapping
+# 11 Upper Body, 16 Face (Lips/Eyes), 21 Left Hand, 21 Right Hand
+UNI_SIGN_69_INDICES = (
+    list(range(0, 11)) +       # Body 
+    list(range(23, 39)) +      # Face (Partial)
+    list(range(91, 112)) +     # Left Hand
+    list(range(112, 133))      # Right Hand
+)
+
 class FlanT5SLT(AbstractSLT):
     """
-    FlanT5-based Sign Language Translation model.
-    Features: Spatial (ViT/ResNet) + Spatiotemporal (VideoMAE/C3D).
-    Removed: Pose and I3D features.
+    Hybrid SpaMo + Uni-Sign Sign Language Translation model.
+    Features: Spatial (CLIP ViT) + Motion (VideoMAE) + Pose (ST-GCN -> PGF).
     """
     def __init__(
         self, 
         tuning_type: str = 'lora', 
-        model_name: Optional[str] = None,
+        model_name: str = 'google/mt5-base',  # Enforcing multilingual LLM
         weight_decay=0.01,
         frame_sample_rate: int = 1, 
         prompt: str = '',
         lr: float = 3e-4,
         min_lr: float = 5e-5,
         input_size: int = 1024,
-        pose_input_size: int = 33*3,
-        fusion_mode: str = 'joint',
+        pose_hidden_dim: int = 64,
         inter_hidden: int = 512,
         max_frame_len: int = 512,
         max_txt_len: int = 64,
@@ -59,8 +66,6 @@ class FlanT5SLT(AbstractSLT):
         sign_cl_temperature: float = 0.07,
         sign_cl_temporal_window: int = 5,
         sign_cl_every_n_steps: int = 1,
-        use_resampler: bool = False,
-        sampling_length: int = 64,
         cache_dir: str = "/data3/models",
         use_in_context: bool = False,
         num_in_context: int = 0,
@@ -69,28 +74,21 @@ class FlanT5SLT(AbstractSLT):
         lora_dropout: float = 0.1,
         use_data_augmentation: bool = True,
         use_gradient_checkpointing: bool = False,
-
-        # NEW: 3 Augmentation Parameters
         augmentation_prob: float = 0.5,
         aug_frame_prob: float = 0.1,
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
-
-        
         **kwargs
     ):
         super().__init__(**kwargs)
         
-        # Configuration parameters
         self.input_size = input_size
-        self.pose_input_size = pose_input_size
         self.prompt = prompt
         self.lr = lr
         self.min_lr = min_lr
         self.weight_decay = weight_decay
         self.model_name = model_name
         self.frame_sample_rate = frame_sample_rate
-        self.fusion_mode = fusion_mode
         self.inter_hidden = inter_hidden
         self.max_frame_len = max_frame_len
         self.max_txt_len = max_txt_len
@@ -105,55 +103,32 @@ class FlanT5SLT(AbstractSLT):
         self.sign_cl_temperature = sign_cl_temperature
         self.sign_cl_temporal_window = sign_cl_temporal_window
         self.sign_cl_every_n_steps = sign_cl_every_n_steps
-        self.use_resampler = use_resampler
-        self.sampling_length = sampling_length
         self.cache_dir = cache_dir
-        
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
-
         
-        
-        # <--- FIX: Force disable context if count is 0
         if self.num_in_context == 0:
             self.use_in_context = False
 
-        
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
         self.use_gradient_checkpointing = use_gradient_checkpointing
-
-        print("==="*40)
-        print(f"use_data_augmentation: {use_data_augmentation}")
-        print(f"use_gradient_checkpointing: {use_gradient_checkpointing}")
-        print(f"sign_cl_loss{sign_cl_loss}")
-        print("==="*40)
         
-        # Save hyperparameters (ensures self.hparams.lr exists)
         self.save_hyperparameters()
-        
-        self.prepare_models(model_name)
+        self.prepare_models(model_name, pose_hidden_dim)
 
-        # Apply the selected tuning strategy
         if tuning_type == 'freeze':
             self._freeze_model()
         elif tuning_type == 'lora':
             self._apply_lora()
 
-        # ---------------------------------------------------------
         if self.use_gradient_checkpointing:
             self.t5_model.gradient_checkpointing_enable()
-            
-            # CRITICAL: Because LoRA freezes the base model, we must force 
-            # the engine to track gradients for the inputs, or it will silently crash!
             if hasattr(self.t5_model, "enable_input_require_grads"):
                 self.t5_model.enable_input_require_grads()
-            print("Gradient Checkpointing ENABLED for memory savings.")
-        # ---------------------------------------------------------
 
-        # Data augmenter
         if self.use_data_augmentation:
             self.augmenter = FeatureAugmenter(
                 aug_prob=augmentation_prob,
@@ -161,17 +136,12 @@ class FlanT5SLT(AbstractSLT):
                 span_mask_prob=aug_span_prob,
                 channel_drop_prob=aug_channel_prob
             )
-            print(
-                f"[AUG] Enabled | frame={aug_frame_prob}, span={aug_span_prob}, channel={aug_channel_prob}"
-            )
-
 
         self.set_container()
         
     def load_pretrained_weights(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         self.load_state_dict(checkpoint['state_dict'])
-        print(f'Checkpoint is loaded from {checkpoint_path}.')
 
     def _apply_lora(self) -> None:
         lora_config = LoraConfig(
@@ -183,59 +153,63 @@ class FlanT5SLT(AbstractSLT):
             task_type=TaskType.SEQ_2_SEQ_LM
         )
         self.t5_model = get_peft_model(self.t5_model, lora_config)
-        print("LoRA adapter applied to T5 model.")
 
     def _freeze_model(self) -> None:
         self.t5_model.eval()
         for params in self.t5_model.parameters():
             params.requires_grad = False
-        print("T5 model frozen.")
 
     def set_container(self) -> None:
         self.generated = []
         self.references = []
 
-    def prepare_models(self, t5_model: str) -> None:
-        # Load the textual model
-        self.t5_model = T5ForConditionalGeneration.from_pretrained(
-            t5_model, 
-            cache_dir=self.cache_dir,
-            torch_dtype=torch.bfloat16,
-            use_safetensors=True 
-        )
+    def prepare_models(self, t5_model: str, pose_hidden_dim: int) -> None:
+        # Load the textual model (mT5 for multilingual support)
+        if 'mt5' in t5_model.lower():
+            self.t5_model = MT5ForConditionalGeneration.from_pretrained(
+                t5_model, cache_dir=self.cache_dir, torch_dtype=torch.bfloat16, use_safetensors=True
+            )
+        else:
+            self.t5_model = T5ForConditionalGeneration.from_pretrained(
+                t5_model, cache_dir=self.cache_dir, torch_dtype=torch.bfloat16, use_safetensors=True
+            )
 
         self.t5_model.tie_weights()
-        print("--> Weights formally tied to save memory.")
 
-
-        # Load the tokenizer
         self.t5_tokenizer = AutoTokenizer.from_pretrained(
-            t5_model, 
-            cache_dir=self.cache_dir,
-            max_length=self.max_txt_len,
+            t5_model, cache_dir=self.cache_dir, max_length=self.max_txt_len,
         )
 
-        # Load the vision projectors (Spatial + Spatiotemporal ONLY)
-        self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
-        self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
-        # Pose projector: default pose size is 33 keypoints * 3 coords = 99
-        self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
-        self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
+        # ---------------------------------------------------------
+        # PHASE 2: ONLINE PIPELINE MODULES
+        # ---------------------------------------------------------
         
-        # Load the temporal encoder
-        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+        # 1. Pose Encoding: Single ST-GCN block for all 69 points
+        self.pose_graph = Graph(layout='mediapipe_69', strategy='distance', max_hop=1) # Adapting to 69 nodes
+        A = torch.tensor(self.pose_graph.A, dtype=torch.float32, requires_grad=False)
+        self.pose_proj_in = nn.Linear(2, pose_hidden_dim) # Project (x,y) to hidden dim
+        self.pose_gcn, final_gcn_dim = get_stgcn_chain(pose_hidden_dim, 'spatial', (1, A.size(0)), A.clone(), True)
         
-        # Initialize adaptive fusion if fusion_mode is 'adaptive'
-        if self.fusion_mode == 'adaptive':
-            self.adaptive_fusion = AdaptiveFusion(
-                input_size_1=self.inter_hidden, 
-                input_size_2=self.inter_hidden, 
-                input_size_3=self.inter_hidden, 
-                output_size=3
-            )
-            
+        # Project ST-GCN output to match CLIP Spatial dimension (1024)
+        self.pose_to_pgf = nn.Linear(final_gcn_dim, 1024)
 
-        # Initialize SignCL loss if enabled
+        # 2. Prior-Guided Fusion: Deformable Attention
+        self.pgf_attention = DeformableAttention2D(
+            dim = 1024,
+            dim_head = 32,
+            heads = 8,
+            dropout = 0.1,
+            downsample_factor = 1,
+            offset_kernel_size = 1,
+        )
+
+        # 3. Modality Merging: Flattened Refined Spatial (69*1024) + VideoMAE Motion (1024)
+        fused_input_size = (69 * 1024) + 1024
+        self.fusion_proj = build_vision_projector('mlp2x_gelu', fused_input_size, self.t5_model.config.hidden_size)
+        
+        # 4. Temporal Compression: 1D Convolution
+        self.temporal_encoder = TemporalConv(self.t5_model.config.hidden_size, self.t5_model.config.hidden_size)
+
         if self.sign_cl_loss:
             self.sign_cl = TemporalSignCLLoss(
                 temperature=self.sign_cl_temperature,
@@ -247,16 +221,10 @@ class FlanT5SLT(AbstractSLT):
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
     def prepare_inputs(
-        self, 
-        visual_outputs: torch.Tensor, 
-        visual_mask: torch.Tensor, 
-        samples: Dict, 
-        split: str, 
-        batch_idx: int
+        self, visual_outputs: torch.Tensor, visual_mask: torch.Tensor, samples: Dict, split: str, batch_idx: int
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
-        bs = visual_outputs.shape[0]
+        bs = visual_outputs.shape
         
-        # Prepare the prompt
         prompts = [f'{self.prompt}'] * bs
         prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
         
@@ -264,10 +232,7 @@ class FlanT5SLT(AbstractSLT):
             prompts = [f"{p} {c}" for p, c in zip(prompts, samples['ex_lang_trans'])]
         
         input_tokens = self.t5_tokenizer(
-            prompts,
-            padding="longest",
-            truncation=True,
-            return_tensors="pt",
+            prompts, padding="longest", truncation=True, return_tensors="pt",
         ).to(self.device)
         
         visual_lengths = visual_mask.sum(1)
@@ -287,9 +252,7 @@ class FlanT5SLT(AbstractSLT):
         joint_mask = create_mask(seq_lengths=new_lengths.tolist(), device=self.device)
         
         output_tokens = self.t5_tokenizer(
-            samples['text'],
-            padding="longest",
-            return_tensors="pt",
+            samples['text'], padding="longest", return_tensors="pt",
         ).to(self.device)
         
         targets = output_tokens.input_ids.masked_fill(
@@ -300,167 +263,68 @@ class FlanT5SLT(AbstractSLT):
 
     def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Prepare visual inputs based on the fusion mode.
-        
-        Args:
-            samples: Input samples containing visual features
-            
-        Returns:
-            Tuple of (visual_outputs, visual_masks)
+        Executes the exact Uni-Sign integration pipeline step-by-step.
         """
-        # Determine which visual features to use based on fusion mode
-        if self.fusion_mode in ['joint', 'adaptive']:
-            spatial = spatiotemporal = pose = True
-        else:
-            spatial = self.fusion_mode == 'spatial'
-            spatiotemporal = self.fusion_mode == 'spatiotemporal'
-            pose = self.fusion_mode == 'pose'
-
-        # Process spatial features
-        if spatial:
-            pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
-
-            if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
-                pixel_values = self.augmenter(pixel_values, samples['num_frames'])
-
-            spatial_outputs = self.spatio_proj(pixel_values)
-            spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
+        # Load offline modalities
+        spatial_outputs = pad_sequence(samples['pixel_values'], batch_first=True) # (B, T, 1024, D)
+        motion_outputs = pad_sequence(samples['glor_values'], batch_first=True)   # (B, T, D)
         
-        # Process spatiotemporal features
-        if spatiotemporal:
-            spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True)
-            
-            if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
-                spatiotemporal_outputs = self.augmenter(spatiotemporal_outputs, samples['glor_lengths'])
-            
-            spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
-            spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
+        # Ensure pose is formatted properly and normalized
+        pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape, -1, 2) for pv in samples['pose_values']]
+        pose_outputs = pad_sequence(pose_values_local, batch_first=True).float()  # (B, T, 133, 2)
+
+        B, T = spatial_outputs.shape[:2]
+
+        # STEP 1: Pose Encoding & Filtering
+        pose_69 = pose_outputs[:, :, UNI_SIGN_69_INDICES, :] # Filter down to (B, T, 69, 2)
+        pose_init = pose_69.clone() # Save raw coordinates [1] for PGF vgrid calculation
+
+        # Project coordinates and format for ST-GCN: (B*T, C, V, 1)
+        pose_proj = self.pose_proj_in(pose_69) 
+        pose_proj = pose_proj.view(B*T, 69, -1).permute(0, 2, 1).unsqueeze(-1) 
+
+        # Single Graph Pass (No Left/Right splitting)
+        pose_feat = self.pose_gcn(pose_proj) # (B*T, D_gcn, 69, 1)
+        pose_feat = pose_feat.squeeze(-1).permute(0, 2, 1) # (B*T, 69, D_gcn)
         
-        # Process pose features if needed
-        if pose:
-            # pose_values should be a list of [T, pose_input_size] tensors (cpu tensors from get_inputs)
-            raw_pose_values = samples.get('pose_values', [])
-            pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in raw_pose_values]
-            if len(pose_values_local) > 0:
-                # pad and move to device; ensure float dtype
-                pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.device).float()
-                pose_lengths = [int(p.size(0)) for p in pose_values_local]
-            else:
-                B = len(samples['pixel_values'])
-                pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=torch.float32)
-                pose_lengths = [0] * B
-            pose_outputs = self.pose_proj(pose_padded)
-            pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
+        # Align dimension with CLIP (1024) and format for Deformable Attention: (B*T, 1024, 69)
+        pose_feat = self.pose_to_pgf(pose_feat).permute(0, 2, 1) 
+
+        # STEP 2: Prior-Guided Fusion (PGF)
+        # Format Spatial grid as Key/Value: (B*T, D, H, W) -> e.g., (B*T, 1024, 32, 32)
+        grid_size = int(math.sqrt(spatial_outputs.shape[2]))
+        spatial_flat = spatial_outputs.view(B*T, grid_size * grid_size, 1024).permute(0, 2, 1)
+        rgb_feat = spatial_flat.view(B*T, 1024, grid_size, grid_size)
         
-        # Combine features for joint mode
-        if self.fusion_mode == 'joint':
-            bs = spatial_outputs.shape[0]
-            spatial_length = spatial_mask.sum(1)
-            spatiotemporal_length = spatiotemporal_mask.sum(1)
-            pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
-            new_length = spatial_length + spatiotemporal_length + pose_length
+        # Format Queries: (B*T, 69, 2)
+        pose_init_flat = pose_init.view(B*T, 69, 2)
 
-            # Concatenate spatial, spatiotemporal and pose features for each sample
-            joint_outputs = []
-            for i in range(bs):
-                parts = []
-                if spatial:
-                    parts.append(spatial_outputs[i, :spatial_length[i], :])
-                if spatiotemporal:
-                    parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
-                if pose:
-                    parts.append(pose_outputs[i, :pose_length[i], :])
-                concat_sample = torch.cat(parts, dim=0)
-                joint_outputs.append(concat_sample)
-            joint_outputs = pad_sequence(joint_outputs, batch_first=True)
+        # Execute Deformable Attention
+        refined_spatial_feat = self.pgf_attention(pose_feat, rgb_feat, pose_init_flat) # (B*T, 1024, 69)
 
-            # Apply temporal encoder
-            visual_conv_outputs = self.temporal_encoder(
-                joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
-            )
+        # STEP 3: Modality Merging
+        # Flatten the refined spatial features to (B*T, 69 * 1024)
+        refined_spatial_flat = refined_spatial_feat.permute(0, 2, 1).reshape(B*T, 69 * 1024)
+        motion_flat = motion_outputs.view(B*T, -1) # (B*T, 1024)
 
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
-            visual_masks = create_mask(
-                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                device=self.device
-            )
-        
-        elif self.fusion_mode == 'adaptive':
-            
-            # 1. Align Dimensions: Interpolate spatiotemporal (T_st) to match spatial (T_s) length
-            # Input shapes are (B, T, C). Interpolate expects (B, C, T)
-            if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
-                spatiotemporal_outputs = F.interpolate(
-                    spatiotemporal_outputs.permute(0, 2, 1), 
-                    size=spatial_outputs.shape[1], 
-                    mode='linear', 
-                    align_corners=False
-                ).permute(0, 2, 1)
+        # Concatenate and pass through MLP Gate
+        fused_features = torch.cat([refined_spatial_flat, motion_flat], dim=-1)
+        projected_features = self.fusion_proj(fused_features) # (B*T, LLM_Hidden)
+        projected_features = projected_features.view(B, T, -1)
 
-            # 2. Apply Adaptive Fusion
-            # Returns (B, T, C)
-            fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
+        # STEP 4: Temporal Compression
+        lengths = torch.tensor(samples['num_frames'], device=self.device)
+        conv_outputs = self.temporal_encoder(projected_features.permute(0, 2, 1), lengths)
 
-            # 3. Pass through Temporal Encoder
-            # TemporalConv expects (B, C, T) input
-            visual_conv_outputs = self.temporal_encoder(
-                fused_outputs.permute(0, 2, 1), 
-                torch.tensor(samples['num_frames'], device=self.device)
-            )
-
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
-            visual_masks = create_mask(
-                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                device=self.device
-            )
-
-        else:
-            # Single feature mode
-            if spatial:
-                active_outputs, active_lens = spatial_outputs, samples['num_frames']
-            elif spatiotemporal:
-                active_outputs, active_lens = spatiotemporal_outputs, samples['glor_lengths']
-                visual_outputs = spatiotemporal_outputs
-                visual_masks = spatiotemporal_mask
-            elif pose:
-                # For pose-only mode, run temporal encoder on pose features
-                # use actual pose lengths computed earlier
-                pose_conv_outputs = self.temporal_encoder(
-                    pose_outputs.permute(0,2,1), torch.tensor(pose_lengths, device=self.device)
-                )
-                visual_outputs = pose_conv_outputs['visual_feat'].permute(1,0,2)
-                visual_masks = create_mask(
-                    seq_lengths=pose_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                    device=self.device
-                )
-            else:
-                raise NotImplementedError("Invalid fusion mode")
-            
-            if self.fusion_mode == 'spatiotemporal':
-                 visual_outputs = active_outputs
-                 visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
-            else:
-                conv_outputs = self.temporal_encoder(
-                    active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
-                )
-                visual_outputs = conv_outputs['visual_feat'].permute(1,0,2)
-                visual_masks = create_mask(
-                    seq_lengths=conv_outputs['feat_len'].to(torch.int).tolist(), 
-                    device=self.device
-                )
+        visual_outputs = conv_outputs['visual_feat'].permute(1, 0, 2)
+        visual_masks = create_mask(
+            seq_lengths=conv_outputs['feat_len'].to(torch.int).tolist(), 
+            device=self.device
+        )
 
         return visual_outputs, visual_masks
 
     def get_inputs(self, batch: List) -> Dict:
-        """
-        Process batch inputs into a structured dictionary.
-        
-        Args:
-            batch: Raw batch from dataloader
-
-        Returns:
-            Processed inputs dictionary
-        """
         pixel_values, glor_values, masks, ids = [], [], [], []
         pose_values = []
         texts, glosses = [], []
@@ -470,7 +334,7 @@ class FlanT5SLT(AbstractSLT):
         max_frame_len = self.max_frame_len
 
         for sample in batch:
-            if sample.get('pixel_value') is None or sample['pixel_value'].shape[0] == 0:
+            if sample.get('pixel_value') is None or sample['pixel_value'].shape == 0:
                 continue
 
             nframe = math.ceil(sample['num_frames'] / self.frame_sample_rate)
@@ -485,31 +349,20 @@ class FlanT5SLT(AbstractSLT):
             glosses.append(sample['gloss'])
             langs.append(sample['lang'])
 
-            # <--- FIX: Clean context handling
             _ex_lang_trans = []
             if self.num_in_context > 0:
                 if 'ctx_en_text' in sample and 'ctx_text' in sample:
-                    _ex_lang_trans = [
-                        f"{sample.get('ctx_en_text','')}={sample['ctx_text']}",
-                        # f"{sample.get('ctx_fr_text','')}={sample['ctx_text']}",
-                        # f"{sample.get('ctx_es_text','')}={sample['ctx_text']}"
-                    ]
-            
-                # Keep only the number requested
+                    _ex_lang_trans = [f"{sample.get('ctx_en_text','')}={sample['ctx_text']}"]
                 trimmed = _ex_lang_trans[:self.num_in_context]
-            
-                # Join them into one string
                 ex_lang_translations.append(' '.join(trimmed))
             else:
                 ex_lang_translations.append("")
 
-
-
-
             num_frames.append(nframe)
             pixel_values.append(pval)
-
-            # Removed Pose and I3D processing blocks
+            
+            if sample.get('pose_value') is not None:
+                pose_values.append(sample['pose_value'])
 
             if sample.get('glor_value') is not None:
                 if isinstance(sample['glor_value'], list):
@@ -519,7 +372,6 @@ class FlanT5SLT(AbstractSLT):
                     glor_values.append(sample['glor_value'])
                     glor_lengths.append(len(sample['glor_value']))
 
-        # Only shuffle if we are actually USING context
         if self.use_in_context and len(ex_lang_translations) > 1:
             ex_lang_translations = derangement(ex_lang_translations)
 
@@ -539,9 +391,7 @@ class FlanT5SLT(AbstractSLT):
 
     def visual_textual_align(self, visual_outputs: torch.Tensor, visual_masks: torch.Tensor, samples: Dict) -> torch.Tensor:
         output_tokens = self.t5_tokenizer(
-            samples['text'],
-            padding="longest",
-            return_tensors="pt",
+            samples['text'], padding="longest", return_tensors="pt",
         ).to(self.device)
         
         text_embeds = self.t5_model.encoder.embed_tokens(output_tokens.input_ids)
@@ -559,9 +409,8 @@ class FlanT5SLT(AbstractSLT):
         return loss
 
     def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
+        # STEP 5: LLM Translation execution (Uses updated visual outputs)
         visual_outputs, visual_masks = self.prepare_visual_inputs(inputs)
-        visual_outputs = self.fusion_proj(visual_outputs)
-        
         log_dict = {}
         
         if self.cross_modal_align:
@@ -570,7 +419,6 @@ class FlanT5SLT(AbstractSLT):
                     input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
                         visual_outputs, visual_masks, inputs, split, batch_idx
                     )
-                
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 log_dict[f"{split}/contra_loss"] = cont_loss
                 loss = cont_loss
@@ -580,18 +428,12 @@ class FlanT5SLT(AbstractSLT):
                     input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
                         visual_outputs, visual_masks, inputs, split, batch_idx
                     )
-                
-                # Visual-textual contrastive loss (CLIP-style)
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 log_dict[f"{split}/contra_loss"] = cont_loss
                 loss = cont_loss
                 
-                # Sign Contrastive Learning loss (SignCL) - temporal neighborhoods
-                if (
-                    self.sign_cl_loss
-                    and self.sign_cl is not None
-                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
-                ):
+                if (self.sign_cl_loss and self.sign_cl is not None 
+                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)):
                     sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
                     if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
                         loss = loss + self.sign_cl_alpha * sign_cl_loss_val
@@ -615,17 +457,12 @@ class FlanT5SLT(AbstractSLT):
                 t5_loss = outputs.loss
                 log_dict[f"{split}/loss"] = t5_loss
                 
-                # Add visual-textual contrastive component
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 loss = t5_loss + self.alpha * cont_loss
                 log_dict[f"{split}/contra_loss"] = cont_loss
                 
-                # Add SignCL loss if enabled (reduces representation density)
-                if (
-                    self.sign_cl_loss
-                    and self.sign_cl is not None
-                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
-                ):
+                if (self.sign_cl_loss and self.sign_cl is not None 
+                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)):
                     sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
                     if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
                         loss = loss + self.sign_cl_alpha * sign_cl_loss_val
@@ -675,56 +512,35 @@ class FlanT5SLT(AbstractSLT):
         return loss, log_dict
 
     def on_validation_epoch_end(self) -> None:
-        print("\n===== Validation Examples =====")
-        for i in range(min(5, len(self.generated))):
-            print(f"\033[94mReference: {self.references[i]}\033[0m") 
-            print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
-            print("-" * 50)
-            
         eval_res = evaluate_results(
             predictions=self.generated,
             references=self.references,
             split='val',
             device=self.device
         )
-        
         self.log_dict(eval_res, sync_dist=True)
         self.set_container()
 
     def on_test_epoch_end(self) -> None:
-        print("\n===== Validation Examples =====")
-        for i in range(min(5, len(self.generated))):
-            print(f"\033[94mReference: {self.references[i]}\033[0m") 
-            print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
-            print("-" * 50)
-            
         eval_res = evaluate_results(
             predictions=self.generated,
             references=self.references,
             split='test',
             device=self.device
         )
-
         self.log_dict(eval_res, sync_dist=True)
         self.set_container()
 
-
     def configure_optimizers(self):
-        # 1. Filter parameters
         trainable_params = [p for p in self.parameters() if p.requires_grad]
-        if len(trainable_params) == 0:
-            raise RuntimeError("No trainable parameters found.")
-
-        # 2. Setup AdamW (CRITICAL: lr MUST be 1.0 for the custom scheduler)
         optimizer = torch.optim.AdamW(
             trainable_params,
-            lr=1.0,  # <--- MAGIC NUMBER: Required by LambdaWarmUpCosineScheduler
+            lr=1.0,  
             weight_decay=self.hparams.weight_decay,
             eps=1e-8,
             betas=(0.9, 0.98)
         )
         
-        # 3. Dynamic Step Calculation
         if hasattr(self.trainer, 'estimated_stepping_batches'):
             total_steps = int(self.trainer.estimated_stepping_batches)
         else:
@@ -736,34 +552,20 @@ class FlanT5SLT(AbstractSLT):
             acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
             total_steps = (batches_per_epoch // acc_batches) * max_epochs
         
-        # 4. Warmup Logic
         if self.lr_warmup_steps is not None:
             warmup_steps = self.lr_warmup_steps
         else:
             warmup_steps = int(total_steps * 0.1)
 
-        print(f"--> Optimizer Setup: Total Steps={total_steps}, LR Warmup Steps={warmup_steps}")
-
-        # 5. Initialize the Custom SpaMo Scheduler
         custom_scheduler_fn = LambdaWarmUpCosineScheduler(
             warm_up_steps=warmup_steps,
-            lr_min=self.hparams.min_lr,               # Falls back to 5e-5 if missing
-            lr_max=self.hparams.lr,                   # Your peak YAML lr (e.g., 1e-4)
-            lr_start=1e-6,                            # Near-zero start
+            lr_min=self.hparams.min_lr,
+            lr_max=self.hparams.lr,
+            lr_start=1e-6,
             max_decay_steps=total_steps
         )
 
-        # 6. Wrap it in PyTorch's native LambdaLR
         scheduler = LambdaLR(optimizer, lr_lambda=custom_scheduler_fn)
-
-        # log parameter counts for debugging DDP issues
-        try:
-            total = sum(p.numel() for p in self.parameters())
-            trainable = sum(p.numel() for p in trainable_params)
-            self.log('model/total_params', float(total), prog_bar=False)
-            self.log('model/trainable_params', float(trainable), prog_bar=False)
-        except Exception:
-            pass
 
         return {
             "optimizer": optimizer,
@@ -773,64 +575,3 @@ class FlanT5SLT(AbstractSLT):
                 "frequency": 1,
             },
         }
-
-    # def configure_optimizers(self):
-    #     # 1. Filter parameters
-    #     trainable_params = [p for p in self.parameters() if p.requires_grad]
-    #     if len(trainable_params) == 0:
-    #         raise RuntimeError("No trainable parameters found.")
-
-    #     # 2. Setup AdamW 
-    #     optimizer = torch.optim.AdamW(
-    #         trainable_params,
-    #         lr=self.hparams.lr,
-    #         weight_decay=self.hparams.weight_decay,
-    #         eps=1e-8,
-    #         betas=(0.9, 0.98)
-    #     )
-        
-    #     # 3. Dynamic Step Calculation
-    #     if hasattr(self.trainer, 'estimated_stepping_batches'):
-    #         total_steps = int(self.trainer.estimated_stepping_batches)
-    #     else:
-    #         max_epochs = self.trainer.max_epochs
-    #         train_loader = self.trainer.train_dataloader
-    #         if hasattr(train_loader, 'dataloader'): 
-    #             train_loader = train_loader.dataloader
-    #         batches_per_epoch = len(train_loader)
-    #         acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
-    #         total_steps = (batches_per_epoch // acc_batches) * max_epochs
-        
-    #     # 4. Warmup Logic (Priority: YAML value)
-    #     if self.lr_warmup_steps is not None:
-    #         warmup_steps = self.lr_warmup_steps
-    #     else:
-    #         warmup_steps = int(total_steps * 0.1)
-
-    #     print(f"--> Optimizer Setup: Total Steps={total_steps}, LR Warmup Steps={warmup_steps}, VT-Align Steps={self.warm_up_steps}")
-
-    #     # 5. Cosine Scheduler
-    #     scheduler = get_cosine_schedule_with_warmup(
-    #         optimizer=optimizer,
-    #         num_warmup_steps=warmup_steps,
-    #         num_training_steps=total_steps,
-    #     )
-
-    #     # log parameter counts for debugging DDP issues
-    #     try:
-    #         total = sum(p.numel() for p in self.parameters())
-    #         trainable = sum(p.numel() for p in trainable_params)
-    #         self.log('model/total_params', float(total), prog_bar=False)
-    #         self.log('model/trainable_params', float(trainable), prog_bar=False)
-    #     except Exception:
-    #         # logging may not be available at construction time in some contexts
-    #         pass
-
-    #     return {
-    #         "optimizer": optimizer,
-    #         "lr_scheduler": {
-    #             "scheduler": scheduler,
-    #             "interval": "step",
-    #             "frequency": 1,
-    #         },
-    #     }
