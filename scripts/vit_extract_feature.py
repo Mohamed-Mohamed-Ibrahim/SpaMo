@@ -155,13 +155,12 @@ def get_iterator(args, mode):
         for i in range(num):
             fname = data[i]["folder"]
             file_id = data[i]["fileid"]
-            start_time = None
+            start_time = data[i].get("original_info", {}).get("START_REALIGNED", None)
 
             if ds_name in ["Phoenix14T", "CSL-Daily"]:
                 image_list = get_img_list(ds_name, args.video_root, fname)
             else:
-                if ds_name == "How2Sign":
-                    start_time = data[i].get("original_info", {}).get("START_REALIGNED", None)
+                if ds_name == "How2Sign" or ds_name == "Phoenix14TCompressed":
                     image_list = read_video(
                         fname,
                         start_time=start_time,
