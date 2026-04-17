@@ -39,9 +39,10 @@ class VideoMAEFeatureReader(object):
         inputs = self.image_processor(images=video, return_tensors="pt").to(self.device)
         
         outputs = self.model(**inputs, output_hidden_states=True).hidden_states
-        
         outputs = outputs[self.nth_layer]
-        outputs = outputs[:, 0]
+        
+        # [MODIFIED] Average the spatial grid into a single frame summary
+        outputs = outputs.mean(dim=1)
         
         return outputs
 
