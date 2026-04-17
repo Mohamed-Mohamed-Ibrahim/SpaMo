@@ -21,6 +21,7 @@ from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
 from sentence_transformers import SentenceTransformer
+from spamo.dynamic_segmentation import DynamicSegmenter, AdaptiveMasker
 
 
 
@@ -79,6 +80,14 @@ class FlanT5SLT(AbstractSLT):
         infoloob_temperature: float = 0.07,
         infoloob_weight: float = 1.0,
 
+        # NEW: Dynamic Temporal Segmentation and Masking Parameters
+        use_dynamic_segmentation: bool = False,
+        motion_threshold: float = 0.5,
+        use_adaptive_masking: bool = False,
+        mask_prob: float = 0.15,
+        min_mask_len: int = 5,
+        max_mask_len: int = 20,
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -132,6 +141,14 @@ class FlanT5SLT(AbstractSLT):
         print(f"use_data_augmentation: {use_data_augmentation}")
         print(f"sign_cl_loss{sign_cl_loss}")
         print("==="*40)
+        
+        # NEW: Dynamic Temporal Segmentation and Masking
+        self.use_dynamic_segmentation = use_dynamic_segmentation
+        self.motion_threshold = motion_threshold
+        self.use_adaptive_masking = use_adaptive_masking
+        self.mask_prob = mask_prob
+        self.min_mask_len = min_mask_len
+        self.max_mask_len = max_mask_len
         
         # Save hyperparameters (ensures self.hparams.lr exists)
         self.save_hyperparameters()
@@ -249,6 +266,12 @@ class FlanT5SLT(AbstractSLT):
                 param.requires_grad = False
             self.kt_proj = nn.Linear(self.t5_model.config.hidden_size, 768)
 
+        # NEW: Initialize Dynamic Segmentation and Adaptive Masking modules
+        if self.use_dynamic_segmentation:
+            self.segmenter = DynamicSegmenter(hidden_dim=self.inter_hidden, motion_threshold=self.motion_threshold)
+        if self.use_adaptive_masking:
+            self.masker = AdaptiveMasker(mask_prob=self.mask_prob, min_mask_len=self.min_mask_len, max_mask_len=self.max_mask_len)
+
     def prepare_inputs(
         self, 
         visual_outputs: torch.Tensor, 
@@ -355,6 +378,32 @@ class FlanT5SLT(AbstractSLT):
             pose_outputs = self.pose_proj(pose_padded)
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
         
+        # NEW: Apply Dynamic Segmentation and Adaptive Masking for single modes
+        if self.fusion_mode == 'spatial' and spatial and (self.use_dynamic_segmentation or self.use_adaptive_masking):
+            importance_scores = None
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(spatial_outputs, samples['num_frames'])
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = torch.full_like(spatial_outputs[:, :, 0], 0.5)
+                spatial_outputs = self.masker(spatial_outputs, importance_scores, samples['num_frames'], self.training)
+        elif self.fusion_mode == 'spatiotemporal' and spatiotemporal and (self.use_dynamic_segmentation or self.use_adaptive_masking):
+            importance_scores = None
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(spatiotemporal_outputs, samples['glor_lengths'])
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = torch.full_like(spatiotemporal_outputs[:, :, 0], 0.5)
+                spatiotemporal_outputs = self.masker(spatiotemporal_outputs, importance_scores, samples['glor_lengths'], self.training)
+        elif self.fusion_mode == 'pose' and pose and (self.use_dynamic_segmentation or self.use_adaptive_masking):
+            importance_scores = None
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(pose_outputs, pose_lengths)
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = torch.full_like(pose_outputs[:, :, 0], 0.5)
+                pose_outputs = self.masker(pose_outputs, importance_scores, pose_lengths, self.training)
+        
         # Combine features for joint mode
         if self.fusion_mode == 'joint':
             bs = spatial_outputs.shape[0]
@@ -376,6 +425,16 @@ class FlanT5SLT(AbstractSLT):
                 concat_sample = torch.cat(parts, dim=0)
                 joint_outputs.append(concat_sample)
             joint_outputs = pad_sequence(joint_outputs, batch_first=True)
+
+            # NEW: Apply Dynamic Segmentation and Adaptive Masking
+            importance_scores = None
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(joint_outputs, new_length)
+                joint_outputs, new_length = self.segmenter.segment(joint_outputs, importance_scores, new_length)
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = self.segmenter(joint_outputs, new_length)
+                joint_outputs = self.masker(joint_outputs, importance_scores, new_length, self.training)
 
             # Apply temporal encoder
             visual_conv_outputs = self.temporal_encoder(
@@ -404,11 +463,22 @@ class FlanT5SLT(AbstractSLT):
             # Returns (B, T, C)
             fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
 
+            # NEW: Apply Dynamic Segmentation and Adaptive Masking
+            importance_scores = None
+            fused_lengths = samples['num_frames']
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(fused_outputs, fused_lengths)
+                fused_outputs, fused_lengths = self.segmenter.segment(fused_outputs, importance_scores, fused_lengths)
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = self.segmenter(fused_outputs, fused_lengths)
+                fused_outputs = self.masker(fused_outputs, importance_scores, fused_lengths, self.training)
+
             # 3. Pass through Temporal Encoder
             # TemporalConv expects (B, C, T) input
             visual_conv_outputs = self.temporal_encoder(
                 fused_outputs.permute(0, 2, 1), 
-                torch.tensor(samples['num_frames'], device=self.device)
+                torch.tensor(fused_lengths, device=self.device)
             )
 
             visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
@@ -423,25 +493,23 @@ class FlanT5SLT(AbstractSLT):
                 active_outputs, active_lens = spatial_outputs, samples['num_frames']
             elif spatiotemporal:
                 active_outputs, active_lens = spatiotemporal_outputs, samples['glor_lengths']
-                visual_outputs = spatiotemporal_outputs
-                visual_masks = spatiotemporal_mask
             elif pose:
-                # For pose-only mode, run temporal encoder on pose features
-                # use actual pose lengths computed earlier
-                pose_conv_outputs = self.temporal_encoder(
-                    pose_outputs.permute(0,2,1), torch.tensor(pose_lengths, device=self.device)
-                )
-                visual_outputs = pose_conv_outputs['visual_feat'].permute(1,0,2)
-                visual_masks = create_mask(
-                    seq_lengths=pose_conv_outputs['feat_len'].to(torch.int).tolist(), 
-                    device=self.device
-                )
+                active_outputs, active_lens = pose_outputs, pose_lengths
             else:
                 raise NotImplementedError("Invalid fusion mode")
-            
+
+            importance_scores = None
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(active_outputs, active_lens)
+                active_outputs, active_lens = self.segmenter.segment(active_outputs, importance_scores, active_lens)
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = self.segmenter(active_outputs, active_lens)
+                active_outputs = self.masker(active_outputs, importance_scores, active_lens, self.training)
+
             if self.fusion_mode == 'spatiotemporal':
-                 visual_outputs = active_outputs
-                 visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
+                visual_outputs = active_outputs
+                visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
             else:
                 conv_outputs = self.temporal_encoder(
                     active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
