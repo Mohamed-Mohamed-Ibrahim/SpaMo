@@ -87,6 +87,7 @@ class Graph:
             neighbor_link = neighbor_1base
             self.edge = self_link + neighbor_link
             self.center = 0
+            
         elif layout == 'face_all':
             self.num_node = 9 + 8 + 1
             self_link = [(i, i) for i in range(self.num_node)]
@@ -97,27 +98,33 @@ class Graph:
             neighbor_link = neighbor_1base
             self.edge = self_link + neighbor_link
             self.center = self.num_node - 1
+            
         elif layout == 'mediapipe_69':
             self.num_node = 69
             self_link = [(i, i) for i in range(self.num_node)]
-        
+
             # -------------------------------
-            # BODY (0–10) — 11 joints
+            # BODY (0-10) based on MMPose slicing
+            # 0:Nose, 1:LEye, 2:REye, 3:LEar, 4:REar
+            # 5:LSho, 6:RSho, 7:LElb, 8:RElb, 9:LWri, 10:RWri
             # -------------------------------
             body_edges = [
-                (0,1),(1,2),(2,3),(3,4),      # right arm
-                (0,5),(5,6),(6,7),(7,8),      # left arm
-                (0,9),(9,10)                  # torso
+                (0, 1), (1, 3),          # Nose -> LEye -> LEar
+                (0, 2), (2, 4),          # Nose -> REye -> REar
+                (0, 5), (5, 7), (7, 9),  # Nose -> LShoulder -> LElbow -> LWrist
+                (0, 6), (6, 8), (8, 10), # Nose -> RShoulder -> RElbow -> RWrist
+                (5, 6)                   # LShoulder -> RShoulder
             ]
-        
+
             # -------------------------------
-            # FACE (11–26) — simplified chain
+            # FACE (11-26) 
             # -------------------------------
             face_offset = 11
             face_edges = [(i, i+1) for i in range(face_offset, face_offset+15)]
-        
+            face_edges.append((0, face_offset)) # Connect Nose to the Face chain
+
             # -------------------------------
-            # LEFT HAND (27–47)
+            # LEFT HAND (27-47)
             # -------------------------------
             lh_offset = 27
             left_hand_edges = [
@@ -127,9 +134,9 @@ class Graph:
                 (lh_offset+0, lh_offset+13),(lh_offset+13, lh_offset+14),(lh_offset+14, lh_offset+15),(lh_offset+15, lh_offset+16),
                 (lh_offset+0, lh_offset+17),(lh_offset+17, lh_offset+18),(lh_offset+18, lh_offset+19),(lh_offset+19, lh_offset+20),
             ]
-        
+
             # -------------------------------
-            # RIGHT HAND (48–68)
+            # RIGHT HAND (48-68)
             # -------------------------------
             rh_offset = 48
             right_hand_edges = [
@@ -139,16 +146,15 @@ class Graph:
                 (rh_offset+0, rh_offset+13),(rh_offset+13, rh_offset+14),(rh_offset+14, rh_offset+15),(rh_offset+15, rh_offset+16),
                 (rh_offset+0, rh_offset+17),(rh_offset+17, rh_offset+18),(rh_offset+18, rh_offset+19),(rh_offset+19, rh_offset+20),
             ]
-        
+
             # -------------------------------
-            # CONNECT HANDS TO BODY (VERY IMPORTANT)
+            # CONNECT HANDS TO BODY
             # -------------------------------
-            # attach hands to wrists
             connect_edges = [
-                (8, lh_offset+0),   # left wrist → left hand root
-                (4, rh_offset+0)    # right wrist → right hand root
+                (9, lh_offset+0),   # Left Wrist (9) -> Left Hand Root (27)
+                (10, rh_offset+0)   # Right Wrist (10) -> Right Hand Root (48)
             ]
-        
+
             neighbor_link = (
                 body_edges +
                 face_edges +
@@ -156,7 +162,7 @@ class Graph:
                 right_hand_edges +
                 connect_edges
             )
-        
+
             self.edge = self_link + neighbor_link
             self.center = 0
 
