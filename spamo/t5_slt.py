@@ -267,7 +267,7 @@ class FlanT5SLT(AbstractSLT):
             self.kt_proj = nn.Linear(self.t5_model.config.hidden_size, 768)
 
         # NEW: Initialize Dynamic Segmentation and Adaptive Masking modules
-        if self.use_dynamic_segmentation:
+        if self.use_dynamic_segmentation or self.use_adaptive_masking:
             self.segmenter = DynamicSegmenter(hidden_dim=self.inter_hidden, motion_threshold=self.motion_threshold)
         if self.use_adaptive_masking:
             self.masker = AdaptiveMasker(mask_prob=self.mask_prob, min_mask_len=self.min_mask_len, max_mask_len=self.max_mask_len)
