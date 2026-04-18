@@ -47,8 +47,10 @@ model:
     aug_span_prob: 0.05           # Mask 10% of spans
     aug_channel_prob: 0.05      # Drop 5% of feature channels
 
+
+    conv_type: 1
     use_ctc: true        # master on/off switch
-    ctc_weight: 0.1      # λ_Txt — weight of L_TxtCTC in total loss
+    ctc_weight: 0.5      # λ_Txt — weight of L_TxtCTC in total loss
     ctc_blank_id: -1     # -1 means auto-resolve from tokenizer.pad_token_id
 
 

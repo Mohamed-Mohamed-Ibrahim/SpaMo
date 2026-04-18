@@ -72,6 +72,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
+        conv_type: int = 2
         use_ctc: bool = False,
         ctc_weight: float = 0.3,
         ctc_blank_id: int = -1,
@@ -119,6 +120,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
         
+        self.conv_type = conv_type
         self._ctc_use      = use_ctc
         self._ctc_weight   = ctc_weight
         self._ctc_blank_id = ctc_blank_id
@@ -127,6 +129,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         print(f"use_data_augmentation: {use_data_augmentation}")
         print(f"sign_cl_loss{sign_cl_loss}")
         print(f"use_ctc: {use_ctc}  |  ctc_weight: {ctc_weight}")
+        print(f"conv_type: {conv_type}")
         print("==="*40)
         
         # Save hyperparameters (ensures self.hparams.lr exists)
@@ -206,7 +209,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
         # Load the temporal encoder
-        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden, conv_type=self.conv_type)
         
         # Initialize adaptive fusion if fusion_mode is 'adaptive'
         if self.fusion_mode == 'adaptive':
