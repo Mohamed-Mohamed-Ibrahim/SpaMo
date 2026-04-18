@@ -7,7 +7,7 @@ class AdaptiveFusion(nn.Module):
     
     Formula: fused = (I1 + I2 + I3) + (λ1*I1 + λ2*I2 + λ3*I3)
     """
-    def __init__(self, input_size_1=512, input_size_2=512, input_size_3=512, output_size=3, bias=False, verbose=False):
+    def __init__(self, input_size_1=512, input_size_2=512, input_size_3=512, output_size=3, bias=False, use_softmax=False, verbose=False):
         """
         Args:
             input_size_1: dimensionality of first input
@@ -15,11 +15,12 @@ class AdaptiveFusion(nn.Module):
             input_size_3: dimensionality of third input
             output_size: number of adaptive weight channels (default 3 for λ₁, λ₂, λ₃)
             bias: whether to use bias in linear layers
+            use_softmax: if True, use softmax (competitive/normalized); if False, use sigmoid (independent gating)
             verbose: if True, print tensor shapes at each step
         """
         super(AdaptiveFusion, self).__init__()
         self.verbose = verbose
-        self.sigmoid = nn.Sigmoid()
+        self.activation = nn.Softmax(dim=2) if use_softmax else nn.Sigmoid()
         self.weight_input_1 = nn.Linear(input_size_1, output_size, bias=bias)
         self.weight_input_2 = nn.Linear(input_size_2, output_size, bias=bias)
         self.weight_input_3 = nn.Linear(input_size_3, output_size, bias=bias)
@@ -36,16 +37,15 @@ class AdaptiveFusion(nn.Module):
         Returns:
             Fused representation [B, T, D]
         """
-        # Compute adaptive weights: [B, T, 3]
         weight_sum = (self.weight_input_1(input_1) +
                       self.weight_input_2(input_2) +
                       self.weight_input_3(input_3))
 
-        fm_sigmoid = self.sigmoid(weight_sum)
+        fm = self.activation(weight_sum)
 
-        lambda1 = fm_sigmoid[:, :, 0].unsqueeze(-1)  # [B, T, 1]
-        lambda2 = fm_sigmoid[:, :, 1].unsqueeze(-1)  # [B, T, 1]
-        lambda3 = fm_sigmoid[:, :, 2].unsqueeze(-1)  # [B, T, 1]
+        lambda1 = fm[:, :, 0].unsqueeze(-1)  # [B, T, 1]
+        lambda2 = fm[:, :, 1].unsqueeze(-1)  # [B, T, 1]
+        lambda3 = fm[:, :, 2].unsqueeze(-1)  # [B, T, 1]
 
         fused_output = (input_1 + input_2 + input_3) + \
                        torch.mul(lambda1, input_1) + \
@@ -57,7 +57,7 @@ class AdaptiveFusion(nn.Module):
         if self.verbose:
             print(f"[AdaptiveFusion] input_1:        {input_1.shape}")
             print(f"[AdaptiveFusion] weight_sum:     {weight_sum.shape}")
-            print(f"[AdaptiveFusion] fm_sigmoid:     {fm_sigmoid.shape}")
+            print(f"[AdaptiveFusion] fm ({self.activation.__class__.__name__}):   {fm.shape}")
             print(f"[AdaptiveFusion] lambda1:        {lambda1.shape}")
             print(f"[AdaptiveFusion] fused_output:   {fused_output.shape}")
 
