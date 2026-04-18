@@ -128,7 +128,7 @@ class VideoDataset(Dataset):
                 if len(pil_frames) > 0:
                     videos.append(pil_frames)
 
-        elif self.ds_name == "How2Sign":
+        elif self.ds_name == "How2Sign" or self.ds_name == "Phoenix14TCompressed":
             s_val = entry["original_info"]["START_REALIGNED"]
             e_val = entry["original_info"]["END_REALIGNED"]
 
