@@ -72,7 +72,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
-        conv_type: int = 2
+        conv_type: int = 2,
         use_ctc: bool = False,
         ctc_weight: float = 0.3,
         ctc_blank_id: int = -1,
