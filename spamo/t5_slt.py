@@ -438,7 +438,7 @@ class FlanT5SLT(AbstractSLT):
 
             # Apply temporal encoder
             visual_conv_outputs = self.temporal_encoder(
-                joint_outputs.permute(0,2,1), torch.tensor(new_length.tolist(), device=self.device)
+                joint_outputs.permute(0,2,1), torch.tensor(new_length, device=self.device)
             )
 
             visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
