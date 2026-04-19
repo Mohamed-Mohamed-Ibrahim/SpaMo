@@ -92,8 +92,8 @@ data:
         spatial: true
         spatiotemporal: true
         pose: false
-        spatial_postfix: ""
-        spatiotemporal_postfix: ""
+        spatial_postfix: "_None_s2wrapping"
+        spatiotemporal_postfix: "_None_overlap-8"
         pose_postfix: ""
         
     validation:
@@ -108,8 +108,8 @@ data:
         spatial: true
         spatiotemporal: true
         pose: false
-        spatial_postfix: ""
-        spatiotemporal_postfix: ""
+        spatial_postfix: "_None_s2wrapping"
+        spatiotemporal_postfix: "_None_overlap-8"
         pose_postfix: ""
     
     test:
@@ -124,6 +124,6 @@ data:
         spatial: true
         spatiotemporal: true
         pose: false
-        spatial_postfix: ""
-        spatiotemporal_postfix: ""
+        spatial_postfix: "_None_s2wrapping"
+        spatiotemporal_postfix: "_None_overlap-8"
         pose_postfix: ""
