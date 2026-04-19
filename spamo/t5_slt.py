@@ -14,8 +14,7 @@ from peft import LoraConfig, get_peft_model, TaskType
 
 from spamo.tconv import TemporalConv
 from utils.helpers import create_mask, derangement
-from spamo.mm_projector import build_vision_projector
-from spamo.adaptive_fusion import AdaptiveFusion    
+from spamo.mm_projector import build_vision_projector, AdaptiveFusion
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.sign_cl import TemporalSignCLLoss
@@ -65,6 +64,7 @@ class FlanT5SLT(AbstractSLT):
         use_spatial: bool = True,
         use_spatiotemporal: bool = True,
         use_pose: bool = False,
+        adaptive_alignment: str = 'interpolate_linear',
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -100,6 +100,8 @@ class FlanT5SLT(AbstractSLT):
         self.use_spatial = use_spatial
         self.use_spatiotemporal = use_spatiotemporal
         self.use_pose = use_pose
+        self.adaptive_alignment = adaptive_alignment
+        print(f"adaptive_alignment: {adaptive_alignment}")
         
         if self.num_in_context == 0:
             self.use_in_context = False
@@ -188,6 +190,12 @@ class FlanT5SLT(AbstractSLT):
                 input_size_2=self.inter_hidden, 
                 input_size_3=self.inter_hidden, 
                 output_size=3
+            )
+            # Alignment attention for matching spatiotemporal features to spatial temporal length
+            self.alignment_attn = nn.MultiheadAttention(
+                embed_dim=self.inter_hidden,
+                num_heads=8,
+                batch_first=True
             )
             
         if self.sign_cl_loss:
@@ -328,24 +336,75 @@ class FlanT5SLT(AbstractSLT):
             )
         
         elif self.fusion_mode == 'adaptive':
-            if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
-                spatiotemporal_outputs = F.interpolate(
-                    spatiotemporal_outputs.permute(0, 2, 1), 
-                    size=spatial_outputs.shape[1], 
-                    mode='linear', 
-                    align_corners=False
-                ).permute(0, 2, 1)
+            T_s  = spatial_outputs.shape[1]
+            T_st = spatiotemporal_outputs.shape[1]
+
+            if T_s != T_st:
+                alignment = self.adaptive_alignment
+
+                if alignment == 'interpolate_linear':
+                    # Upsample spatiotemporal with smooth linear interpolation
+                    spatiotemporal_outputs = F.interpolate(
+                        spatiotemporal_outputs.permute(0, 2, 1),
+                        size=T_s,
+                        mode='linear',
+                        align_corners=False
+                    ).permute(0, 2, 1)
+
+                elif alignment == 'interpolate_nearest':
+                    # Upsample spatiotemporal by repeating real values (no invented frames)
+                    spatiotemporal_outputs = F.interpolate(
+                        spatiotemporal_outputs.permute(0, 2, 1),
+                        size=T_s,
+                        mode='nearest'
+                    ).permute(0, 2, 1)
+
+                elif alignment == 'padding':
+                    # Place real spatiotemporal features at evenly-spaced positions; zero-pad the rest
+                    B, _, D = spatiotemporal_outputs.shape
+                    padded = torch.zeros(B, T_s, D, device=spatiotemporal_outputs.device,
+                                        dtype=spatiotemporal_outputs.dtype)
+                    indices = torch.linspace(0, T_s - 1, T_st).long()
+                    padded[:, indices, :] = spatiotemporal_outputs
+                    spatiotemporal_outputs = padded
+
+                elif alignment == 'downsample':
+                    # Downsample spatial (high-res) to match spatiotemporal (low-res)
+                    spatial_outputs = F.adaptive_avg_pool1d(
+                        spatial_outputs.permute(0, 2, 1),
+                        output_size=T_st
+                    ).permute(0, 2, 1)
+
+                elif alignment == 'cross_attention':
+                    # Use spatial as Query, spatiotemporal as Key and Value.
+                    # This projects spatiotemporal features to the spatial timeline natively.
+                    attn_output, _ = self.alignment_attn(
+                        query=spatial_outputs,
+                        key=spatiotemporal_outputs,
+                        value=spatiotemporal_outputs
+                    )
+                    spatiotemporal_outputs = attn_output
+
+                else:
+                    raise ValueError(f"Unknown adaptive_alignment: '{alignment}'. "
+                                     f"Choose from: interpolate_linear, interpolate_nearest, padding, downsample, cross_attention")
 
             fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
 
+            # Use spatial length as reference (or spatiotemporal length for 'downsample')
+            if self.adaptive_alignment == 'downsample':
+                ref_lengths = samples['glor_lengths']
+            else:
+                ref_lengths = samples['num_frames']
+
             visual_conv_outputs = self.temporal_encoder(
-                fused_outputs.permute(0, 2, 1), 
-                torch.tensor(samples['num_frames'], device=self.device)
+                fused_outputs.permute(0, 2, 1),
+                torch.tensor(ref_lengths, device=self.device)
             )
 
             visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
             visual_masks = create_mask(
-                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(), 
+                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
                 device=self.device
             )
 
