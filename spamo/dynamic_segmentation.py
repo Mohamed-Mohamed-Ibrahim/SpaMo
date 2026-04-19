@@ -105,7 +105,9 @@ class AdaptiveMasker(nn.Module):
                     start = random.choice(low_imp_indices.tolist())
                     # Random mask length within bounds
                     max_possible = seq_len - start
-                    length = random.randint(self.min_len, min(self.max_len, max_possible))
-                    # Apply mask (set to zero)
-                    masked[b, start:start+length] = 0
+                    # Ensure we have enough space for a valid mask
+                    if max_possible >= self.min_len:
+                        length = random.randint(self.min_len, min(self.max_len, max_possible))
+                        # Apply mask (set to zero)
+                        masked[b, start:start+length] = 0
         return masked
