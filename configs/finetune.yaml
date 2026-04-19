@@ -37,7 +37,7 @@ model:
     #   padding             — place real spatiotemporal at evenly-spaced positions, zero-pad the rest
     #   downsample          — average-pool spatial down to spatiotemporal resolution
     #   cross_attention     — use spatial as queries and spatiotemporal as keys/values for learned alignment
-    adaptive_alignment: interpolate_nearest
+    adaptive_alignment: padding
     warm_up_steps: 1000
     cross_modal_align: true
     combined_loss: true
