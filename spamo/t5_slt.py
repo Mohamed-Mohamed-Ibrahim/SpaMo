@@ -14,7 +14,8 @@ from peft import LoraConfig, get_peft_model, TaskType
 
 from spamo.tconv import TemporalConv
 from utils.helpers import create_mask, derangement
-from spamo.mm_projector import build_vision_projector, AdaptiveFusion
+from spamo.mm_projector import build_vision_projector
+from spamo.adaptive_fusion import AdaptiveFusion  
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.sign_cl import TemporalSignCLLoss
