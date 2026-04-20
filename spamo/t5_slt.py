@@ -223,7 +223,8 @@ class FlanT5SLT(AbstractSLT):
     def prepare_inputs(
         self, visual_outputs: torch.Tensor, visual_mask: torch.Tensor, samples: Dict, split: str, batch_idx: int
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
-        bs = visual_outputs.shape
+        # FIXED
+        bs = visual_outputs.shape[0]
         
         prompts = [f'{self.prompt}'] * bs
         prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
@@ -269,8 +270,8 @@ class FlanT5SLT(AbstractSLT):
         spatial_outputs = pad_sequence(samples['pixel_values'], batch_first=True) # (B, T, 1024, D)
         motion_outputs = pad_sequence(samples['glor_values'], batch_first=True)   # (B, T, D)
         
-        # Ensure pose is formatted properly and normalized
-        pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape, -1, 2) for pv in samples['pose_values']]
+        # FIXED — offline extraction already gives (T, 133, 2), just cast to float
+        pose_values_local = [pv.float() for pv in samples['pose_values']]
         pose_outputs = pad_sequence(pose_values_local, batch_first=True).float()  # (B, T, 133, 2)
 
         B, T = spatial_outputs.shape[:2]
@@ -293,11 +294,15 @@ class FlanT5SLT(AbstractSLT):
         # STEP 2: Prior-Guided Fusion (PGF)
         # Format Spatial grid as Key/Value: (B*T, D, H, W) -> e.g., (B*T, 1024, 32, 32)
         grid_size = int(math.sqrt(spatial_outputs.shape[2]))
-        spatial_flat = spatial_outputs.view(B*T, grid_size * grid_size, 1024).permute(0, 2, 1)
+
+
+        # FIXED — add .contiguous() and use .reshape() defensively throughout
+        spatial_reshaped = spatial_outputs.reshape(B*T, grid_size * grid_size, 1024)
+        spatial_flat = spatial_reshaped.permute(0, 2, 1).contiguous()
         rgb_feat = spatial_flat.view(B*T, 1024, grid_size, grid_size)
         
-        # Format Queries: (B*T, 69, 2)
-        pose_init_flat = pose_init.view(B*T, 69, 2)
+        # FIXED — transpose to (B*T, 2, 69) as the module requires
+        pose_init_flat = pose_init.view(B*T, 69, 2).permute(0, 2, 1).contiguous()
 
         # Execute Deformable Attention
         refined_spatial_feat = self.pgf_attention(pose_feat, rgb_feat, pose_init_flat) # (B*T, 1024, 69)
@@ -305,7 +310,9 @@ class FlanT5SLT(AbstractSLT):
         # STEP 3: Modality Merging
         # Flatten the refined spatial features to (B*T, 69 * 1024)
         refined_spatial_flat = refined_spatial_feat.permute(0, 2, 1).reshape(B*T, 69 * 1024)
-        motion_flat = motion_outputs.view(B*T, -1) # (B*T, 1024)
+
+        # Also apply the same fix to motion_outputs:
+        motion_flat = motion_outputs.reshape(B*T, -1)  # reshape is safer than view on padded seqs
 
         # Concatenate and pass through MLP Gate
         fused_features = torch.cat([refined_spatial_flat, motion_flat], dim=-1)
