@@ -1,12 +1,10 @@
 import argparse
 import os
 import cv2
-import glob
 import pickle
 import numpy as np
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
-from rtmlib import Wholebody, draw_skeleton
+from rtmlib import Wholebody
 
 def process_frame(frame, wholebody):
     frame = np.uint8(frame)
@@ -14,17 +12,17 @@ def process_frame(frame, wholebody):
     H, W, C = frame.shape
     return keypoints, scores, [W, H]
 
-def process_video(video_path, tgt_dir, wholebody, max_workers=16, overwrite=False):
-    output_path = os.path.join(tgt_dir, os.path.basename(video_path).replace(".mp4", ".pkl"))
+def process_video_sequential(video_path, tgt_dir, fileid, wholebody, overwrite=False):
+    output_path = os.path.join(tgt_dir, str(fileid).replace('/', '_') + ".pkl")
+    
     if os.path.exists(output_path) and not overwrite:
-        print(f"file already exists, skip: {output_path}")
         return
 
     data = {"keypoints": [], "scores": []}
 
+    # 1. Read MP4 Video
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        print(f"fail to open: {video_path}")
         return
 
     vid_data = []
@@ -35,50 +33,58 @@ def process_video(video_path, tgt_dir, wholebody, max_workers=16, overwrite=Fals
         vid_data.append(frame)
     cap.release()
 
-    results = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process_frame, frame, wholebody) for frame in vid_data]
-        for f in tqdm(futures, desc="Processing frames", total=len(vid_data)):
-            results.append(f.result())
+    if len(vid_data) == 0:
+        return
 
-    # [MODIFIED] Enforce (133, 2) shape per frame by targeting the primary person
+    # 2. Sequential GPU Processing (NO THREADS)
+    results = []
+    for frame in vid_data:
+        results.append(process_frame(frame, wholebody))
+
+    # 3. Extract and format the primary person
     for keypoints, scores, w_h in results:
         if len(keypoints) > 0:
-            person_idx = np.argmax(scores.mean(axis=1))
+            person_idx = np.argmax(scores.mean(axis=1)) if scores.ndim > 1 else 0
             kp = keypoints[person_idx] / np.array(w_h)
             sc = scores[person_idx]
         else:
             kp = np.zeros((133, 2), dtype=np.float32)
             sc = np.zeros((133,), dtype=np.float32)
-        
+            
         data['keypoints'].append(kp)
         data['scores'].append(sc)
         
-    # [MODIFIED] Ensure the final structure is a strict numpy array shape (T, 133, 2)
     data['keypoints'] = np.array(data['keypoints'], dtype=np.float32)
     data['scores'] = np.array(data['scores'], dtype=np.float32)
 
     with open(output_path, 'wb') as file:
         pickle.dump(data, file)
 
+def get_video_path(video_root, fileid):
+    exts = ['.mp4', '.mov', '.avi', '.mkv']
+    for ext in exts:
+        cand = os.path.join(video_root, fileid + ext)
+        if os.path.exists(cand):
+            return cand
+    cand = os.path.join(video_root, fileid)
+    if os.path.exists(cand):
+        return cand
+    return None
+
 def main():
     parser = argparse.ArgumentParser()
-
-    parser.add_argument("--src_dir", required=True, help="video dir path")
-    parser.add_argument("--tgt_dir", required=True, help="pose dir path")
-
+    parser.add_argument('--anno_file', required=True, help='Direct path to the .npy annotation file')
+    parser.add_argument('--video_root', required=True, help='root folder containing raw .mp4 videos')
+    parser.add_argument('--pose_root', required=True, help='where to save pose .pkl files')
+    parser.add_argument('--mode_name', required=True, help='Name of the split (e.g., dev, train, test)')
+    
     parser.add_argument("--device", default="cuda", choices=["cpu", "cuda", "mps"])
     parser.add_argument("--backend", default="onnxruntime", choices=["opencv", "onnxruntime", "openvino"])
     parser.add_argument("--openpose_skeleton", action="store_true", help="use openpose format")
-    parser.add_argument("--mode", default="lightweight", choices=["performance", "lightweight", "balanced"],)
-
-    parser.add_argument("--video_extensions", nargs='+', default=["mp4"])
-    parser.add_argument("--max_workers", type=int, default=16)
+    parser.add_argument("--mode", default="lightweight", choices=["performance", "lightweight", "balanced"])
     parser.add_argument("--overwrite", action="store_true")
 
     args = parser.parse_args()
-
-    os.makedirs(args.tgt_dir, exist_ok=True)
 
     wholebody = Wholebody(
         to_openpose=args.openpose_skeleton,
@@ -87,21 +93,32 @@ def main():
         device=args.device
     )
 
-    video_files = []
-    for ext in args.video_extensions:
-        video_files.extend(glob.glob(os.path.join(args.src_dir, f'*.{ext}')))
+    save_dir = os.path.join(args.pose_root, args.mode_name)
+    os.makedirs(save_dir, exist_ok=True)
 
-    print(f"found {len(video_files)} videos")
+    print(f"Loading NPY annotations from: {args.anno_file}")
+    
+    # Clean NPY loading
+    data = np.load(args.anno_file, allow_pickle=True).item()
+    items = [data[k] for k in sorted(data.keys(), key=lambda x: int(x) if str(x).isdigit() else x)] if isinstance(data, dict) else list(data)
 
-    for video_path in tqdm(video_files, desc="Processing"):
-        process_video(
+    print(f"\nProcessing [{args.mode_name}] split...")
+    for entry in tqdm(items, desc=f'[{args.mode_name}]'):
+        fileid = entry.get('name') or entry.get('fileid') or entry.get('id')
+        if fileid is None:
+            continue
+
+        video_path = get_video_path(args.video_root, fileid)
+        if video_path is None:
+            continue
+
+        process_video_sequential(
             video_path=video_path,
-            tgt_dir=args.tgt_dir,
+            tgt_dir=save_dir,
+            fileid=fileid,
             wholebody=wholebody,
-            max_workers=args.max_workers,
             overwrite=args.overwrite
         )
-
 
 if __name__ == "__main__":
     main()
