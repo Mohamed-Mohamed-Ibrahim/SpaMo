@@ -165,6 +165,8 @@ class Graph:
 
             self.edge = self_link + neighbor_link
             self.center = 0
+        else:
+            raise ValueError(f"Unknown layout: '{layout}'. "f"Valid: left, right, body, face_all, mediapipe_69")
 
     def get_adjacency(self, strategy):
         valid_hop = range(0, self.max_hop + 1, self.dilation)
