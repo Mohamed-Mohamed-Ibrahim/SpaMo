@@ -23,7 +23,8 @@ from spamo.lr_scheduler import LambdaWarmUpCosineScheduler
 
 # NEW IMPORTS FOR UNI-SIGN PGF & ST-GCN HYBRID
 from deformable_attention_2d import DeformableAttention2D
-from stgcn_layers import Graph, get_stgcn_chain
+from gcn_utils import Graph
+from stgcn_block import get_stgcn_chain
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_float32_matmul_precision('high')

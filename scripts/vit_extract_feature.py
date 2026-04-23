@@ -1,56 +1,46 @@
 import argparse
 import os
-import os.path as osp
-import glob
-import tqdm
-import torch
+import cv2
 import numpy as np
-import torch.nn.functional as F
+import torch
+import tqdm
 from PIL import Image
 from transformers import AutoImageProcessor, CLIPVisionModel
 
 import sys
 sys.path.append('./')
-
 from utils.s2wrapper import forward as multiscale_forward
-from utils.helpers import read_video, get_img_list
 
-_GLOBAL_SEED = 0
-np.random.seed(_GLOBAL_SEED)
-torch.manual_seed(_GLOBAL_SEED)
-
-class ViTFeatureReader(object):
-    def __init__(
-        self, 
-        model_name='openai/clip-vit-large-patch14', 
-        cache_dir=None,
-        device='cuda:0', 
-        s2_mode='s2wrapping',
-        scales=[1, 2],
-        nth_layer=-1
-    ):
-        self.s2_mode = s2_mode
+class ViTFeatureReader:
+    def __init__(self, model_name, device, scales, nth_layer, cache_dir):
         self.device = device
         self.scales = scales
         self.nth_layer = nth_layer
-        
-        self.model = CLIPVisionModel.from_pretrained(
-            model_name, output_hidden_states=True, cache_dir=cache_dir
-        ).to(device).eval()
-        
-        self.image_processor = AutoImageProcessor.from_pretrained(model_name)
 
+        self.model = CLIPVisionModel.from_pretrained(
+            model_name,
+            output_hidden_states=True,
+            cache_dir=cache_dir
+        ).to(device).eval()
+
+        self.processor = AutoImageProcessor.from_pretrained(model_name)
+
+    # [RESTORED] Helper for the s2wrapper to call
     @torch.no_grad()
     def forward_features(self, inputs):
         outputs = self.model(inputs).hidden_states
-        outputs = outputs[self.nth_layer]
-        return outputs
+        return outputs[self.nth_layer]
 
     @torch.no_grad()
-    def get_feats(self, video):
-        inputs = self.image_processor(list(video), return_tensors="pt").to(self.device).pixel_values
-        if self.s2_mode == "s2wrapping":
-            # [MODIFIED] Forces the wrapper to output the features at the highest scale index
+    def get_feats(self, frames):
+        inputs = self.processor(frames, return_tensors="pt").to(self.device).pixel_values
+        
+        # [EXPLICIT BYPASS]: If no scales are provided, skip the wrapper entirely.
+        if not self.scales:
+            # Runs standard Native CLIP (Outputs 256 patches per frame)
+            outputs = self.forward_features(inputs)
+        else:
+            # Runs S2 Multi-Scale Wrapper (Outputs 1024 high-res patches per frame)
             outputs = multiscale_forward(
                 self.forward_features, 
                 inputs, 
@@ -58,114 +48,93 @@ class ViTFeatureReader(object):
                 num_prefix_token=1,
                 resize_output_to_idx=1 
             )
-        else:
-            outputs = self.forward_features(inputs)
-            
-        # [MODIFIED] Return the high-res patches, drop the CLS token
-        return outputs[:, 1:]
+        
+        # Return the high-res patches, drop the [CLS] token
+        return outputs[:, 0]
 
 
-def get_parser():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--anno_root', help='location of tsv files', required=True)
-    parser.add_argument('--video_root', help='location of tsv files', required=True)
-    parser.add_argument('--device', help='device to use', default='cuda:0')
-    parser.add_argument('--s2_mode', default='')
-    parser.add_argument('--scales', nargs='+', type=int, help='List of scales', default=[])
-    parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--nth_layer', type=int, default=-1)
-    parser.add_argument('--cache_dir', help='cache dir for model', default=None)
-    
-    parser.add_argument('--save_dir', help='where to save the output', required=True)
-    parser.add_argument('--model_name', help='ViT model name', default='openai/clip-vit-large-patch14')
+def read_video(video_path):
+    cap = cv2.VideoCapture(video_path)
+    frames = []
 
-    return parser
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(Image.fromarray(frame))
 
-def get_iterator(args, mode):
-    batch_size = args.batch_size
+    cap.release()
+    return frames
+
+
+def get_video_path(video_root, fileid, split_name):
+    exts = ['.mp4', '.mov', '.avi', '.mkv']
+    split_video_root = os.path.join(video_root, split_name)
     
-    data = np.load(os.path.join(args.anno_root, f'{mode}_info.npy'), allow_pickle=True).item()
-    num = len(data) - 1
-    ds_name = osp.split(args.anno_root)[-1]
-    reader = ViTFeatureReader(
-        args.model_name, 
-        device=args.device, 
-        s2_mode=args.s2_mode, 
-        scales=args.scales,
-        nth_layer=args.nth_layer,
-        cache_dir=args.cache_dir
-    )
-    
-    def iterate():
-        for i in range(num):
-            fname = data[i]['folder']
+    for ext in exts:
+        cand = os.path.join(split_video_root, fileid + ext)
+        if os.path.exists(cand):
+            return cand
             
-            if ds_name == 'Phoenix14T' or ds_name == 'CSL-Daily':
-                image_list = get_img_list(ds_name, args.video_root, fname)
-                videos = [Image.open(image).convert('RGB') for image in image_list]
-                
-                video_feats = []
-                for j in range(0, len(videos), batch_size):
-                    video_batch = videos[j:min(j + batch_size, len(videos))]
-                    feats = reader.get_feats(video_batch).cpu().numpy()
-                    video_feats.append(feats)
-                
-                yield np.concatenate(video_feats, axis=0), data[i]['fileid'], None
+    for ext in exts:
+        cand = os.path.join(video_root, fileid + ext)
+        if os.path.exists(cand):
+            return cand
             
-            else:
-                if ds_name == 'How2Sign':
-                    start_time, end_time = data[i]['original_info']['START_REALIGNED'], data[i]['original_info']['END_REALIGNED']
-                    videos = read_video(fname, start_time=start_time, end_time=end_time)
-            
-                if len(videos) > 0:
-                    video_feats = []
-                    for j in range(0, len(videos), batch_size):
-                        video_batch = videos[j:min(j + batch_size, len(videos))]
-                        feats = reader.get_feats(video_batch).cpu().numpy()
-                        video_feats.append(feats)
-                    yield np.concatenate(video_feats, axis=0), data[i]['fileid'], str(start_time)
-                else:
-                    yield [], data[i]['fileid'], str(start_time)
-    
-    return iterate, num
+    return None
 
 
 def main():
-    mode = ["dev", "test", "train"]
-    for m in mode:
-        parser = get_parser()
-        args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--anno_root', required=True)
+    parser.add_argument('--video_root', required=True)
+    parser.add_argument('--save_dir', required=True)
+    parser.add_argument('--device', default='cuda:0')
+    parser.add_argument('--model_name', default='openai/clip-vit-large-patch14')
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--nth_layer', type=int, default=-1)
+    parser.add_argument('--cache_dir', default=None)
+    # [RESTORED] Correct scale factors for s2wrapper
+    parser.add_argument('--scales', nargs='+', type=int, default= [])
 
-        ds_name = osp.split(args.anno_root)[-1]
-        _model_name = os.path.split(args.model_name)[-1]
-        fname = f'{_model_name}_feat_{ds_name}'
-        
-        os.makedirs(osp.join(args.save_dir, fname, m), exist_ok=True)
-    
-        if ds_name == 'How2Sign':
-            if m == 'dev': _m = 'val'
-            else: _m = m
-        elif ds_name == 'NIASL2021':
-            if m == 'dev': _m = 'validation' 
-        else:
-            _m = m
+    args = parser.parse_args()
 
-        generator, num = get_iterator(args, _m)
-        iterator = generator()
+    reader = ViTFeatureReader(
+        args.model_name,
+        args.device,
+        args.scales,
+        args.nth_layer,
+        args.cache_dir
+    )
 
-        for vit_feat in tqdm.tqdm(iterator, total=num):
-            feats, id, st = vit_feat
-            save_path = osp.join(args.save_dir, fname, m)
-            
-            postfix = ""
-            if args.s2_mode != "":
-                postfix = f"_{args.s2_mode}"
-            if len(args.scales) == 3:
-                postfix = f'{postfix}_large'
-            if st is not None:
-                postfix = f'_{st}{postfix}'
-            
-            np.save(osp.join(save_path, f'{id}{postfix}.npy'), feats)
+    for mode in ["dev", "test", "train"]:
+        data = np.load(os.path.join(args.anno_root, f"{mode}_info.npy"), allow_pickle=True).item()
+        num = len(data) - 1
+
+        save_path = os.path.join(args.save_dir, "spatial", mode)
+        os.makedirs(save_path, exist_ok=True)
+
+        for i in tqdm.tqdm(range(num), desc=mode):
+            entry = data[i]
+            fileid = entry.get('name') or entry.get('fileid') or entry.get('id')
+
+            video_path = get_video_path(args.video_root, fileid, mode)
+            if video_path is None:
+                continue
+
+            frames = read_video(video_path)
+            if len(frames) == 0:
+                continue
+
+            feats = []
+            for j in range(0, len(frames), args.batch_size):
+                batch = frames[j:j+args.batch_size]
+                f = reader.get_feats(batch).cpu().numpy()
+                feats.append(f)
+
+            feats = np.concatenate(feats, axis=0).astype(np.float16)
+            np.save(os.path.join(save_path, f"{fileid}.npy"), feats)
 
 
 if __name__ == "__main__":
