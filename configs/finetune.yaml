@@ -2,18 +2,18 @@ model:
   target: spamo.t5_slt.FlanT5SLT
   params:
 
-    lr: 1.0e-4
+    lr: 3.0e-4
     min_lr: 5.0e-5
     monitor: val/bleu4
-    model_name: google/flan-t5-xl
-    cache_dir: /home/omar_bishr/spamo_workspace/huggingface_cache
+    model_name: MBZUAI/LaMini-Flan-T5-783M
+    cache_dir: /data3/models
 
-    inter_hidden: 2048
+    inter_hidden: 1024
 
     #inter_hidden: 768
     input_size: 2048
     beam_size: 5
-    max_frame_len: 260
+    max_frame_len: 512
     max_txt_len: 128
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
@@ -32,8 +32,8 @@ model:
 
     fusion_mode: joint
 
-    warm_up_steps: 4000
-    lr_warmup_steps: 10000
+    warm_up_steps: 1000
+    lr_warmup_steps: 5000
 
     cross_modal_align: true
     combined_loss: true
@@ -68,20 +68,20 @@ lightning:
       params:
         logging_interval: step
   trainer:
-    #strategy: ddp_find_unused_parameters_true
-    accumulate_grad_batches: 2
+    strategy: ddp_find_unused_parameters_true
+    accumulate_grad_batches: 4
     accelerator: gpu
-    devices: 1
-    max_epochs: 150
+    devices: 2
+    max_epochs: 200
     gradient_clip_val: 1.0
-    check_val_every_n_epoch: 2
+    check_val_every_n_epoch: 1
     precision: bf16
 
 data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
-    batch_size: 16
-    num_workers: 2
+    batch_size: 8
+    num_workers: 4
   
     train:
       target: dataset.p14t.Phoenix14T
