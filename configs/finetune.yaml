@@ -88,9 +88,9 @@ data:
       params:
         anno_root: ./preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
-        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
-        pose_root: /home/omar_bishr/spamo_workspace/phoenix/pose_Phoenix14T
+        feat_root: feat_Phoenix14T
+        mae_feat_root: mae_feat_Phoenix14T
+        pose_root: pose_Phoenix14T
         mode: train
         spatial: true
         spatiotemporal: true
@@ -104,9 +104,9 @@ data:
       params:
         anno_root: ./preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
-        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
-        pose_root: /home/omar_bishr/spamo_workspace/phoenix/pose_Phoenix14T
+        feat_root: feat_Phoenix14T
+        mae_feat_root: mae_feat_Phoenix14T
+        pose_root: pose_Phoenix14T
         mode: dev
         spatial: true
         spatiotemporal: true
@@ -120,9 +120,9 @@ data:
       params:
         anno_root: ./preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
-        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
-        pose_root: /home/omar_bishr/spamo_workspace/phoenix/pose_Phoenix14T
+        feat_root: feat_Phoenix14T
+        mae_feat_root: mae_feat_Phoenix14T
+        pose_root: pose_Phoenix14T
         mode: test
         spatial: true
         spatiotemporal: true
