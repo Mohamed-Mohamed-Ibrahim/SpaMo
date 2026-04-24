@@ -1,16 +1,49 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import random
 
 class DynamicSegmenter(nn.Module):
     """
     Computes motion-based importance scores for frames to guide adaptive masking.
-    Inspired by dynamic clip partitioning in AVRET, but adapted for full-sequence processing.
+    Enhanced with multi-layer networks and attention mechanisms for powerful feature scoring.
     """
-    def __init__(self, hidden_dim=512, motion_threshold=0.5):
+    def __init__(self, hidden_dim=512, motion_threshold=0.5, num_layers=3):
         super().__init__()
-        self.motion_detector = nn.Conv1d(hidden_dim, 1, kernel_size=3, padding=1)
-        self.threshold = motion_threshold  # Not used in this simplified version, but kept for future extension
+        self.hidden_dim = hidden_dim
+        self.threshold = motion_threshold
+        self.num_layers = num_layers
+        
+        # Multi-layer motion detection network
+        layers = []
+        for i in range(num_layers):
+            in_channels = hidden_dim if i == 0 else hidden_dim // 2
+            out_channels = hidden_dim // 2
+            layers.append(nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1))
+            layers.append(nn.BatchNorm1d(out_channels))
+            layers.append(nn.GELU())
+        
+        self.motion_detector = nn.Sequential(*layers)
+        
+        # Output projection to single score
+        self.score_projection = nn.Sequential(
+            nn.Conv1d(hidden_dim // 2, hidden_dim // 4, kernel_size=1),
+            nn.GELU(),
+            nn.Conv1d(hidden_dim // 4, 1, kernel_size=1)
+        )
+        
+        # Temporal attention for context-aware scoring
+        self.attention_heads = 4
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=self.attention_heads,
+            batch_first=True,
+            dropout=0.1
+        )
+        
+        # Adaptive threshold learning
+        self.threshold_param = nn.Parameter(torch.tensor([motion_threshold]))
+        self.norm_layer = nn.LayerNorm(hidden_dim)
     
     def forward(self, features, lengths):
         """
@@ -20,16 +53,32 @@ class DynamicSegmenter(nn.Module):
         Returns:
             importance_scores: (B, T) tensor, higher values indicate more important frames
         """
-        motion_scores = self.motion_detector(features.permute(0, 2, 1)).squeeze(1)  # (B, T)
-        importance_scores = torch.sigmoid(motion_scores)  # Normalize to [0,1]
+        B, T, C = features.shape
+        
+        # Normalize features for better gradient flow
+        normalized_features = self.norm_layer(features)
+        
+        # Self-attention to capture temporal context
+        attn_output, _ = self.attention(normalized_features, normalized_features, normalized_features)
+        
+        # Combine with original features
+        enhanced_features = features + 0.3 * attn_output
+        
+        # Multi-layer motion detection
+        motion_scores = self.motion_detector(enhanced_features.permute(0, 2, 1))
+        
+        # Project to single score
+        motion_scores = self.score_projection(motion_scores).squeeze(1)  # (B, T)
+        
+        # Apply sigmoid with learned offset for adaptive thresholding
+        importance_scores = torch.sigmoid(motion_scores + self.threshold_param)
+        
         return importance_scores
 
     def segment(self, features, importance_scores, lengths):
         """
-        Convert frame-level features into adaptive temporal segments.
-
-        Each segment is mean-pooled between boundaries derived from importance scores,
-        which produces a shorter, adaptive sequence that preserves high-motion units.
+        Convert frame-level features into adaptive temporal segments using weighted pooling.
+        Preserves more temporal information compared to hard boundaries.
         """
         batch_size, max_len, hidden_dim = features.shape
         segmented_sequences = []
@@ -39,22 +88,40 @@ class DynamicSegmenter(nn.Module):
             length = lengths[b]
             seq = features[b, :length]
             scores = importance_scores[b, :length]
+            
+            # Adaptive threshold based on score distribution
+            score_mean = scores.mean()
+            score_std = scores.std() + 1e-8
+            adaptive_threshold = score_mean - 0.5 * score_std
+            
             boundaries = [0]
-
             for t in range(1, length):
-                if scores[t] < self.threshold and scores[t - 1] >= self.threshold:
+                # Smooth boundary detection with hysteresis
+                if scores[t] < adaptive_threshold and scores[t - 1] >= adaptive_threshold:
                     boundaries.append(t)
             boundaries.append(length)
 
             segments = []
+            segment_scores = []
+            
             for start, end in zip(boundaries, boundaries[1:]):
                 if end <= start:
                     continue
-                segment = seq[start:end].mean(dim=0, keepdim=True)
-                segments.append(segment)
+                
+                segment_seq = seq[start:end]
+                segment_score = scores[start:end]
+                
+                # Weighted pooling using importance scores
+                weights = segment_score / (segment_score.sum() + 1e-8)
+                weighted_segment = (segment_seq * weights.unsqueeze(1)).sum(dim=0, keepdim=True)
+                
+                segments.append(weighted_segment)
+                segment_scores.append(scores[start:end].mean().item())
 
+            # If no segments found, use weighted average of entire sequence
             if len(segments) == 0:
-                segments = [seq.mean(dim=0, keepdim=True)]
+                weights = scores / (scores.sum() + 1e-8)
+                segments = [(seq * weights.unsqueeze(1)).sum(dim=0, keepdim=True)]
 
             segmented_sequences.append(torch.cat(segments, dim=0))
             segmented_lengths.append(segmented_sequences[-1].shape[0])
@@ -69,13 +136,15 @@ class DynamicSegmenter(nn.Module):
 class AdaptiveMasker(nn.Module):
     """
     Applies adaptive masking to variable-length segments based on frame importance.
-    Masks low-importance regions with variable lengths, forcing robust inference.
+    Uses smooth masking (noise injection) instead of hard zeroing for better robustness.
     """
-    def __init__(self, mask_prob=0.15, min_mask_len=5, max_mask_len=20):
+    def __init__(self, mask_prob=0.15, min_mask_len=5, max_mask_len=20, mask_type='noise'):
         super().__init__()
         self.mask_prob = mask_prob
         self.min_len = min_mask_len
         self.max_len = max_mask_len
+        self.mask_type = mask_type  # 'zero', 'noise', or 'smooth'
+        self.learnable_mask_token = nn.Parameter(torch.randn(1, 1, 1))
     
     def forward(self, features, importance_scores, lengths, training=True):
         """
@@ -87,27 +156,64 @@ class AdaptiveMasker(nn.Module):
         Returns:
             masked_features: (B, T, C) tensor with adaptive masking applied
         """
-        if not training:
+        if not training or random.random() > self.mask_prob:
             return features
         
         masked = features.clone()
-        for b in range(features.shape[0]):
+        B, T, C = features.shape
+        
+        for b in range(B):
             seq_len = lengths[b]
-            seq = features[b, :seq_len]
             scores = importance_scores[b, :seq_len]
             
-            # Decide whether to mask this sequence
-            if random.random() < self.mask_prob and seq_len > self.min_len:
-                # Identify low-importance regions (below median)
-                low_imp_indices = (scores < scores.median()).nonzero(as_tuple=True)[0]
-                if len(low_imp_indices) > 0:
-                    # Randomly select a start point in low-importance areas
-                    start = random.choice(low_imp_indices.tolist())
-                    # Random mask length within bounds
-                    max_possible = seq_len - start
-                    # Ensure we have enough space for a valid mask
-                    if max_possible >= self.min_len:
-                        length = random.randint(self.min_len, min(self.max_len, max_possible))
-                        # Apply mask (set to zero)
-                        masked[b, start:start+length] = 0
+            if seq_len <= self.min_len:
+                continue
+            
+            # Compute adaptive threshold
+            score_mean = scores.mean()
+            score_std = scores.std() + 1e-8
+            threshold = score_mean - 0.3 * score_std
+            
+            # Find low-importance regions
+            low_imp_mask = scores < threshold
+            low_imp_indices = low_imp_mask.nonzero(as_tuple=True)[0]
+            
+            if len(low_imp_indices) == 0:
+                continue
+            
+            # Create contiguous mask regions
+            mask_starts = []
+            current_start = low_imp_indices[0].item()
+            
+            for i in range(1, len(low_imp_indices)):
+                if low_imp_indices[i].item() - low_imp_indices[i-1].item() > 1:
+                    mask_starts.append((current_start, low_imp_indices[i-1].item() + 1))
+                    current_start = low_imp_indices[i].item()
+            mask_starts.append((current_start, low_imp_indices[-1].item() + 1))
+            
+            # Randomly select one region to mask
+            if mask_starts:
+                start, end = random.choice(mask_starts)
+                mask_len = min(end - start, self.max_len)
+                mask_start = max(0, start)
+                mask_end = min(seq_len, mask_start + mask_len)
+                
+                if self.mask_type == 'noise':
+                    # Add Gaussian noise instead of zeroing
+                    noise = torch.randn_like(masked[b, mask_start:mask_end]) * 0.1
+                    masked[b, mask_start:mask_end] = masked[b, mask_start:mask_end] + noise
+                elif self.mask_type == 'smooth':
+                    # Smooth masking with fade-in/fade-out
+                    fade_len = min(3, (mask_end - mask_start) // 4)
+                    for i in range(mask_start, mask_end):
+                        if i - mask_start < fade_len:
+                            alpha = (i - mask_start) / fade_len
+                        elif i - mask_start >= mask_end - mask_start - fade_len:
+                            alpha = (mask_end - i) / fade_len
+                        else:
+                            alpha = 0.3
+                        masked[b, i] = masked[b, i] * (1 - alpha)
+                else:  # 'zero'
+                    masked[b, mask_start:mask_end] = 0
+        
         return masked

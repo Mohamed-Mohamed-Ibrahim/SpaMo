@@ -87,6 +87,8 @@ class FlanT5SLT(AbstractSLT):
         mask_prob: float = 0.15,
         min_mask_len: int = 5,
         max_mask_len: int = 20,
+        num_layers: int = 3,
+        mask_type: str = 'noise',
 
         **kwargs
     ):
@@ -149,6 +151,8 @@ class FlanT5SLT(AbstractSLT):
         self.mask_prob = mask_prob
         self.min_mask_len = min_mask_len
         self.max_mask_len = max_mask_len
+        self.num_layers = num_layers
+        self.mask_type = mask_type
         
         # Save hyperparameters (ensures self.hparams.lr exists)
         self.save_hyperparameters()
@@ -268,9 +272,9 @@ class FlanT5SLT(AbstractSLT):
 
         # NEW: Initialize Dynamic Segmentation and Adaptive Masking modules
         if self.use_dynamic_segmentation or self.use_adaptive_masking:
-            self.segmenter = DynamicSegmenter(hidden_dim=self.inter_hidden, motion_threshold=self.motion_threshold)
+            self.segmenter = DynamicSegmenter(hidden_dim=self.inter_hidden, motion_threshold=self.motion_threshold, num_layers=self.num_layers)
         if self.use_adaptive_masking:
-            self.masker = AdaptiveMasker(mask_prob=self.mask_prob, min_mask_len=self.min_mask_len, max_mask_len=self.max_mask_len)
+            self.masker = AdaptiveMasker(mask_prob=self.mask_prob, min_mask_len=self.min_mask_len, max_mask_len=self.max_mask_len, mask_type=self.mask_type)
 
     def prepare_inputs(
         self, 
