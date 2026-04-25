@@ -279,14 +279,13 @@ class MAEFinetuneLora(pl.LightningModule):
         # ── Logit scale (learnable) ──────────────────────────────────
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
-        # ── Text encoder (frozen, kept on CPU) ───────────────────────
+        # ── Text encoder (frozen) ───────────────────────────────────
         self.text_tokenizer = CLIPTokenizer.from_pretrained(
             text_model_name, cache_dir=cache_dir
         )
         self.text_encoder = CLIPTextModel.from_pretrained(
             text_model_name, cache_dir=cache_dir
         )
-        self.text_encoder.to("cpu")
         self.text_encoder.eval()
         for p in self.text_encoder.parameters():
             p.requires_grad = False
@@ -382,10 +381,7 @@ class MAEFinetuneLora(pl.LightningModule):
 
         temporal_embeds = torch.stack(temporal_embeds_list)  # [B, proj_dim]
 
-        # ── Text embeddings (on CPU) ─────────────────────────────
-        if next(self.text_encoder.parameters()).device.type != "cpu":
-            self.text_encoder.to("cpu")
-
+        # ── Text embeddings ─────────────────────────────────────
         with torch.no_grad():
             tokens = self.text_tokenizer(
                 texts,
@@ -393,10 +389,10 @@ class MAEFinetuneLora(pl.LightningModule):
                 truncation=True,
                 max_length=77,
                 return_tensors="pt",
-            ).to("cpu")
+            ).to(self.device)
             raw_text = self.text_encoder(**tokens).pooler_output
 
-        text_embeds = self.text_proj(raw_text.to(self.device))  # [B, proj_dim]
+        text_embeds = self.text_proj(raw_text)  # [B, proj_dim]
 
         if self.verbose:
             print(
