@@ -376,6 +376,10 @@ class EncoderFinetuneLora(pl.LightningModule):
             mae_lora_targets or ["query", "value"],
             name="MAE",
         )
+        
+        # ── Enable Gradient Checkpointing ────────────────────────────
+        self.vit_encoder.gradient_checkpointing_enable()
+        self.mae_encoder.gradient_checkpointing_enable()
 
         # ── Image processors (needed to preprocess raw frames) ───────
         self.vit_image_processor = AutoImageProcessor.from_pretrained(
@@ -465,52 +469,48 @@ class EncoderFinetuneLora(pl.LightningModule):
 
     # ── Encoder feature extraction ───────────────────────────────────
 
-    def _extract_vit_features(self, pil_frames: List[Image.Image]) -> torch.Tensor:
-        """Run frames through ViT encoder → [CLS] tokens.
+    def _extract_vit_features(
+        self, pil_frames: List[Image.Image], chunk_size: int = 8
+    ) -> torch.Tensor:
+        """Run frames through ViT encoder in chunks to save memory."""
+        all_cls = []
+        
+        for i in range(0, len(pil_frames), chunk_size):
+            chunk = pil_frames[i : i + chunk_size]
+            pixel_values = self.vit_image_processor(
+                chunk, return_tensors="pt"
+            ).pixel_values.to(self.device)
 
-        Returns: [N_frames, D_vit]   (D_vit = 1024, or 2048 with s2wrapping)
-        """
-        # Preprocess frames
-        pixel_values = self.vit_image_processor(
-            pil_frames, return_tensors="pt"
-        ).pixel_values.to(self.device)  # [N, 3, H, W]
+            if self.s2_mode == "s2wrapping":
+                def _vit_forward(inputs):
+                    return self.vit_encoder(inputs).hidden_states[self.vit_nth_layer]
 
-        # Forward through ViT with LoRA
-        if self.s2_mode == "s2wrapping":
+                outputs = multiscale_forward(
+                    _vit_forward,
+                    pixel_values,
+                    scales=self.scales,
+                    num_prefix_token=1,
+                )
+            else:
+                outputs = self.vit_encoder(pixel_values).hidden_states[self.vit_nth_layer]
+            
+            all_cls.append(outputs[:, 0])  # [chunk_size, D_vit]
 
-            def _vit_forward(inputs):
-                return self.vit_encoder(inputs).hidden_states[self.vit_nth_layer]
+        return torch.cat(all_cls, dim=0)  # [N_frames, D_vit]
 
-            outputs = multiscale_forward(
-                _vit_forward,
-                pixel_values,
-                scales=self.scales,
-                num_prefix_token=1,
-            )
-        else:
-            outputs = self.vit_encoder(pixel_values).hidden_states[self.vit_nth_layer]
-
-        # Return [CLS] token for each frame
-        return outputs[:, 0]  # [N_frames, D_vit]
-
-    def _extract_mae_features(self, mae_frames: List[Image.Image]) -> torch.Tensor:
-        """Run frames through MAE encoder → [CLS] tokens.
-
-        Applies sliding window (window=16, overlap=mae_overlap_size) just
-        like mae_extract_feature.py does.
-
-        Returns: [N_clips, D_mae]
-        """
-        # Pad to at least 16 frames
+    def _extract_mae_features(
+        self, mae_frames: List[Image.Image], chunk_size: int = 2
+    ) -> torch.Tensor:
+        """Run frames through MAE encoder in chunks of clips."""
         if len(mae_frames) < 16:
             mae_frames = mae_frames + [mae_frames[-1]] * (16 - len(mae_frames))
 
-        # Create sliding window clips
         clips = sliding_window_for_list(mae_frames, 16, self.mae_overlap_size)
-
         all_feats = []
-        for clip in clips:
-            inputs = self.mae_image_processor(images=clip, return_tensors="pt").to(
+        
+        for i in range(0, len(clips), chunk_size):
+            chunk = clips[i : i + chunk_size]
+            inputs = self.mae_image_processor(images=chunk, return_tensors="pt").to(
                 self.device
             )
 
@@ -518,7 +518,7 @@ class EncoderFinetuneLora(pl.LightningModule):
                 **inputs, output_hidden_states=True
             ).hidden_states[self.mae_nth_layer]
 
-            all_feats.append(outputs[:, 0])  # [1, D_mae]
+            all_feats.append(outputs[:, 0])  # [chunk_size, D_mae]
 
         return torch.cat(all_feats, dim=0)  # [N_clips, D_mae]
 
