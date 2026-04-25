@@ -6,6 +6,7 @@ import tqdm
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 from transformers import VideoMAEModel, VideoMAEImageProcessor
+from peft import PeftModel
 import os.path as osp
 import sys
 import torch.multiprocessing as mp
@@ -26,7 +27,7 @@ torch.backends.cudnn.benchmark = False
 
 # ----------------------------------------------------------------------------
 class VideoMAEFeatureReader(object):
-    def __init__(self, model_name, device, overlap_size, nth_layer, cache_dir=None):
+    def __init__(self, model_name, device, overlap_size, nth_layer, cache_dir=None, lora_path=None):
         self.device = device
         self.overlap_size = overlap_size
         self.nth_layer = nth_layer
@@ -34,7 +35,24 @@ class VideoMAEFeatureReader(object):
         self.image_processor = VideoMAEImageProcessor.from_pretrained(
             model_name, cache_dir=cache_dir
         )
-        self.model = VideoMAEModel.from_pretrained(model_name).to(self.device).eval()
+        self.model = VideoMAEModel.from_pretrained(model_name)
+
+        # ── Load LoRA adapter (if provided) ──────────────────────────
+        # Expects a PEFT adapter directory saved by finetune_encoders.py
+        # e.g. --lora_path logs/encoder_finetune/lora_weights/mae_lora
+        if lora_path is not None:
+            if os.path.isdir(lora_path):
+                print(f"[LoRA MAE] Loading adapter from: {lora_path}")
+                self.model = PeftModel.from_pretrained(self.model, lora_path)
+                self.model = self.model.merge_and_unload()
+                print("[LoRA MAE] Adapter merged into base model (zero overhead).")
+            else:
+                raise FileNotFoundError(
+                    f"[LoRA MAE] Expected a PEFT adapter directory, got: {lora_path}\n"
+                    f"  Run finetune_encoders.py first to generate mae_lora/ directory."
+                )
+
+        self.model = self.model.to(self.device).eval()
 
     @torch.no_grad()
     def get_feats(self, video_batch):
@@ -186,6 +204,8 @@ def get_parser():
     parser.add_argument('--nth_layer', type=int, default=-1)
     parser.add_argument('--cache_dir', default=None)
     parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--lora_path', default=None,
+                        help='Path to LoRA adapter dir or checkpoint file')
     return parser
 
 
@@ -199,7 +219,8 @@ def run_extraction(rank, world_size, args):
         device,
         args.overlap_size,
         args.nth_layer,
-        args.cache_dir
+        args.cache_dir,
+        lora_path=args.lora_path,
     )
 
     modes = args.mode if isinstance(args.mode, list) else [args.mode]

@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoImageProcessor, CLIPVisionModel
+from peft import PeftModel
 import torch.multiprocessing as mp
 
 import sys, gc
@@ -67,6 +68,7 @@ class ViTFeatureReader(object):
         s2_mode="s2wrapping",
         scales=[1, 2],
         nth_layer=-1,
+        lora_path=None,
     ):
         self.s2_mode = s2_mode
         self.device = device
@@ -77,9 +79,24 @@ class ViTFeatureReader(object):
             CLIPVisionModel.from_pretrained(
                 model_name, output_hidden_states=True, cache_dir=cache_dir
             )
-            .to(device)
-            .eval()
         )
+
+        # ── Load LoRA adapter (if provided) ──────────────────────────
+        # Expects a PEFT adapter directory saved by finetune_encoders.py
+        # e.g. --lora_path logs/encoder_finetune/lora_weights/vit_lora
+        if lora_path is not None:
+            if os.path.isdir(lora_path):
+                print(f"[LoRA ViT] Loading adapter from: {lora_path}")
+                self.model = PeftModel.from_pretrained(self.model, lora_path)
+                self.model = self.model.merge_and_unload()
+                print("[LoRA ViT] Adapter merged into base model (zero overhead).")
+            else:
+                raise FileNotFoundError(
+                    f"[LoRA ViT] Expected a PEFT adapter directory, got: {lora_path}\n"
+                    f"  Run finetune_encoders.py first to generate vit_lora/ directory."
+                )
+
+        self.model = self.model.to(device).eval()
 
         if torch.cuda.device_count() > 1:
             print(f"Using {torch.cuda.device_count()} GPUs!")
@@ -132,6 +149,9 @@ def get_parser():
     parser.add_argument(
         "--model_name", help="ViT model name", default="openai/clip-vit-large-patch14"
     )
+    parser.add_argument(
+        "--lora_path", help="Path to LoRA adapter dir or checkpoint file", default=None
+    )
 
     return parser
 
@@ -149,6 +169,7 @@ def get_iterator(args, mode):
         scales=args.scales,
         nth_layer=args.nth_layer,
         cache_dir=args.cache_dir,
+        lora_path=args.lora_path,
     )
 
     def iterate():

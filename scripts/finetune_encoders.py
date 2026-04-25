@@ -1,3 +1,20 @@
+"""
+Finetune ViT (CLIP) and VideoMAE encoders using LoRA + Contrastive Loss.
+
+This script loads raw video frames, passes them through the ViT and MAE
+encoders (with LoRA adapters applied), projects the outputs into a shared
+embedding space, and optimises using contrastive losses:
+  - NT-Xent  : spatial (ViT) ↔ spatiotemporal (MAE)  alignment
+  - CLIP loss: fused visual   ↔ text                  alignment
+
+After training, LoRA adapters are exported as PEFT directories that can
+be loaded directly by vit_extract_feature.py and mae_extract_feature.py
+via ``PeftModel.from_pretrained()``.
+
+Usage:
+    python scripts/finetune_encoders.py -c configs/finetune_encoders.yaml
+"""
+
 # region imports & constants
 import argparse
 import os
@@ -22,7 +39,6 @@ from pytorch_lightning.callbacks import (
 from pytorch_lightning.strategies import DDPStrategy
 
 from torch.utils.data import Dataset, DataLoader
-from torch.nn.utils.rnn import pad_sequence
 
 from transformers import (
     CLIPVisionModel,
@@ -33,7 +49,7 @@ from transformers import (
     VideoMAEImageProcessor,
     get_cosine_schedule_with_warmup,
 )
-from peft import LoraConfig, get_peft_model, TaskType
+from peft import LoraConfig, get_peft_model
 from PIL import Image
 
 # ── PATH SETUP ──────────────────────────────────────────────────────────────
@@ -63,13 +79,13 @@ torch.set_float32_matmul_precision("high")
 # endregion
 
 
-# region CONTRASTIVE LOSSES
-class NTXentLoss(nn.Module):
-    """Normalised Temperature-scaled Cross-Entropy (NT-Xent) loss.
+# region LOSSES
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONTRASTIVE LOSSES
+# ═══════════════════════════════════════════════════════════════════════════
 
-    Pulls together positive pairs (spatial ↔ spatiotemporal) while pushing
-    apart all other in-batch examples.
-    """
+class NTXentLoss(nn.Module):
+    """Normalised Temperature-scaled Cross-Entropy (NT-Xent) loss."""
 
     def __init__(self, temperature: float = 0.07):
         super().__init__()
@@ -77,28 +93,20 @@ class NTXentLoss(nn.Module):
 
     def forward(
         self,
-        z_spatial: torch.Tensor,  # [B, D]
+        z_spatial: torch.Tensor,   # [B, D]
         z_temporal: torch.Tensor,  # [B, D]
     ) -> torch.Tensor:
         z_spatial = F.normalize(z_spatial, dim=-1)
         z_temporal = F.normalize(z_temporal, dim=-1)
-
-        # Cosine similarity matrix  [B, B]
         logits = torch.mm(z_spatial, z_temporal.t()) / self.temperature
         labels = torch.arange(logits.size(0), device=logits.device)
-
         loss_s2t = F.cross_entropy(logits, labels)
         loss_t2s = F.cross_entropy(logits.t(), labels)
         return (loss_s2t + loss_t2s) / 2.0
 
 
 class EncoderContrastiveLoss(nn.Module):
-    """Combined contrastive losses for encoder finetuning.
-
-    Supports:
-        1. cross_modal  – spatial ↔ spatiotemporal alignment (NT-Xent)
-        2. visual_text  – pooled visual embed ↔ CLIP text embed (CLIP loss)
-    """
+    """Combined contrastive losses for encoder finetuning."""
 
     def __init__(
         self,
@@ -114,22 +122,17 @@ class EncoderContrastiveLoss(nn.Module):
 
     def forward(
         self,
-        spatial_embeds: torch.Tensor,  # [B, D]
-        temporal_embeds: torch.Tensor,  # [B, D]
-        text_embeds: Optional[torch.Tensor] = None,  # [B, D_text]
+        spatial_embeds: torch.Tensor,
+        temporal_embeds: torch.Tensor,
+        text_embeds: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-
         losses: Dict[str, torch.Tensor] = {}
 
-        # 1. Cross-modal (spatial ↔ temporal)
         cm_loss = self.ntxent(spatial_embeds, temporal_embeds)
         losses["cross_modal_loss"] = cm_loss
-
         total = self.cross_modal_weight * cm_loss
 
-        # 2. Visual–text alignment
         if text_embeds is not None:
-            # Fuse spatial + temporal → visual
             visual = F.normalize((spatial_embeds + temporal_embeds) / 2.0, dim=-1)
             text = F.normalize(text_embeds, dim=-1)
             logit_scale = self.logit_scale.exp()
@@ -145,121 +148,146 @@ class EncoderContrastiveLoss(nn.Module):
 # endregion
 
 
-# region DATASET  (Paired spatial + temporal from pre-computed features)
-class PairedFeatureDataset(Dataset):
-    """Loads paired spatial (ViT) and spatiotemporal (MAE) pre-extracted features.
+# region DATASET
+# ═══════════════════════════════════════════════════════════════════════════
+#  DATASET  (Raw video frames — same loading logic as extraction scripts)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class VideoFrameDataset(Dataset):
+    """Loads raw video frames for paired ViT + MAE finetuning.
 
     Each sample returns:
-      - spatial feature       : [T_s, D_s]
-      - spatiotemporal feature: [T_t, D_t]
-      - text (for optional visual–text contrastive)
+        - pil_frames  : List[PIL.Image]  (all frames of the video)
+        - text        : str
+        - file_id     : str
     """
+
+    RESIZE_SIZE = 256
+    CROP_SIZE = 224
 
     def __init__(
         self,
         anno_root: str,
-        spatial_feat_root: str,
-        mae_feat_root: str,
+        video_root: str,
         mode: str = "train",
-        spatial_postfix: str = "_None_s2wrapping",
-        spatiotemporal_postfix: str = "_None_overlap-8",
-        max_frame_len: int = 512,
+        max_frames: int = 64,
     ):
         super().__init__()
-        self.spatial_feat_root = spatial_feat_root
-        self.mae_feat_root = mae_feat_root
+        self.video_root = video_root
         self.mode = mode
-        self.spatial_postfix = spatial_postfix
-        self.spatiotemporal_postfix = spatiotemporal_postfix
-        self.max_frame_len = max_frame_len
+        self.max_frames = max_frames
 
         anno_path = os.path.join(anno_root, f"{mode}_info_ml.npy")
         if not os.path.exists(anno_path):
-            # Fallback to non-multilingual annotation
             anno_path = os.path.join(anno_root, f"{mode}_info.npy")
         self.data = np.load(anno_path, allow_pickle=True).item()
+        self.ds_name = os.path.split(anno_root)[-1]
 
-        # Filter out non-integer keys (e.g., 'prefix')
+        # Filter non-integer keys
         self.valid_keys = sorted([k for k in self.data.keys() if isinstance(k, int)])
         print(
-            f"[PairedFeatureDataset] mode={mode}, "
+            f"[VideoFrameDataset] mode={mode}, "
             f"{len(self.valid_keys)} samples loaded."
         )
 
     def __len__(self):
         return len(self.valid_keys)
 
+    def _center_crop(self, img: Image.Image) -> Image.Image:
+        """Resize + center crop to 224x224 (for MAE)."""
+        img = img.resize(
+            (self.RESIZE_SIZE, self.RESIZE_SIZE), resample=Image.BILINEAR
+        )
+        left = (self.RESIZE_SIZE - self.CROP_SIZE) // 2
+        top = (self.RESIZE_SIZE - self.CROP_SIZE) // 2
+        return img.crop((left, top, left + self.CROP_SIZE, top + self.CROP_SIZE))
+
     def __getitem__(self, idx):
         key = self.valid_keys[idx]
         entry = self.data[key]
+        fname = entry["folder"]
         file_id = entry["fileid"]
         text = entry.get("text", "")
         if not text.endswith("."):
             text = text + "."
 
-        # Load spatial features
-        spatial_path = os.path.join(
-            self.spatial_feat_root,
-            self.mode,
-            f"{file_id}{self.spatial_postfix}.npy",
-        )
-        spatial_feat = self._safe_load(spatial_path)
+        # ── Load frames (same logic as extraction scripts) ───────
+        pil_frames = []
+        if self.ds_name in ["Phoenix14T", "CSL-Daily"]:
+            image_paths = get_img_list(self.ds_name, self.video_root, fname)
+            for p in image_paths:
+                try:
+                    img = Image.open(p).convert("RGB")
+                    pil_frames.append(img)
+                except Exception as e:
+                    print(f"[WARNING] Failed to load {p}: {e}")
 
-        # Load spatiotemporal features
-        st_path = os.path.join(
-            self.mae_feat_root,
-            self.mode,
-            f"{file_id}{self.spatiotemporal_postfix}.npy",
-        )
-        st_feat = self._safe_load(st_path)
+        elif self.ds_name in ["How2Sign", "Phoenix14TCompressed"]:
+            s = entry.get("original_info", {}).get("START_REALIGNED", None)
+            e = entry.get("original_info", {}).get("END_REALIGNED", None)
+            try:
+                s = float(s) if s is not None else None
+            except (ValueError, TypeError):
+                s = None
+            try:
+                e = float(e) if e is not None else None
+            except (ValueError, TypeError):
+                e = None
+            raw_frames = read_video(fname, start_time=s, end_time=e)
+            for f in raw_frames:
+                if isinstance(f, np.ndarray):
+                    pil_frames.append(Image.fromarray(f).convert("RGB"))
+                elif isinstance(f, Image.Image):
+                    pil_frames.append(f.convert("RGB"))
+        else:
+            raise NotImplementedError(f"Unknown dataset: {self.ds_name}")
 
-        # Truncate
-        if spatial_feat.shape[0] > self.max_frame_len:
-            start = random.randint(0, spatial_feat.shape[0] - self.max_frame_len)
-            spatial_feat = spatial_feat[start : start + self.max_frame_len]
+        if len(pil_frames) == 0:
+            return None  # Will be filtered in collate_fn
 
-        if st_feat.shape[0] > self.max_frame_len:
-            start = random.randint(0, st_feat.shape[0] - self.max_frame_len)
-            st_feat = st_feat[start : start + self.max_frame_len]
+        # ── Sub-sample if too many frames ────────────────────────
+        if len(pil_frames) > self.max_frames:
+            # Uniform sub-sample to max_frames
+            indices = np.linspace(0, len(pil_frames) - 1, self.max_frames, dtype=int)
+            pil_frames = [pil_frames[i] for i in indices]
+
+        # ── Create MAE-cropped copies ────────────────────────────
+        mae_frames = [self._center_crop(f) for f in pil_frames]
 
         return {
-            "spatial_feat": torch.tensor(spatial_feat, dtype=torch.float32),
-            "st_feat": torch.tensor(st_feat, dtype=torch.float32),
+            "pil_frames": pil_frames,        # Original size for ViT
+            "mae_frames": mae_frames,         # 224x224 cropped for MAE
             "text": text.lower(),
-            "id": file_id,
-            "num_spatial_frames": spatial_feat.shape[0],
-            "num_st_frames": st_feat.shape[0],
+            "file_id": file_id,
+            "n_frames": len(pil_frames),
         }
 
     @staticmethod
-    def _safe_load(path: str) -> np.ndarray:
-        if not os.path.exists(path):
-            print(f"[WARNING] Feature file missing: {path}")
-            return np.zeros((1, 1024), dtype=np.float32)
-        return np.load(path).astype(np.float32)
-
-    @staticmethod
-    def collate_fn(batch: List[Dict]) -> List[Dict]:
-        return batch
+    def collate_fn(batch):
+        """Filter out None samples and return as a list of dicts."""
+        return [s for s in batch if s is not None]
 
 
 # endregion
 
 
 # region LIGHTNING MODULE
+# ═══════════════════════════════════════════════════════════════════════════
+#  LIGHTNING MODULE
+# ═══════════════════════════════════════════════════════════════════════════
+
 class EncoderFinetuneLora(pl.LightningModule):
     """
     Finetunes ViT (CLIP) and VideoMAE encoders with LoRA adapters
-    using contrastive losses.
+    using contrastive losses on raw video frames.
 
     Architecture:
-        ViT  →  LoRA  →  proj_spatial  →  shared embed space
-        MAE  →  LoRA  →  proj_temporal →  shared embed space
-        CLIP-Text  (frozen)            →  text embed space
+        Raw frames → ViT (+ LoRA) → [CLS] → proj_spatial  → spatial_embed
+        Raw frames → MAE (+ LoRA) → [CLS] → proj_temporal → temporal_embed
+        Text       → CLIP-Text (frozen)   → text_proj     → text_embed
 
-    Losses:
-        1. NT-Xent   : spatial embed  ↔  temporal embed
-        2. CLIP loss  : fused visual   ↔  text embed
+    Forward pass extracts features from the actual encoders so LoRA
+    gradients flow back through the attention layers.
     """
 
     def __init__(
@@ -274,7 +302,7 @@ class EncoderFinetuneLora(pl.LightningModule):
         vit_lora_targets: Optional[List[str]] = None,
         mae_lora_targets: Optional[List[str]] = None,
         # Projections
-        spatial_input_dim: int = 2048,  # ViT with s2wrapping → 1024*2
+        spatial_input_dim: int = 2048,   # ViT with s2wrapping → 1024*2
         temporal_input_dim: int = 1024,  # VideoMAE hidden dim
         proj_dim: int = 512,
         # Losses
@@ -284,16 +312,17 @@ class EncoderFinetuneLora(pl.LightningModule):
         # Text encoder
         use_text_loss: bool = True,
         text_model_name: str = "openai/clip-vit-large-patch14",
+        # ViT feature extraction settings
+        s2_mode: str = "",
+        scales: Optional[List[int]] = None,
+        vit_nth_layer: int = -1,
+        # MAE feature extraction settings
+        mae_nth_layer: int = -1,
+        mae_overlap_size: int = 8,
         # Optimiser
         lr: float = 1e-4,
         weight_decay: float = 0.01,
         warmup_ratio: float = 0.1,
-        # S2 wrapping
-        s2_mode: str = "",
-        scales: Optional[List[int]] = None,
-        vit_nth_layer: int = -1,
-        mae_nth_layer: int = -1,
-        mae_overlap_size: int = 8,
         # Misc
         cache_dir: Optional[str] = None,
         monitor: str = "val/total_loss",
@@ -314,7 +343,39 @@ class EncoderFinetuneLora(pl.LightningModule):
         self.mae_nth_layer = mae_nth_layer
         self.mae_overlap_size = mae_overlap_size
 
-        # ── Projection heads (learnable, always train these) ─────────
+        # ── Load ViT encoder + apply LoRA ────────────────────────────
+        print("[EncoderFinetuneLora] Loading ViT encoder...")
+        self.vit_encoder = CLIPVisionModel.from_pretrained(
+            vit_model_name, output_hidden_states=True, cache_dir=cache_dir
+        )
+        for p in self.vit_encoder.parameters():
+            p.requires_grad = False
+        self.vit_encoder = self._apply_lora(
+            self.vit_encoder, lora_r, lora_alpha, lora_dropout,
+            vit_lora_targets or ["q_proj", "v_proj"], name="ViT"
+        )
+
+        # ── Load MAE encoder + apply LoRA ────────────────────────────
+        print("[EncoderFinetuneLora] Loading MAE encoder...")
+        self.mae_encoder = VideoMAEModel.from_pretrained(
+            mae_model_name, cache_dir=cache_dir
+        )
+        for p in self.mae_encoder.parameters():
+            p.requires_grad = False
+        self.mae_encoder = self._apply_lora(
+            self.mae_encoder, lora_r, lora_alpha, lora_dropout,
+            mae_lora_targets or ["query", "value"], name="MAE"
+        )
+
+        # ── Image processors (needed to preprocess raw frames) ───────
+        self.vit_image_processor = AutoImageProcessor.from_pretrained(
+            vit_model_name, cache_dir=cache_dir
+        )
+        self.mae_image_processor = VideoMAEImageProcessor.from_pretrained(
+            mae_model_name, cache_dir=cache_dir
+        )
+
+        # ── Projection heads ─────────────────────────────────────────
         self.proj_spatial = nn.Sequential(
             nn.Linear(spatial_input_dim, proj_dim),
             nn.GELU(),
@@ -333,9 +394,9 @@ class EncoderFinetuneLora(pl.LightningModule):
             visual_text_weight=visual_text_weight,
         )
 
-        # ── Text encoder (frozen, for visual-text alignment) ─────────
+        # ── Text encoder (frozen) ────────────────────────────────────
         if self.use_text_loss:
-            from transformers import CLIPTokenizer, CLIPTextModel
+            from transformers import CLIPTokenizer
 
             self.text_tokenizer = CLIPTokenizer.from_pretrained(
                 text_model_name, cache_dir=cache_dir
@@ -350,122 +411,153 @@ class EncoderFinetuneLora(pl.LightningModule):
             text_dim = self.text_encoder.config.hidden_size
             self.text_proj = nn.Linear(text_dim, proj_dim)
 
-        # Containers for validation
         self._val_losses: List[Dict[str, float]] = []
 
-    # ── LoRA helpers ─────────────────────────────────────────────────
+    # ── LoRA helper ──────────────────────────────────────────────────
 
     @staticmethod
-    def _apply_lora_to_vit(
+    def _apply_lora(
         model: nn.Module,
         r: int,
         alpha: int,
         dropout: float,
-        target_modules: Optional[List[str]] = None,
+        target_modules: List[str],
+        name: str = "",
     ) -> nn.Module:
-        """Apply LoRA to CLIP ViT encoder."""
-        if target_modules is None:
-            target_modules = ["q_proj", "v_proj"]
         config = LoraConfig(
-            r=r,
-            lora_alpha=alpha,
+            r=r, lora_alpha=alpha,
             target_modules=target_modules,
-            lora_dropout=dropout,
-            bias="none",
+            lora_dropout=dropout, bias="none",
         )
         model = get_peft_model(model, config)
-        print("[LoRA ViT] Applied. Trainable parameters:")
+        print(f"[LoRA {name}] Applied. Trainable parameters:")
         model.print_trainable_parameters()
         return model
 
-    @staticmethod
-    def _apply_lora_to_mae(
-        model: nn.Module,
-        r: int,
-        alpha: int,
-        dropout: float,
-        target_modules: Optional[List[str]] = None,
-    ) -> nn.Module:
-        """Apply LoRA to VideoMAE encoder."""
-        if target_modules is None:
-            target_modules = ["query", "value"]
-        config = LoraConfig(
-            r=r,
-            lora_alpha=alpha,
-            target_modules=target_modules,
-            lora_dropout=dropout,
-            bias="none",
-        )
-        model = get_peft_model(model, config)
-        print("[LoRA MAE] Applied. Trainable parameters:")
-        model.print_trainable_parameters()
-        return model
+    def save_lora_adapters(self, save_dir: str) -> None:
+        """Save LoRA adapters as PEFT adapter directories.
+
+        Creates:
+            <save_dir>/vit_lora/  and  <save_dir>/mae_lora/
+        """
+        vit_dir = os.path.join(save_dir, "vit_lora")
+        mae_dir = os.path.join(save_dir, "mae_lora")
+        os.makedirs(vit_dir, exist_ok=True)
+        os.makedirs(mae_dir, exist_ok=True)
+
+        self.vit_encoder.save_pretrained(vit_dir)
+        print(f"✅ ViT LoRA adapter saved → {vit_dir}")
+
+        self.mae_encoder.save_pretrained(mae_dir)
+        print(f"✅ MAE LoRA adapter saved → {mae_dir}")
+
+    # ── Encoder feature extraction ───────────────────────────────────
+
+    def _extract_vit_features(self, pil_frames: List[Image.Image]) -> torch.Tensor:
+        """Run frames through ViT encoder → [CLS] tokens.
+
+        Returns: [N_frames, D_vit]   (D_vit = 1024, or 2048 with s2wrapping)
+        """
+        # Preprocess frames
+        pixel_values = self.vit_image_processor(
+            pil_frames, return_tensors="pt"
+        ).pixel_values.to(self.device)  # [N, 3, H, W]
+
+        # Forward through ViT with LoRA
+        if self.s2_mode == "s2wrapping":
+            def _vit_forward(inputs):
+                return self.vit_encoder(inputs).hidden_states[self.vit_nth_layer]
+
+            outputs = multiscale_forward(
+                _vit_forward, pixel_values,
+                scales=self.scales, num_prefix_token=1,
+            )
+        else:
+            outputs = self.vit_encoder(pixel_values).hidden_states[self.vit_nth_layer]
+
+        # Return [CLS] token for each frame
+        return outputs[:, 0]  # [N_frames, D_vit]
+
+    def _extract_mae_features(self, mae_frames: List[Image.Image]) -> torch.Tensor:
+        """Run frames through MAE encoder → [CLS] tokens.
+
+        Applies sliding window (window=16, overlap=mae_overlap_size) just
+        like mae_extract_feature.py does.
+
+        Returns: [N_clips, D_mae]
+        """
+        # Pad to at least 16 frames
+        if len(mae_frames) < 16:
+            mae_frames = mae_frames + [mae_frames[-1]] * (16 - len(mae_frames))
+
+        # Create sliding window clips
+        clips = sliding_window_for_list(mae_frames, 16, self.mae_overlap_size)
+
+        all_feats = []
+        for clip in clips:
+            inputs = self.mae_image_processor(
+                images=clip, return_tensors="pt"
+            ).to(self.device)
+
+            outputs = self.mae_encoder(
+                **inputs, output_hidden_states=True
+            ).hidden_states[self.mae_nth_layer]
+
+            all_feats.append(outputs[:, 0])  # [1, D_mae]
+
+        return torch.cat(all_feats, dim=0)  # [N_clips, D_mae]
 
     # ── Forward ──────────────────────────────────────────────────────
 
-    def _pool_features(self, feats: torch.Tensor, lengths: List[int]) -> torch.Tensor:
-        """Mean-pool variable-length features → [B, D]."""
-        pooled = []
-        for i, L in enumerate(lengths):
-            pooled.append(feats[i, :L].mean(dim=0))
-        return torch.stack(pooled, dim=0)
-
     def forward(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
-        spatial_feats, st_feats = [], []
+        """Process a batch of raw video samples through both encoders."""
+        spatial_embeds_list = []
+        temporal_embeds_list = []
         texts = []
-        num_spatial, num_st = [], []
 
         for sample in batch:
-            sf = sample["spatial_feat"]
-            tf = sample["st_feat"]
-            if sf.ndim == 1 or sf.shape[0] == 0:
-                continue
+            pil_frames = sample["pil_frames"]
+            mae_frames = sample["mae_frames"]
 
-            spatial_feats.append(sf)
-            st_feats.append(tf)
+            # ── ViT: extract per-frame [CLS] → mean pool → project ─
+            vit_feats = self._extract_vit_features(pil_frames)  # [N, D_vit]
+            vit_pooled = vit_feats.mean(dim=0, keepdim=True)    # [1, D_vit]
+            spatial_embed = self.proj_spatial(vit_pooled)        # [1, proj_dim]
+            spatial_embeds_list.append(spatial_embed.squeeze(0))
+
+            # ── MAE: extract per-clip [CLS] → mean pool → project ──
+            mae_feats = self._extract_mae_features(mae_frames)  # [N_clips, D_mae]
+            mae_pooled = mae_feats.mean(dim=0, keepdim=True)    # [1, D_mae]
+            temporal_embed = self.proj_temporal(mae_pooled)      # [1, proj_dim]
+            temporal_embeds_list.append(temporal_embed.squeeze(0))
+
             texts.append(sample["text"])
-            num_spatial.append(sample["num_spatial_frames"])
-            num_st.append(sample["num_st_frames"])
 
-        if len(spatial_feats) == 0:
+        if len(spatial_embeds_list) == 0:
             return {
-                "total_loss": torch.tensor(0.0, device=self.device, requires_grad=True)
+                "total_loss": torch.tensor(
+                    0.0, device=self.device, requires_grad=True
+                )
             }
 
-        # Pad and move to device
-        spatial_padded = pad_sequence(spatial_feats, batch_first=True).to(self.device)
-        st_padded = pad_sequence(st_feats, batch_first=True).to(self.device)
+        spatial_embeds = torch.stack(spatial_embeds_list)    # [B, proj_dim]
+        temporal_embeds = torch.stack(temporal_embeds_list)  # [B, proj_dim]
 
-        # Project
-        spatial_proj = self.proj_spatial(spatial_padded)  # [B, T_s, proj_dim]
-        st_proj = self.proj_temporal(st_padded)  # [B, T_t, proj_dim]
-
-        # Pool → [B, proj_dim]
-        spatial_embeds = self._pool_features(spatial_proj, num_spatial)
-        temporal_embeds = self._pool_features(st_proj, num_st)
-
-        # Text embeddings (optional)
+        # ── Text embeddings (optional) ───────────────────────────
         text_embeds = None
         if self.use_text_loss and hasattr(self, "text_encoder"):
             with torch.no_grad():
                 tokens = self.text_tokenizer(
-                    texts,
-                    padding=True,
-                    truncation=True,
-                    max_length=77,
-                    return_tensors="pt",
+                    texts, padding=True, truncation=True,
+                    max_length=77, return_tensors="pt",
                 ).to(self.device)
-                text_out = self.text_encoder(**tokens)
-                # Pool text: use the [EOS] token embedding (CLIP convention)
-                raw_text = text_out.pooler_output  # [B, D_text]
+                raw_text = self.text_encoder(**tokens).pooler_output
 
             text_embeds = self.text_proj(raw_text)  # [B, proj_dim]
 
-        # Compute losses
-        loss_dict = self.contrastive_loss(spatial_embeds, temporal_embeds, text_embeds)
-        return loss_dict
+        return self.contrastive_loss(spatial_embeds, temporal_embeds, text_embeds)
 
-    # ── PL training / validation hooks ───────────────────────────────
+    # ── PL hooks ─────────────────────────────────────────────────────
 
     def training_step(self, batch, batch_idx):
         loss_dict = self.forward(batch)
@@ -501,11 +593,9 @@ class EncoderFinetuneLora(pl.LightningModule):
             raise RuntimeError("No trainable parameters found!")
 
         optimizer = torch.optim.AdamW(
-            trainable,
-            lr=self.lr,
+            trainable, lr=self.lr,
             weight_decay=self.weight_decay,
-            eps=1e-8,
-            betas=(0.9, 0.98),
+            eps=1e-8, betas=(0.9, 0.98),
         )
 
         total_steps = int(self.trainer.estimated_stepping_batches)
@@ -534,16 +624,17 @@ class EncoderFinetuneLora(pl.LightningModule):
 
 
 # region DATA MODULE
-class PairedFeatureDataModule(pl.LightningDataModule):
+# ═══════════════════════════════════════════════════════════════════════════
+#  DATA MODULE
+# ═══════════════════════════════════════════════════════════════════════════
+
+class VideoDataModule(pl.LightningDataModule):
     def __init__(
         self,
         anno_root: str,
-        spatial_feat_root: str,
-        mae_feat_root: str,
-        spatial_postfix: str = "_None_s2wrapping",
-        spatiotemporal_postfix: str = "_None_overlap-8",
-        max_frame_len: int = 512,
-        batch_size: int = 16,
+        video_root: str,
+        max_frames: int = 64,
+        batch_size: int = 4,
         num_workers: int = 4,
     ):
         super().__init__()
@@ -553,14 +644,11 @@ class PairedFeatureDataModule(pl.LightningDataModule):
         hp = self.hparams
         common = dict(
             anno_root=hp.anno_root,
-            spatial_feat_root=hp.spatial_feat_root,
-            mae_feat_root=hp.mae_feat_root,
-            spatial_postfix=hp.spatial_postfix,
-            spatiotemporal_postfix=hp.spatiotemporal_postfix,
-            max_frame_len=hp.max_frame_len,
+            video_root=hp.video_root,
+            max_frames=hp.max_frames,
         )
-        self.train_ds = PairedFeatureDataset(mode="train", **common)
-        self.val_ds = PairedFeatureDataset(mode="dev", **common)
+        self.train_ds = VideoFrameDataset(mode="train", **common)
+        self.val_ds = VideoFrameDataset(mode="dev", **common)
 
     def train_dataloader(self):
         return DataLoader(
@@ -569,8 +657,8 @@ class PairedFeatureDataModule(pl.LightningDataModule):
             shuffle=True,
             num_workers=self.hparams.num_workers,
             pin_memory=True,
-            persistent_workers=True,
-            collate_fn=PairedFeatureDataset.collate_fn,
+            persistent_workers=self.hparams.num_workers > 0,
+            collate_fn=VideoFrameDataset.collate_fn,
         )
 
     def val_dataloader(self):
@@ -580,67 +668,51 @@ class PairedFeatureDataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.hparams.num_workers,
             pin_memory=True,
-            persistent_workers=True,
-            collate_fn=PairedFeatureDataset.collate_fn,
+            persistent_workers=self.hparams.num_workers > 0,
+            collate_fn=VideoFrameDataset.collate_fn,
         )
 
 
 # endregion
 
 
-# region CLI  (supports --config YAML + CLI overrides)
+# region CLI & CONFIG
+# ═══════════════════════════════════════════════════════════════════════════
+#  CLI  (supports --config YAML + CLI overrides)
+# ═══════════════════════════════════════════════════════════════════════════
+
 def get_parser():
     p = argparse.ArgumentParser(
         description="Finetune ViT & MAE encoders with LoRA + contrastive loss"
     )
-    # ── Config file (primary entry point) ─────────────────────────
-    p.add_argument(
-        "-c",
-        "--config",
-        type=str,
-        default=None,
-        help="Path to YAML config file (e.g. configs/finetune_encoders.yaml). "
-        "All keys in the YAML become defaults; CLI flags override them.",
-    )
+    p.add_argument("-c", "--config", type=str, default=None,
+                   help="Path to YAML config file")
 
     # Data paths
-    p.add_argument(
-        "--anno_root",
-        default=None,
-        help="Path to annotation dir (e.g. ./preprocess/Phoenix14T)",
-    )
-    p.add_argument(
-        "--spatial_feat_root", default=None, help="Root dir of spatial (ViT) features"
-    )
-    p.add_argument(
-        "--mae_feat_root",
-        default=None,
-        help="Root dir of spatiotemporal (MAE) features",
-    )
-    p.add_argument("--spatial_postfix", default=None)
-    p.add_argument("--spatiotemporal_postfix", default=None)
-    p.add_argument("--max_frame_len", type=int, default=None)
+    p.add_argument("--anno_root", default=None)
+    p.add_argument("--video_root", default=None,
+                   help="Root dir of raw video frames")
+    p.add_argument("--max_frames", type=int, default=None,
+                   help="Max frames per video (sub-sampled uniformly)")
 
     # Model
     p.add_argument("--vit_model_name", default=None)
     p.add_argument("--mae_model_name", default=None)
-    p.add_argument(
-        "--text_model_name", default=None, help="CLIP text encoder for visual-text loss"
-    )
+    p.add_argument("--text_model_name", default=None)
 
     # Feature dimensions
-    p.add_argument(
-        "--spatial_input_dim",
-        type=int,
-        default=None,
-        help="ViT feature dim (2048 with s2wrapping, 1024 without)",
-    )
-    p.add_argument(
-        "--temporal_input_dim", type=int, default=None, help="MAE feature dim"
-    )
-    p.add_argument(
-        "--proj_dim", type=int, default=None, help="Shared projection dimension"
-    )
+    p.add_argument("--spatial_input_dim", type=int, default=None)
+    p.add_argument("--temporal_input_dim", type=int, default=None)
+    p.add_argument("--proj_dim", type=int, default=None)
+
+    # ViT extraction settings
+    p.add_argument("--s2_mode", default=None)
+    p.add_argument("--scales", nargs="+", type=int, default=None)
+    p.add_argument("--vit_nth_layer", type=int, default=None)
+
+    # MAE extraction settings
+    p.add_argument("--mae_nth_layer", type=int, default=None)
+    p.add_argument("--mae_overlap_size", type=int, default=None)
 
     # LoRA
     p.add_argument("--lora_r", type=int, default=None)
@@ -651,12 +723,7 @@ def get_parser():
     p.add_argument("--temperature", type=float, default=None)
     p.add_argument("--cross_modal_weight", type=float, default=None)
     p.add_argument("--visual_text_weight", type=float, default=None)
-    p.add_argument(
-        "--use_text_loss",
-        action="store_true",
-        default=None,
-        help="Include visual-text contrastive loss",
-    )
+    p.add_argument("--use_text_loss", action="store_true", default=None)
     p.add_argument("--no_text_loss", dest="use_text_loss", action="store_false")
 
     # Optimiser
@@ -672,39 +739,32 @@ def get_parser():
     p.add_argument("--accumulate_grad_batches", type=int, default=None)
     p.add_argument("--precision", default=None)
     p.add_argument("--gradient_clip_val", type=float, default=None)
-    p.add_argument(
-        "--patience", type=int, default=None, help="EarlyStopping patience (epochs)"
-    )
+    p.add_argument("--patience", type=int, default=None)
     p.add_argument("--seed", type=int, default=None)
 
     # Misc
     p.add_argument("--cache_dir", default=None)
-    p.add_argument(
-        "--log_dir", default=None, help="Directory for TensorBoard logs and checkpoints"
-    )
-    p.add_argument(
-        "--save_dir",
-        default=None,
-        help="Where to export final LoRA weights (default: <log_dir>/lora_weights)",
-    )
+    p.add_argument("--log_dir", default=None)
+    p.add_argument("--save_dir", default=None)
 
     return p
 
 
-# ── Hard-coded defaults (used when neither YAML nor CLI provide a value) ──
 _DEFAULTS = dict(
     anno_root="./preprocess/Phoenix14T",
-    spatial_feat_root="",
-    mae_feat_root="",
-    spatial_postfix="_None_s2wrapping",
-    spatiotemporal_postfix="_None_overlap-8",
-    max_frame_len=512,
+    video_root="",
+    max_frames=64,
     vit_model_name="openai/clip-vit-large-patch14",
     mae_model_name="MCG-NJU/videomae-large",
     text_model_name="openai/clip-vit-large-patch14",
     spatial_input_dim=2048,
     temporal_input_dim=1024,
     proj_dim=512,
+    s2_mode="s2wrapping",
+    scales=[1, 2],
+    vit_nth_layer=-1,
+    mae_nth_layer=-1,
+    mae_overlap_size=8,
     lora_r=16,
     lora_alpha=32,
     lora_dropout=0.1,
@@ -715,11 +775,11 @@ _DEFAULTS = dict(
     lr=1e-4,
     weight_decay=0.01,
     warmup_ratio=0.1,
-    batch_size=16,
+    batch_size=4,
     num_workers=4,
     max_epochs=50,
     devices=1,
-    accumulate_grad_batches=4,
+    accumulate_grad_batches=8,
     precision="bf16-mixed",
     gradient_clip_val=1.0,
     patience=10,
@@ -734,10 +794,8 @@ def _merge_config(args: argparse.Namespace) -> argparse.Namespace:
     """Merge: hard-coded defaults ← YAML config ← CLI overrides."""
     from omegaconf import OmegaConf
 
-    # Start from hard-coded defaults
     merged = dict(_DEFAULTS)
 
-    # Layer on YAML values (if provided)
     if args.config is not None:
         yaml_cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
         for k, v in yaml_cfg.items():
@@ -746,17 +804,23 @@ def _merge_config(args: argparse.Namespace) -> argparse.Namespace:
             else:
                 print(f"[WARNING] Unknown config key in YAML: '{k}' — ignoring.")
 
-    # Layer on CLI overrides (only values explicitly set by the user)
     cli_dict = vars(args)
     for k, v in cli_dict.items():
-        # if k == "config":
-        #     continue
+        if k == "config":
+            continue
         if v is not None:
             merged[k] = v
 
-    # Build final namespace
     return argparse.Namespace(**merged)
 
+
+# endregion
+
+
+# region MAIN
+# ═══════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ═══════════════════════════════════════════════════════════════════════════
 
 def main():
     raw_args = get_parser().parse_args()
@@ -764,7 +828,7 @@ def main():
     seed_everything(args.seed)
 
     # ── Validate required paths ─────────────────────────────────────
-    for required in ("anno_root", "spatial_feat_root", "mae_feat_root"):
+    for required in ("anno_root", "video_root"):
         val = getattr(args, required, "")
         if not val:
             raise ValueError(
@@ -772,13 +836,10 @@ def main():
             )
 
     # ── Data ────────────────────────────────────────────────────────
-    dm = PairedFeatureDataModule(
+    dm = VideoDataModule(
         anno_root=args.anno_root,
-        spatial_feat_root=args.spatial_feat_root,
-        mae_feat_root=args.mae_feat_root,
-        spatial_postfix=args.spatial_postfix,
-        spatiotemporal_postfix=args.spatiotemporal_postfix,
-        max_frame_len=args.max_frame_len,
+        video_root=args.video_root,
+        max_frames=args.max_frames,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
     )
@@ -798,6 +859,11 @@ def main():
         visual_text_weight=args.visual_text_weight,
         use_text_loss=args.use_text_loss,
         text_model_name=args.text_model_name,
+        s2_mode=args.s2_mode,
+        scales=args.scales,
+        vit_nth_layer=args.vit_nth_layer,
+        mae_nth_layer=args.mae_nth_layer,
+        mae_overlap_size=args.mae_overlap_size,
         lr=args.lr,
         weight_decay=args.weight_decay,
         warmup_ratio=args.warmup_ratio,
@@ -846,17 +912,18 @@ def main():
         log_every_n_steps=10,
     )
 
-    # ── Print configuration summary ─────────────────────────────────
+    # ── Print config summary ────────────────────────────────────────
     cfg_src = args.config or "CLI-only (no YAML)"
     print("=" * 70)
     print("  Encoder Finetuning with LoRA + Contrastive Loss")
-    print(f"  Config loaded from: {cfg_src}")
+    print(f"  Config: {cfg_src}")
     print("=" * 70)
     print(f"  anno_root   : {args.anno_root}")
-    print(f"  spatial_feat: {args.spatial_feat_root}")
-    print(f"  mae_feat    : {args.mae_feat_root}")
+    print(f"  video_root  : {args.video_root}")
+    print(f"  max_frames  : {args.max_frames}")
     print(f"  ViT model   : {args.vit_model_name}")
     print(f"  MAE model   : {args.mae_model_name}")
+    print(f"  s2_mode     : {args.s2_mode}")
     print(f"  LoRA r/α    : {args.lora_r} / {args.lora_alpha}")
     print(f"  Proj dim    : {args.proj_dim}")
     print(f"  Temperature : {args.temperature}")
@@ -869,16 +936,19 @@ def main():
 
     trainer.fit(model, dm)
 
-    # ── Save LoRA weights ───────────────────────────────────────────
+    # ── Save outputs ────────────────────────────────────────────────
     save_dir = args.save_dir or os.path.join(args.log_dir, "lora_weights")
     os.makedirs(save_dir, exist_ok=True)
 
-    # Save the full checkpoint (projections + loss parameters)
+    # 1. Full PL checkpoint (for resuming training)
     full_path = os.path.join(save_dir, "encoder_finetune_full.ckpt")
     trainer.save_checkpoint(full_path)
     print(f"\n✅ Full checkpoint saved → {full_path}")
 
-    # Save just the projection weights (for downstream use)
+    # 2. LoRA adapters as PEFT directories (for extraction scripts)
+    model.save_lora_adapters(save_dir)
+
+    # 3. Projection weights (for downstream SpaMo pipeline)
     proj_state = {
         "proj_spatial": model.proj_spatial.state_dict(),
         "proj_temporal": model.proj_temporal.state_dict(),
@@ -897,21 +967,16 @@ if __name__ == "__main__":
     main()
 # endregion
 
+
 # region usage examples
 """
 python scripts/finetune_encoders.py -c configs/finetune_encoders.yaml
 
-# Example: load config from YAML but override batch_size and devices
+# Example override:
 python scripts/finetune_encoders.py \
     -c configs/finetune_encoders.yaml \
-    --batch_size 32 \
-    --devices 1
-
-python scripts/finetune_encoders.py \
-    --anno_root ./preprocess/Phoenix14T \
-    --spatial_feat_root <vit-features-dir> \
-    --mae_feat_root <mae-features-dir> \
-    --batch_size 16 --max_epochs 50 --devices 2
-
+    --batch_size 2 \
+    --accumulate_grad_batches 16 \
+    --devices 2
 """
 # endregion

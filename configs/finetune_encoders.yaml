@@ -1,23 +1,14 @@
 # ═══════════════════════════════════════════════════════════════════════════
-#  Encoder Finetuning Config  (LoRA + Contrastive Loss)
+#  Encoder Finetuning Config  (LoRA + Contrastive Loss on Raw Frames)
 #
 #  Usage:
-#    python scripts/finetune_encoders.py \
-#        --anno_root ./preprocess/Phoenix14T \
-#        --spatial_feat_root <path-to-vit-features> \
-#        --mae_feat_root     <path-to-mae-features> \
-#        [--config configs/finetune_encoders.yaml]
-#
-#  Or pass any argument directly via CLI (overrides this file).
+#    python scripts/finetune_encoders.py -c configs/finetune_encoders.yaml
 # ═══════════════════════════════════════════════════════════════════════════
 
-# ── Data ──────────────────────────────────────────────────────────────────
+# ── Data (raw video frames) ──────────────────────────────────────────────
 anno_root: ./preprocess/Phoenix14T
-spatial_feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-phoenix14tcompressed-spatial-motion-features/phoenix14tcompressed_spatial_features
-mae_feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-phoenix14tcompressed-spatial-motion-features/phoenix14tcompressed_motion_features
-spatial_postfix: "_None_s2wrapping"
-spatiotemporal_postfix: "_None_overlap-8"
-max_frame_len: 512
+video_root: /kaggle/input/datasets/mariusschmidtmengin/phoenixweather2014t-3rd-attempt/videos_phoenix/videos
+max_frames: 64                               # Max frames per video (uniformly sub-sampled)
 
 # ── Encoder Models ────────────────────────────────────────────────────────
 vit_model_name: openai/clip-vit-large-patch14
@@ -28,6 +19,15 @@ text_model_name: openai/clip-vit-large-patch14
 spatial_input_dim: 2048       # ViT + s2wrapping = 1024 * 2
 temporal_input_dim: 1024      # VideoMAE hidden size
 proj_dim: 512                 # Shared contrastive embedding space
+
+# ── ViT Feature Extraction ──────────────────────────────────────────────
+s2_mode: "s2wrapping"         # Multi-scale feature extraction
+scales: [1, 2]                # Scales for s2wrapping
+vit_nth_layer: -1             # Which hidden layer to use (-1 = last)
+
+# ── MAE Feature Extraction ──────────────────────────────────────────────
+mae_nth_layer: -1             # Which hidden layer to use
+mae_overlap_size: 8           # Sliding window overlap for 16-frame clips
 
 # ── LoRA Parameters ──────────────────────────────────────────────────────
 lora_r: 16                    # LoRA rank
@@ -46,11 +46,11 @@ weight_decay: 0.01            # AdamW weight decay
 warmup_ratio: 0.1             # % of total steps used for warmup
 
 # ── Training ─────────────────────────────────────────────────────────────
-batch_size: 16
+batch_size: 4                 # Smaller batch (raw frames are memory-heavy)
 num_workers: 4
 max_epochs: 50
-devices: 2
-accumulate_grad_batches: 4
+devices: 1
+accumulate_grad_batches: 8    # Effective batch = 4 * 8 = 32
 precision: bf16-mixed
 gradient_clip_val: 1.0
 patience: 10                  # EarlyStopping patience (epochs)
