@@ -326,6 +326,7 @@ class EncoderFinetuneLora(pl.LightningModule):
         # Misc
         cache_dir: Optional[str] = None,
         monitor: str = "val/total_loss",
+        verbose: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -336,6 +337,7 @@ class EncoderFinetuneLora(pl.LightningModule):
         self.warmup_ratio = warmup_ratio
         self.monitor = monitor
         self.use_text_loss = use_text_loss
+        self.verbose = verbose
 
         self.s2_mode = s2_mode
         self.scales = scales or []
@@ -546,6 +548,20 @@ class EncoderFinetuneLora(pl.LightningModule):
 
             texts.append(sample["text"])
 
+            if self.verbose:
+                print(
+                    f"[Verbose] sample={sample['file_id']} | "
+                    f"vit_feats={tuple(vit_feats.shape)} -> "
+                    f"vit_pooled={tuple(vit_pooled.shape)} -> "
+                    f"spatial_embed={tuple(spatial_embed.shape)}"
+                )
+                print(
+                    f"[Verbose] sample={sample['file_id']} | "
+                    f"mae_feats={tuple(mae_feats.shape)} -> "
+                    f"mae_pooled={tuple(mae_pooled.shape)} -> "
+                    f"temporal_embed={tuple(temporal_embed.shape)}"
+                )
+
         if len(spatial_embeds_list) == 0:
             return {
                 "total_loss": torch.tensor(0.0, device=self.device, requires_grad=True)
@@ -553,6 +569,12 @@ class EncoderFinetuneLora(pl.LightningModule):
 
         spatial_embeds = torch.stack(spatial_embeds_list)  # [B, proj_dim]
         temporal_embeds = torch.stack(temporal_embeds_list)  # [B, proj_dim]
+
+        if self.verbose:
+            print(
+                f"[Verbose] batch spatial_embeds={tuple(spatial_embeds.shape)} "
+                f"temporal_embeds={tuple(temporal_embeds.shape)}"
+            )
 
         # ── Text embeddings (optional) ───────────────────────────
         text_embeds = None
@@ -568,6 +590,8 @@ class EncoderFinetuneLora(pl.LightningModule):
                 raw_text = self.text_encoder(**tokens).pooler_output
 
             text_embeds = self.text_proj(raw_text)  # [B, proj_dim]
+            if self.verbose:
+                print(f"[Verbose] text_embeds={tuple(text_embeds.shape)}")
 
         return self.contrastive_loss(spatial_embeds, temporal_embeds, text_embeds)
 
@@ -782,6 +806,12 @@ def get_parser():
     p.add_argument("--cache_dir", default=None)
     p.add_argument("--log_dir", default=None)
     p.add_argument("--save_dir", default=None)
+    p.add_argument(
+        "--verbose",
+        action="store_true",
+        default=None,
+        help="Print tensor dimensions for each forward step.",
+    )
 
     return p
 
@@ -823,6 +853,7 @@ _DEFAULTS = dict(
     cache_dir=None,
     log_dir="logs/encoder_finetune",
     save_dir=None,
+    verbose=False,
 )
 
 
@@ -903,6 +934,7 @@ def main():
         weight_decay=args.weight_decay,
         warmup_ratio=args.warmup_ratio,
         cache_dir=args.cache_dir,
+        verbose=args.verbose,
     )
 
     # ── Callbacks ───────────────────────────────────────────────────
@@ -963,6 +995,7 @@ def main():
     print(f"  Proj dim    : {args.proj_dim}")
     print(f"  Temperature : {args.temperature}")
     print(f"  Text loss   : {args.use_text_loss}")
+    print(f"  Verbose     : {args.verbose}")
     print(f"  LR          : {args.lr}")
     print(f"  Batch size  : {args.batch_size}  (accum: {args.accumulate_grad_batches})")
     print(f"  Devices     : {args.devices}")

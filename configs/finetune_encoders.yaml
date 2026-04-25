@@ -60,3 +60,4 @@ seed: 42
 log_dir: logs/encoder_finetune
 cache_dir: /data3/models
 # save_dir: null              # Defaults to <log_dir>/lora_weights
+verbose: false
