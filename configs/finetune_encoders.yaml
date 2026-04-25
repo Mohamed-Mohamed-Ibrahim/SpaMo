@@ -51,7 +51,7 @@ num_workers: 4
 max_epochs: 2
 devices: 1
 accumulate_grad_batches: 16    # Effective batch = 4 * 8 = 32
-precision: bf16-mixed
+precision: 16-mixed
 gradient_clip_val: 1.0
 patience: 10                  # EarlyStopping patience (epochs)
 seed: 42
