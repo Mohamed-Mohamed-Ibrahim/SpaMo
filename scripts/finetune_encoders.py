@@ -806,8 +806,6 @@ def _merge_config(args: argparse.Namespace) -> argparse.Namespace:
 
     cli_dict = vars(args)
     for k, v in cli_dict.items():
-        if k == "config":
-            continue
         if v is not None:
             merged[k] = v
 
