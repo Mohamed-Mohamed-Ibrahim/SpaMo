@@ -1,0 +1,54 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  ViT (CLIP) Finetuning with LoRA — Configuration
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#  Usage:  python scripts/finetune_vit.py -c configs/finetune_vit.yaml
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Data (raw video frames) ──────────────────────────────────────────────
+anno_root: ./preprocess/Phoenix14TCompressed
+video_root: /kaggle/input/datasets/mariusschmidtmengin/phoenixweather2014t-3rd-attempt/videos_phoenix/videos
+max_frames: 24
+
+# ── Model ────────────────────────────────────────────────────────────────
+vit_model_name: openai/clip-vit-large-patch14
+text_model_name: openai/clip-vit-large-patch14
+
+# ── Feature Dimensions ───────────────────────────────────────────────────
+spatial_input_dim: 1024       # ViT hidden dim (no s2wrapping)
+proj_dim: 512                 # Shared contrastive embedding space
+
+# ── ViT Extraction Settings ─────────────────────────────────────────────
+s2_mode: ""                   # Disable multi-scale to save memory
+scales: [1, 2]
+vit_nth_layer: -1
+
+# ── LoRA ─────────────────────────────────────────────────────────────────
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.1
+
+# ── Loss ─────────────────────────────────────────────────────────────────
+temperature: 0.07
+
+# ── Optimiser ────────────────────────────────────────────────────────────
+lr: 0.0001
+weight_decay: 0.01
+warmup_ratio: 0.1
+
+# ── Training ─────────────────────────────────────────────────────────────
+batch_size: 2
+num_workers: 4
+max_epochs: 50
+devices: 1
+accumulate_grad_batches: 16
+precision: bf16-mixed
+gradient_clip_val: 1.0
+patience: 10
+seed: 42
+
+# ── Paths ────────────────────────────────────────────────────────────────
+log_dir: logs/finetune_vit
+cache_dir: /data3/models
+verbose: true
