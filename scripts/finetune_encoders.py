@@ -36,7 +36,7 @@ from pytorch_lightning.callbacks import (
     LearningRateMonitor,
     EarlyStopping,
 )
-from pytorch_lightning.strategies import DDPStrategy
+from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
 
 from torch.utils.data import Dataset, DataLoader
 
@@ -973,8 +973,17 @@ def main():
 
     # ── Strategy ────────────────────────────────────────────────────
     strategy = "auto"
-    if args.devices > 1:
-        strategy = DDPStrategy(find_unused_parameters=True)
+    # if args.devices > 1:
+        # strategy = DDPStrategy(find_unused_parameters=True)
+
+    strategy = DeepSpeedStrategy(
+        stage=3,                       # Shards parameters, gradients, and optimizer states
+        offload_optimizer=True,        # Moves optimizer states to CPU (huge VRAM saver)
+        offload_parameters=True,       # Moves model weights to CPU (Sequential Offloading)
+        remote_device="cpu",
+        pin_memory=True,
+        logging_batch_size_per_gpu=args.batch_size
+    )
 
     # ── Trainer ─────────────────────────────────────────────────────
     trainer = Trainer(
