@@ -63,7 +63,7 @@ model:
     infoloob_weight: 1.0
 
     # Dynamic Temporal Segmentation and Masking
-    use_dynamic_segmentation: true
+    use_dynamic_segmentation: false
     motion_threshold: 0.8
     use_adaptive_masking: true
     mask_prob: 0.15
