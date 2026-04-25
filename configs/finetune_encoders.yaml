@@ -6,7 +6,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── Data (raw video frames) ──────────────────────────────────────────────
-anno_root: ./preprocess/Phoenix14T
+anno_root: ./preprocess/Phoenix14TCompressed
 video_root: /kaggle/input/datasets/mariusschmidtmengin/phoenixweather2014t-3rd-attempt/videos_phoenix/videos
 max_frames: 64                               # Max frames per video (uniformly sub-sampled)
 
