@@ -46,11 +46,11 @@ weight_decay: 0.01            # AdamW weight decay
 warmup_ratio: 0.1             # % of total steps used for warmup
 
 # ── Training ─────────────────────────────────────────────────────────────
-batch_size: 4                 # Smaller batch (raw frames are memory-heavy)
+batch_size: 2                 # Smaller batch (raw frames are memory-heavy)
 num_workers: 4
 max_epochs: 2
 devices: 1
-accumulate_grad_batches: 8    # Effective batch = 4 * 8 = 32
+accumulate_grad_batches: 16    # Effective batch = 4 * 8 = 32
 precision: bf16-mixed
 gradient_clip_val: 1.0
 patience: 10                  # EarlyStopping patience (epochs)
