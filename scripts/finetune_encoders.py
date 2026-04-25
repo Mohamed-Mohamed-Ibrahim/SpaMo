@@ -586,8 +586,11 @@ class EncoderFinetuneLora(pl.LightningModule):
         # ── Text embeddings (optional) ───────────────────────────
         text_embeds = None
         if self.use_text_loss and hasattr(self, "text_encoder"):
+            # Force text encoder to CPU if Lightning moved it to GPU
+            if next(self.text_encoder.parameters()).device.type != "cpu":
+                self.text_encoder.to("cpu")
+
             with torch.no_grad():
-                # Process on CPU
                 tokens = self.text_tokenizer(
                     texts,
                     padding=True,
