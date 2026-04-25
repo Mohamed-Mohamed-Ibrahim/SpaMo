@@ -656,13 +656,25 @@ class EncoderFinetuneLora(pl.LightningModule):
         if not trainable:
             raise RuntimeError("No trainable parameters found!")
 
-        optimizer = torch.optim.AdamW(
-            trainable,
-            lr=self.lr,
-            weight_decay=self.weight_decay,
-            eps=1e-8,
-            betas=(0.9, 0.98),
-        )
+        if isinstance(self.trainer.strategy, DeepSpeedStrategy):
+        # This is the optimized version for CPU Offloading
+            from deepspeed.ops.adam import DeepSpeedCPUAdam
+            optimizer = DeepSpeedCPUAdam(
+                trainable,
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+                eps=1e-8,
+                betas=(0.9, 0.98),
+            )
+        else:
+            # Fallback for standard DDP or single GPU
+            optimizer = torch.optim.AdamW(
+                trainable,
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+                eps=1e-8,
+                betas=(0.9, 0.98),
+            )
 
         total_steps = int(self.trainer.estimated_stepping_batches)
         warmup_steps = int(total_steps * self.warmup_ratio)
