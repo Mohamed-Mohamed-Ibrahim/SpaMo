@@ -16,12 +16,12 @@ mae_model_name: MCG-NJU/videomae-large
 text_model_name: openai/clip-vit-large-patch14
 
 # ── Feature Dimensions ───────────────────────────────────────────────────
-spatial_input_dim: 2048       # ViT + s2wrapping = 1024 * 2
+spatial_input_dim: 1024       # ViT + s2wrapping = 1024 * 2
 temporal_input_dim: 1024      # VideoMAE hidden size
 proj_dim: 512                 # Shared contrastive embedding space
 
 # ── ViT Feature Extraction ──────────────────────────────────────────────
-s2_mode: "s2wrapping"         # Multi-scale feature extraction
+s2_mode: ""         # Multi-scale feature extraction
 scales: [1, 2]                # Scales for s2wrapping
 vit_nth_layer: -1             # Which hidden layer to use (-1 = last)
 
