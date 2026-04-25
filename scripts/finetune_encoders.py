@@ -575,14 +575,28 @@ class EncoderFinetuneLora(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss_dict = self.forward(batch)
+        batch_size = len(batch)
         for k, v in loss_dict.items():
-            self.log(f"train/{k}", v, prog_bar=(k == "total_loss"), sync_dist=True)
+            self.log(
+                f"train/{k}",
+                v,
+                prog_bar=(k == "total_loss"),
+                sync_dist=True,
+                batch_size=batch_size,
+            )
         return loss_dict["total_loss"]
 
     def validation_step(self, batch, batch_idx):
         loss_dict = self.forward(batch)
+        batch_size = len(batch)
         for k, v in loss_dict.items():
-            self.log(f"val/{k}", v, prog_bar=(k == "total_loss"), sync_dist=True)
+            self.log(
+                f"val/{k}",
+                v,
+                prog_bar=(k == "total_loss"),
+                sync_dist=True,
+                batch_size=batch_size,
+            )
         self._val_losses.append({k: v.item() for k, v in loss_dict.items()})
         return loss_dict["total_loss"]
 
