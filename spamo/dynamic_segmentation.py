@@ -144,6 +144,7 @@ class AdaptiveMasker(nn.Module):
         self.min_len = min_mask_len
         self.max_len = max_mask_len
         self.mask_type = mask_type  # 'zero', 'noise', or 'smooth'
+        self.learnable_mask_token = nn.Parameter(torch.randn(1, 1, 1))
     
     def forward(self, features, importance_scores, lengths, training=True):
         """
