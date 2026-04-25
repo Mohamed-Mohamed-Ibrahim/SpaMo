@@ -84,6 +84,7 @@ torch.set_float32_matmul_precision("high")
 #  CONTRASTIVE LOSSES
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class NTXentLoss(nn.Module):
     """Normalised Temperature-scaled Cross-Entropy (NT-Xent) loss."""
 
@@ -93,7 +94,7 @@ class NTXentLoss(nn.Module):
 
     def forward(
         self,
-        z_spatial: torch.Tensor,   # [B, D]
+        z_spatial: torch.Tensor,  # [B, D]
         z_temporal: torch.Tensor,  # [B, D]
     ) -> torch.Tensor:
         z_spatial = F.normalize(z_spatial, dim=-1)
@@ -153,6 +154,7 @@ class EncoderContrastiveLoss(nn.Module):
 #  DATASET  (Raw video frames — same loading logic as extraction scripts)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class VideoFrameDataset(Dataset):
     """Loads raw video frames for paired ViT + MAE finetuning.
 
@@ -186,8 +188,7 @@ class VideoFrameDataset(Dataset):
         # Filter non-integer keys
         self.valid_keys = sorted([k for k in self.data.keys() if isinstance(k, int)])
         print(
-            f"[VideoFrameDataset] mode={mode}, "
-            f"{len(self.valid_keys)} samples loaded."
+            f"[VideoFrameDataset] mode={mode}, {len(self.valid_keys)} samples loaded."
         )
 
     def __len__(self):
@@ -195,9 +196,7 @@ class VideoFrameDataset(Dataset):
 
     def _center_crop(self, img: Image.Image) -> Image.Image:
         """Resize + center crop to 224x224 (for MAE)."""
-        img = img.resize(
-            (self.RESIZE_SIZE, self.RESIZE_SIZE), resample=Image.BILINEAR
-        )
+        img = img.resize((self.RESIZE_SIZE, self.RESIZE_SIZE), resample=Image.BILINEAR)
         left = (self.RESIZE_SIZE - self.CROP_SIZE) // 2
         top = (self.RESIZE_SIZE - self.CROP_SIZE) // 2
         return img.crop((left, top, left + self.CROP_SIZE, top + self.CROP_SIZE))
@@ -255,8 +254,8 @@ class VideoFrameDataset(Dataset):
         mae_frames = [self._center_crop(f) for f in pil_frames]
 
         return {
-            "pil_frames": pil_frames,        # Original size for ViT
-            "mae_frames": mae_frames,         # 224x224 cropped for MAE
+            "pil_frames": pil_frames,  # Original size for ViT
+            "mae_frames": mae_frames,  # 224x224 cropped for MAE
             "text": text.lower(),
             "file_id": file_id,
             "n_frames": len(pil_frames),
@@ -275,6 +274,7 @@ class VideoFrameDataset(Dataset):
 # ═══════════════════════════════════════════════════════════════════════════
 #  LIGHTNING MODULE
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class EncoderFinetuneLora(pl.LightningModule):
     """
@@ -302,7 +302,7 @@ class EncoderFinetuneLora(pl.LightningModule):
         vit_lora_targets: Optional[List[str]] = None,
         mae_lora_targets: Optional[List[str]] = None,
         # Projections
-        spatial_input_dim: int = 2048,   # ViT with s2wrapping → 1024*2
+        spatial_input_dim: int = 2048,  # ViT with s2wrapping → 1024*2
         temporal_input_dim: int = 1024,  # VideoMAE hidden dim
         proj_dim: int = 512,
         # Losses
@@ -351,8 +351,12 @@ class EncoderFinetuneLora(pl.LightningModule):
         for p in self.vit_encoder.parameters():
             p.requires_grad = False
         self.vit_encoder = self._apply_lora(
-            self.vit_encoder, lora_r, lora_alpha, lora_dropout,
-            vit_lora_targets or ["q_proj", "v_proj"], name="ViT"
+            self.vit_encoder,
+            lora_r,
+            lora_alpha,
+            lora_dropout,
+            vit_lora_targets or ["q_proj", "v_proj"],
+            name="ViT",
         )
 
         # ── Load MAE encoder + apply LoRA ────────────────────────────
@@ -363,8 +367,12 @@ class EncoderFinetuneLora(pl.LightningModule):
         for p in self.mae_encoder.parameters():
             p.requires_grad = False
         self.mae_encoder = self._apply_lora(
-            self.mae_encoder, lora_r, lora_alpha, lora_dropout,
-            mae_lora_targets or ["query", "value"], name="MAE"
+            self.mae_encoder,
+            lora_r,
+            lora_alpha,
+            lora_dropout,
+            mae_lora_targets or ["query", "value"],
+            name="MAE",
         )
 
         # ── Image processors (needed to preprocess raw frames) ───────
@@ -425,9 +433,11 @@ class EncoderFinetuneLora(pl.LightningModule):
         name: str = "",
     ) -> nn.Module:
         config = LoraConfig(
-            r=r, lora_alpha=alpha,
+            r=r,
+            lora_alpha=alpha,
             target_modules=target_modules,
-            lora_dropout=dropout, bias="none",
+            lora_dropout=dropout,
+            bias="none",
         )
         model = get_peft_model(model, config)
         print(f"[LoRA {name}] Applied. Trainable parameters:")
@@ -465,12 +475,15 @@ class EncoderFinetuneLora(pl.LightningModule):
 
         # Forward through ViT with LoRA
         if self.s2_mode == "s2wrapping":
+
             def _vit_forward(inputs):
                 return self.vit_encoder(inputs).hidden_states[self.vit_nth_layer]
 
             outputs = multiscale_forward(
-                _vit_forward, pixel_values,
-                scales=self.scales, num_prefix_token=1,
+                _vit_forward,
+                pixel_values,
+                scales=self.scales,
+                num_prefix_token=1,
             )
         else:
             outputs = self.vit_encoder(pixel_values).hidden_states[self.vit_nth_layer]
@@ -495,9 +508,9 @@ class EncoderFinetuneLora(pl.LightningModule):
 
         all_feats = []
         for clip in clips:
-            inputs = self.mae_image_processor(
-                images=clip, return_tensors="pt"
-            ).to(self.device)
+            inputs = self.mae_image_processor(images=clip, return_tensors="pt").to(
+                self.device
+            )
 
             outputs = self.mae_encoder(
                 **inputs, output_hidden_states=True
@@ -521,26 +534,24 @@ class EncoderFinetuneLora(pl.LightningModule):
 
             # ── ViT: extract per-frame [CLS] → mean pool → project ─
             vit_feats = self._extract_vit_features(pil_frames)  # [N, D_vit]
-            vit_pooled = vit_feats.mean(dim=0, keepdim=True)    # [1, D_vit]
-            spatial_embed = self.proj_spatial(vit_pooled)        # [1, proj_dim]
+            vit_pooled = vit_feats.mean(dim=0, keepdim=True)  # [1, D_vit]
+            spatial_embed = self.proj_spatial(vit_pooled)  # [1, proj_dim]
             spatial_embeds_list.append(spatial_embed.squeeze(0))
 
             # ── MAE: extract per-clip [CLS] → mean pool → project ──
             mae_feats = self._extract_mae_features(mae_frames)  # [N_clips, D_mae]
-            mae_pooled = mae_feats.mean(dim=0, keepdim=True)    # [1, D_mae]
-            temporal_embed = self.proj_temporal(mae_pooled)      # [1, proj_dim]
+            mae_pooled = mae_feats.mean(dim=0, keepdim=True)  # [1, D_mae]
+            temporal_embed = self.proj_temporal(mae_pooled)  # [1, proj_dim]
             temporal_embeds_list.append(temporal_embed.squeeze(0))
 
             texts.append(sample["text"])
 
         if len(spatial_embeds_list) == 0:
             return {
-                "total_loss": torch.tensor(
-                    0.0, device=self.device, requires_grad=True
-                )
+                "total_loss": torch.tensor(0.0, device=self.device, requires_grad=True)
             }
 
-        spatial_embeds = torch.stack(spatial_embeds_list)    # [B, proj_dim]
+        spatial_embeds = torch.stack(spatial_embeds_list)  # [B, proj_dim]
         temporal_embeds = torch.stack(temporal_embeds_list)  # [B, proj_dim]
 
         # ── Text embeddings (optional) ───────────────────────────
@@ -548,8 +559,11 @@ class EncoderFinetuneLora(pl.LightningModule):
         if self.use_text_loss and hasattr(self, "text_encoder"):
             with torch.no_grad():
                 tokens = self.text_tokenizer(
-                    texts, padding=True, truncation=True,
-                    max_length=77, return_tensors="pt",
+                    texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=77,
+                    return_tensors="pt",
                 ).to(self.device)
                 raw_text = self.text_encoder(**tokens).pooler_output
 
@@ -593,9 +607,11 @@ class EncoderFinetuneLora(pl.LightningModule):
             raise RuntimeError("No trainable parameters found!")
 
         optimizer = torch.optim.AdamW(
-            trainable, lr=self.lr,
+            trainable,
+            lr=self.lr,
             weight_decay=self.weight_decay,
-            eps=1e-8, betas=(0.9, 0.98),
+            eps=1e-8,
+            betas=(0.9, 0.98),
         )
 
         total_steps = int(self.trainer.estimated_stepping_batches)
@@ -627,6 +643,7 @@ class EncoderFinetuneLora(pl.LightningModule):
 # ═══════════════════════════════════════════════════════════════════════════
 #  DATA MODULE
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class VideoDataModule(pl.LightningDataModule):
     def __init__(
@@ -681,19 +698,24 @@ class VideoDataModule(pl.LightningDataModule):
 #  CLI  (supports --config YAML + CLI overrides)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def get_parser():
     p = argparse.ArgumentParser(
         description="Finetune ViT & MAE encoders with LoRA + contrastive loss"
     )
-    p.add_argument("-c", "--config", type=str, default=None,
-                   help="Path to YAML config file")
+    p.add_argument(
+        "-c", "--config", type=str, default=None, help="Path to YAML config file"
+    )
 
     # Data paths
     p.add_argument("--anno_root", default=None)
-    p.add_argument("--video_root", default=None,
-                   help="Root dir of raw video frames")
-    p.add_argument("--max_frames", type=int, default=None,
-                   help="Max frames per video (sub-sampled uniformly)")
+    p.add_argument("--video_root", default=None, help="Root dir of raw video frames")
+    p.add_argument(
+        "--max_frames",
+        type=int,
+        default=None,
+        help="Max frames per video (sub-sampled uniformly)",
+    )
 
     # Model
     p.add_argument("--vit_model_name", default=None)
@@ -819,6 +841,7 @@ def _merge_config(args: argparse.Namespace) -> argparse.Namespace:
 # ═══════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def main():
     raw_args = get_parser().parse_args()
