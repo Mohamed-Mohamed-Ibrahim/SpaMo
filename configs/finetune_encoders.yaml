@@ -1,0 +1,62 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Encoder Finetuning Config  (LoRA + Contrastive Loss)
+#
+#  Usage:
+#    python scripts/finetune_encoders.py \
+#        --anno_root ./preprocess/Phoenix14T \
+#        --spatial_feat_root <path-to-vit-features> \
+#        --mae_feat_root     <path-to-mae-features> \
+#        [--config configs/finetune_encoders.yaml]
+#
+#  Or pass any argument directly via CLI (overrides this file).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Data ──────────────────────────────────────────────────────────────────
+anno_root: ./preprocess/Phoenix14T
+spatial_feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-phoenix14tcompressed-spatial-motion-features/phoenix14tcompressed_spatial_features
+mae_feat_root: /kaggle/input/datasets/mohamedmoibrahim/spamo-phoenix14tcompressed-spatial-motion-features/phoenix14tcompressed_motion_features
+spatial_postfix: "_None_s2wrapping"
+spatiotemporal_postfix: "_None_overlap-8"
+max_frame_len: 512
+
+# ── Encoder Models ────────────────────────────────────────────────────────
+vit_model_name: openai/clip-vit-large-patch14
+mae_model_name: MCG-NJU/videomae-large
+text_model_name: openai/clip-vit-large-patch14
+
+# ── Feature Dimensions ───────────────────────────────────────────────────
+spatial_input_dim: 2048       # ViT + s2wrapping = 1024 * 2
+temporal_input_dim: 1024      # VideoMAE hidden size
+proj_dim: 512                 # Shared contrastive embedding space
+
+# ── LoRA Parameters ──────────────────────────────────────────────────────
+lora_r: 16                    # LoRA rank
+lora_alpha: 32                # LoRA scaling factor
+lora_dropout: 0.1             # LoRA dropout
+
+# ── Contrastive Loss ─────────────────────────────────────────────────────
+temperature: 0.07             # NT-Xent temperature
+cross_modal_weight: 1.0       # Weight for spatial ↔ temporal alignment
+visual_text_weight: 0.5       # Weight for visual ↔ text alignment
+use_text_loss: true           # Enable visual-text contrastive loss
+
+# ── Optimizer ─────────────────────────────────────────────────────────────
+lr: 1.0e-4                    # Learning rate
+weight_decay: 0.01            # AdamW weight decay
+warmup_ratio: 0.1             # % of total steps used for warmup
+
+# ── Training ─────────────────────────────────────────────────────────────
+batch_size: 16
+num_workers: 4
+max_epochs: 50
+devices: 2
+accumulate_grad_batches: 4
+precision: bf16-mixed
+gradient_clip_val: 1.0
+patience: 10                  # EarlyStopping patience (epochs)
+seed: 42
+
+# ── Logging ──────────────────────────────────────────────────────────────
+log_dir: logs/encoder_finetune
+cache_dir: /data3/models
+# save_dir: null              # Defaults to <log_dir>/lora_weights
