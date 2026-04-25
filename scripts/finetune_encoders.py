@@ -470,7 +470,7 @@ class EncoderFinetuneLora(pl.LightningModule):
     # ── Encoder feature extraction ───────────────────────────────────
 
     def _extract_vit_features(
-        self, pil_frames: List[Image.Image], chunk_size: int = 8
+        self, pil_frames: List[Image.Image], chunk_size: int = 1
     ) -> torch.Tensor:
         """Run frames through ViT encoder in chunks to save memory."""
         all_cls = []
@@ -499,7 +499,7 @@ class EncoderFinetuneLora(pl.LightningModule):
         return torch.cat(all_cls, dim=0)  # [N_frames, D_vit]
 
     def _extract_mae_features(
-        self, mae_frames: List[Image.Image], chunk_size: int = 2
+        self, mae_frames: List[Image.Image], chunk_size: int = 1
     ) -> torch.Tensor:
         """Run frames through MAE encoder in chunks of clips."""
         if len(mae_frames) < 16:
