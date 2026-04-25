@@ -9,7 +9,7 @@
 # ── Data (raw video frames) ──────────────────────────────────────────────
 anno_root: ./preprocess/Phoenix14TCompressed
 video_root: /kaggle/input/datasets/mariusschmidtmengin/phoenixweather2014t-3rd-attempt/videos_phoenix/videos
-max_frames: 24
+max_frames: 16
 
 # ── Model ────────────────────────────────────────────────────────────────
 mae_model_name: MCG-NJU/videomae-large
@@ -41,7 +41,7 @@ batch_size: 2
 num_workers: 4
 max_epochs: 50
 devices: 1
-accumulate_grad_batches: 16
+accumulate_grad_batches: 4
 precision: bf16-mixed
 gradient_clip_val: 1.0
 patience: 10

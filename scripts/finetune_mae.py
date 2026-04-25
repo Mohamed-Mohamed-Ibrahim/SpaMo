@@ -416,6 +416,7 @@ class MAEFinetuneLora(pl.LightningModule):
     # ── PL hooks ─────────────────────────────────────────────────────
 
     def training_step(self, batch, batch_idx):
+        torch.cuda.empty_cache()
         loss_dict = self.forward(batch)
         batch_size = len(batch)
         for k, v in loss_dict.items():
@@ -429,6 +430,7 @@ class MAEFinetuneLora(pl.LightningModule):
         return loss_dict["total_loss"]
 
     def validation_step(self, batch, batch_idx):
+        torch.cuda.empty_cache()
         loss_dict = self.forward(batch)
         batch_size = len(batch)
         for k, v in loss_dict.items():
@@ -789,3 +791,4 @@ def main():
 if __name__ == "__main__":
     main()
 # endregion
+

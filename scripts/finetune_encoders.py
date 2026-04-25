@@ -1080,4 +1080,11 @@ python scripts/finetune_encoders.py \
     --accumulate_grad_batches 16 \
     --devices 2
 """
+
+"""
+python scripts/finetune_vit.py -c configs/finetune_vit.yaml
+
+python scripts/finetune_mae.py -c configs/finetune_mae.yaml
+
+"""
 # endregion
