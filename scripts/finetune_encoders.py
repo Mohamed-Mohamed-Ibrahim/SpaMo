@@ -418,6 +418,7 @@ class EncoderFinetuneLora(pl.LightningModule):
             self.text_encoder = CLIPTextModel.from_pretrained(
                 text_model_name, cache_dir=cache_dir
             )
+            self.text_encoder.to("cpu")  # Keep text encoder on CPU to save VRAM
             self.text_encoder.eval()
             for p in self.text_encoder.parameters():
                 p.requires_grad = False
@@ -540,11 +541,17 @@ class EncoderFinetuneLora(pl.LightningModule):
             spatial_embed = self.proj_spatial(vit_pooled)  # [1, proj_dim]
             spatial_embeds_list.append(spatial_embed.squeeze(0))
 
+            # Free cache before temporal pass
+            torch.cuda.empty_cache()
+
             # ── MAE: extract per-clip [CLS] → mean pool → project ──
             mae_feats = self._extract_mae_features(mae_frames)  # [N_clips, D_mae]
             mae_pooled = mae_feats.mean(dim=0, keepdim=True)  # [1, D_mae]
             temporal_embed = self.proj_temporal(mae_pooled)  # [1, proj_dim]
             temporal_embeds_list.append(temporal_embed.squeeze(0))
+
+            # Free cache before next sample or loss
+            torch.cuda.empty_cache()
 
             texts.append(sample["text"])
 
@@ -580,16 +587,18 @@ class EncoderFinetuneLora(pl.LightningModule):
         text_embeds = None
         if self.use_text_loss and hasattr(self, "text_encoder"):
             with torch.no_grad():
+                # Process on CPU
                 tokens = self.text_tokenizer(
                     texts,
                     padding=True,
                     truncation=True,
                     max_length=77,
                     return_tensors="pt",
-                ).to(self.device)
+                ).to("cpu")
                 raw_text = self.text_encoder(**tokens).pooler_output
 
-            text_embeds = self.text_proj(raw_text)  # [B, proj_dim]
+            # Move raw_text to GPU for projection (proj head is small)
+            text_embeds = self.text_proj(raw_text.to(self.device))  # [B, proj_dim]
             if self.verbose:
                 print(f"[Verbose] text_embeds={tuple(text_embeds.shape)}")
 
