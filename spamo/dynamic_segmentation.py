@@ -77,8 +77,9 @@ class DynamicSegmenter(nn.Module):
 
     def segment(self, features, importance_scores, lengths):
         """
-        Convert frame-level features into adaptive temporal segments using weighted pooling.
-        Preserves more temporal information compared to hard boundaries.
+        Convert frame-level features into adaptive temporal segments with gentle downsampling.
+        Preserves temporal information by keeping full resolution or gentle 2x downsampling.
+        FIX: Uses quantile-based threshold for stability.
         """
         batch_size, max_len, hidden_dim = features.shape
         segmented_sequences = []
@@ -89,10 +90,8 @@ class DynamicSegmenter(nn.Module):
             seq = features[b, :length]
             scores = importance_scores[b, :length]
             
-            # Adaptive threshold based on score distribution
-            score_mean = scores.mean()
-            score_std = scores.std() + 1e-8
-            adaptive_threshold = score_mean - 0.5 * score_std
+            # FIX 4: Use quantile instead of mean-std for stable threshold
+            adaptive_threshold = scores.quantile(0.3)
             
             boundaries = [0]
             for t in range(1, length):
@@ -102,26 +101,27 @@ class DynamicSegmenter(nn.Module):
             boundaries.append(length)
 
             segments = []
-            segment_scores = []
             
             for start, end in zip(boundaries, boundaries[1:]):
                 if end <= start:
                     continue
                 
                 segment_seq = seq[start:end]
-                segment_score = scores[start:end]
                 
-                # Weighted pooling using importance scores
-                weights = segment_score / (segment_score.sum() + 1e-8)
-                weighted_segment = (segment_seq * weights.unsqueeze(1)).sum(dim=0, keepdim=True)
+                # FIX 3: Don't collapse aggressively - gentle downsampling instead of 1 vector per segment
+                # Keep frames or downsample by 2 if segment is long
+                if segment_seq.shape[0] > 10:
+                    # Gentle downsampling: every 2nd frame
+                    segment_seq = segment_seq[::2]
                 
-                segments.append(weighted_segment)
-                segment_scores.append(scores[start:end].mean().item())
+                segments.append(segment_seq)
 
-            # If no segments found, use weighted average of entire sequence
+            # If no segments found, use full sequence or downsample
             if len(segments) == 0:
-                weights = scores / (scores.sum() + 1e-8)
-                segments = [(seq * weights.unsqueeze(1)).sum(dim=0, keepdim=True)]
+                if seq.shape[0] > 10:
+                    segments = [seq[::2]]
+                else:
+                    segments = [seq]
 
             segmented_sequences.append(torch.cat(segments, dim=0))
             segmented_lengths.append(segmented_sequences[-1].shape[0])
@@ -144,7 +144,6 @@ class AdaptiveMasker(nn.Module):
         self.min_len = min_mask_len
         self.max_len = max_mask_len
         self.mask_type = mask_type  # 'zero', 'noise', or 'smooth'
-        self.learnable_mask_token = nn.Parameter(torch.randn(1, 1, 1))
     
     def forward(self, features, importance_scores, lengths, training=True):
         """
