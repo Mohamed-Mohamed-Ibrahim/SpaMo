@@ -58,6 +58,12 @@ model:
     # aug_span_prob: 0.2
     # aug_channel_prob: 0.1
 
+    use_hyperbolic: true
+    hyp_dim: 256            # embedding dim on the Poincaré ball
+    hyp_init_c: 1.0         # initial curvature (learnable); set 0.001 for near-Euclidean ablation
+    hyp_alpha: 0.1          # weight of hyp loss in final loss sum
+ 
+
 lightning:
   callback:
     learning_rate_logger:
@@ -91,7 +97,7 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: True
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -107,7 +113,7 @@ data:
         mode: dev
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: True
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -123,7 +129,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: True
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""

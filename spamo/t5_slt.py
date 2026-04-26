@@ -20,6 +20,7 @@ from spamo.clip_loss import clip_loss
 from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
+from spamo.geo_sign_hyp import HyperbolicRegulariser
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_float32_matmul_precision('high')
@@ -64,6 +65,12 @@ class FlanT5SLT(AbstractSLT):
         use_spatial: bool = True,
         use_spatiotemporal: bool = True,
         use_pose: bool = False,
+
+        use_hyperbolic: bool = False,
+        hyp_dim: int = 256,
+        hyp_init_c: float = 1.0,
+        hyp_alpha: float = 0.1,
+
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -99,6 +106,12 @@ class FlanT5SLT(AbstractSLT):
         self.use_spatial = use_spatial
         self.use_spatiotemporal = use_spatiotemporal
         self.use_pose = use_pose
+
+        # Geo-Sign hyperbolic branch
+        self.use_hyperbolic = use_hyperbolic
+        self.hyp_dim = hyp_dim
+        self.hyp_init_c = hyp_init_c
+        self.hyp_alpha = hyp_alpha
         
         if self.num_in_context == 0:
             self.use_in_context = False
@@ -180,6 +193,18 @@ class FlanT5SLT(AbstractSLT):
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+
+        # ── Geo-Sign hyperbolic regulariser ───────────────────────
+        if self.use_hyperbolic:
+            from spamo.geo_sign_hyp import HyperbolicRegulariser
+            self.hyp_reg = HyperbolicRegulariser(
+                pose_dim        = self.inter_hidden,           # pose_proj output dim
+                text_dim        = self.t5_model.config.hidden_size,
+                hyp_dim         = self.hyp_dim,
+                init_c          = self.hyp_init_c,
+                label_smoothing = 0.1,
+            )
+        # 
         
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
@@ -479,8 +504,63 @@ class FlanT5SLT(AbstractSLT):
         loss = clip_loss(logits_per_text)
         return loss
 
+
+    # ── Geo-Sign hyperbolic regularisation helper ────────────────────────────
+    def _compute_hyp_loss(self, samples: Dict) -> torch.Tensor:
+        """
+        Computes the Geo-Sign hyperbolic contrastive loss between
+        projected pose features and T5 text embeddings.
+
+        Returns a scalar tensor (0.0 if use_hyperbolic is False or
+        pose_values are empty).
+        """
+        zero = torch.tensor(0.0, device=self.device)
+
+        if not self.use_hyperbolic or not self.training:
+            return zero
+
+        raw_pose = samples.get('pose_values', [])
+        if not raw_pose:
+            return zero
+
+        # ── Rebuild pose features (mirrors prepare_visual_inputs pose branch) ─
+        pose_local = [
+            pv if pv.dim() == 2 else pv.view(pv.shape[0], -1)
+            for pv in raw_pose
+        ]
+        pose_padded = pad_sequence(pose_local, batch_first=True).to(self.device).float()
+        pose_lengths = [int(p.size(0)) for p in pose_local]
+
+        # pose_proj maps (B, T, pose_input_size) → (B, T, inter_hidden)
+        pose_feats = self.pose_proj(pose_padded)                    # (B, T, inter_hidden)
+        pose_mask  = create_mask(seq_lengths=pose_lengths, device=self.device)  # (B, T) bool
+
+        # ── Text embeddings from T5 encoder embed_tokens ─────────────────────
+        output_tokens = self.t5_tokenizer(
+            samples['text'],
+            padding="longest",
+            return_tensors="pt",
+        ).to(self.device)
+
+        with torch.no_grad():
+            text_embeds = self.t5_model.encoder.embed_tokens(
+                output_tokens.input_ids
+            )                                                        # (B, T_txt, hidden)
+
+        text_mask = output_tokens.attention_mask.bool()              # (B, T_txt)
+
+        # ── Hyperbolic contrastive loss ───────────────────────────────────────
+        return self.hyp_reg(pose_feats, pose_mask, text_embeds, text_mask)
+
     def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
         visual_outputs, visual_masks = self.prepare_visual_inputs(inputs)
+
+        # ── Geo-Sign hyperbolic regularisation ───────────────────────────────
+        # Computed here, before fusion_proj collapses the modalities further.
+        # Uses pose_feats that were already produced inside prepare_visual_inputs.
+        hyp_loss = self._compute_hyp_loss(inputs)
+        # ─────────────────────────────────────────────────────────────────────
+
         visual_outputs = self.fusion_proj(visual_outputs)
         
         log_dict = {}
@@ -504,7 +584,8 @@ class FlanT5SLT(AbstractSLT):
                 
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 log_dict[f"{split}/contra_loss"] = cont_loss
-                loss = cont_loss
+                loss = cont_loss + self.hyp_alpha * hyp_loss
+                log_dict[f"{split}/hyp_loss"] = hyp_loss
                 
                 if (
                     self.sign_cl_loss
@@ -548,6 +629,8 @@ class FlanT5SLT(AbstractSLT):
                         loss = loss + self.sign_cl_alpha * sign_cl_loss_val
                         log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
                 
+                loss = loss + self.hyp_alpha * hyp_loss
+                log_dict[f"{split}/hyp_loss"] = hyp_loss
                 log_dict[f"{split}/combined_loss"] = loss
         else:
             input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
@@ -563,8 +646,9 @@ class FlanT5SLT(AbstractSLT):
                 return_dict=True
             )
             
-            loss = outputs.loss
-            log_dict[f"{split}/loss"] = loss
+            loss = outputs.loss + self.hyp_alpha * hyp_loss
+            log_dict[f"{split}/loss"] = outputs.loss       # log CE loss alone
+            log_dict[f"{split}/hyp_loss"] = hyp_loss
 
         if split != "train":
             input_embeds, input_masks, _, _ = self.prepare_inputs(
