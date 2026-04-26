@@ -61,7 +61,7 @@ model:
     use_hyperbolic: true
     hyp_dim: 256            # embedding dim on the Poincaré ball
     hyp_init_c: 1.0         # initial curvature (learnable); set 0.001 for near-Euclidean ablation
-    hyp_alpha: 0.1          # weight of hyp loss in final loss sum
+    hyp_alpha: 0.5          # weight of hyp loss in final loss sum
  
 
 lightning:
