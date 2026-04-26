@@ -11,12 +11,13 @@ video_root: /kaggle/input/datasets/mariusschmidtmengin/phoenixweather2014t-3rd-a
 max_frames: 24                               # Max frames per video (uniformly sub-sampled)
 
 # ── Encoder Models ────────────────────────────────────────────────────────
-vit_model_name: openai/clip-vit-large-patch14
+# vit_model_name: openai/clip-vit-large-patch14
+vit_model_name: openai/clip-vit-base-patch16
 mae_model_name: MCG-NJU/videomae-large
 text_model_name: openai/clip-vit-large-patch14
 
 # ── Feature Dimensions ───────────────────────────────────────────────────
-spatial_input_dim: 1024       # ViT + s2wrapping = 1024 * 2
+spatial_input_dim: 768       # ViT + s2wrapping = 1024 * 2
 temporal_input_dim: 1024      # VideoMAE hidden size
 proj_dim: 512                 # Shared contrastive embedding space
 
