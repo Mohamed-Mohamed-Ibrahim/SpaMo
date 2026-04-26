@@ -12,11 +12,13 @@ video_root: /kaggle/input/datasets/mariusschmidtmengin/phoenixweather2014t-3rd-a
 max_frames: 16
 
 # ── Model ────────────────────────────────────────────────────────────────
-vit_model_name: openai/clip-vit-large-patch14
+# vit_model_name: openai/clip-vit-large-patch14
+vit_model_name: openai/clip-vit-base-patch14
 text_model_name: openai/clip-vit-large-patch14
 
 # ── Feature Dimensions ───────────────────────────────────────────────────
-spatial_input_dim: 1024       # ViT hidden dim (no s2wrapping)
+# spatial_input_dim: 1024       # ViT hidden dim (no s2wrapping)
+spatial_input_dim: 768       # ViT hidden dim (no s2wrapping)
 proj_dim: 512                 # Shared contrastive embedding space
 
 # ── ViT Extraction Settings ─────────────────────────────────────────────
