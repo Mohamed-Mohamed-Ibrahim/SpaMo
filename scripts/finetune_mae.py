@@ -351,12 +351,12 @@ class MAEFinetuneLora(pl.LightningModule):
         all_feats = []
         for i in range(0, len(clips), chunk_size):
             batch_clips = clips[i : i + chunk_size]
-            # Convert back to numpy or list of images for the processor if needed, 
-            # but processor usually accepts a list of [T, C, H, W] or a list of lists of PIL.
-            # Actually, the processor for VideoMAE usually expects List[List[PIL]] or List[np.ndarray].
             
-            # Let's convert to list of numpy arrays [T, H, W, C]
-            clip_list = [c.cpu().numpy() for c in batch_clips]
+            # Convert to List[List[PIL.Image]] - The safest format for the VideoMAE processor
+            clip_list = [
+                [Image.fromarray(f) for f in c.cpu().numpy()]
+                for c in batch_clips
+            ]
             
             inputs = self.mae_image_processor(images=clip_list, return_tensors="pt").to(
                 self.device
