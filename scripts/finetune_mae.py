@@ -788,16 +788,24 @@ def main():
 
     trainer.fit(model, dm)
 
+    # ── Load best weights before saving ─────────────────────────────
+    best_ckpt = trainer.checkpoint_callback.best_model_path
+    if best_ckpt:
+        print(f"\n[Post-Training] Loading best weights from: {best_ckpt}")
+        # Explicitly load the state dict from the best checkpoint
+        checkpoint = torch.load(best_ckpt, map_location=model.device)
+        model.load_state_dict(checkpoint["state_dict"])
+    else:
+        print("\n[WARNING] No best checkpoint found, saving last weights.")
+
     # ── Save outputs ────────────────────────────────────────────────
     save_dir = args.save_dir or os.path.join(args.log_dir, "lora_weights")
     os.makedirs(save_dir, exist_ok=True)
 
-    full_path = os.path.join(save_dir, "mae_finetune_full.ckpt")
-    trainer.save_checkpoint(full_path)
-    print(f"\n✅ Full checkpoint saved → {full_path}")
-
+    # Save the PEFT/LoRA adapter
     model.save_lora_adapter(save_dir)
 
+    # Save the projection headers specifically
     proj_path = os.path.join(save_dir, "mae_projection_weights.pt")
     torch.save(
         {
@@ -806,7 +814,7 @@ def main():
         },
         proj_path,
     )
-    print(f"✅ Projection weights saved → {proj_path}")
+    print(f"✅ Best projection weights saved → {proj_path}")
     print("\n🎉 MAE finetuning complete!")
 
 
