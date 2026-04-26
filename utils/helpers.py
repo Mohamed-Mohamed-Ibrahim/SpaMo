@@ -92,6 +92,7 @@ def read_video(fname, start_time=None, end_time=None):
     Returns:
         list: A list of frames extracted from the specified time range.
     """
+    container = None
     try:
         container = av.open(fname)
         duration = container.duration * (1 / av.time_base)
@@ -117,8 +118,11 @@ def read_video(fname, start_time=None, end_time=None):
                 frames.append(frame.to_image())
         return frames
     except Exception as e:
-        print(e)
+        print(f"[read_video] Error: {e}")
         return []
+    finally:
+        if container is not None:
+            container.close()
 
 
 def sliding_window_for_list(data_list, window_size, overlap_size):
