@@ -134,52 +134,59 @@ class VideoFrameDataset(Dataset):
             text = text + "."
 
         # ── Load frames ──────────────────────────────────────────
-        pil_frames = []
+        raw_frames = []
         if self.ds_name in ["Phoenix14T", "CSL-Daily"]:
             image_paths = get_img_list(self.ds_name, self.video_root, fname)
             for p in image_paths:
                 try:
-                    img = Image.open(p).convert("RGB")
-                    pil_frames.append(img)
+                    with Image.open(p) as img:
+                        raw_frames.append(img.convert("RGB"))
                 except Exception as e:
                     print(f"[WARNING] Failed to load {p}: {e}")
 
         elif self.ds_name in ["How2Sign", "Phoenix14TCompressed"]:
             s = entry.get("original_info", {}).get("START_REALIGNED", None)
             e = entry.get("original_info", {}).get("END_REALIGNED", None)
-            try:
-                s = float(s) if s is not None else None
-            except (ValueError, TypeError):
-                s = None
-            try:
-                e = float(e) if e is not None else None
-            except (ValueError, TypeError):
-                e = None
+            try: s = float(s) if s is not None else None
+            except: s = None
+            try: e = float(e) if e is not None else None
+            except: e = None
+            
             raw_frames = read_video(fname, start_time=s, end_time=e)
-            for f in raw_frames:
-                if isinstance(f, np.ndarray):
-                    pil_frames.append(Image.fromarray(f).convert("RGB"))
-                elif isinstance(f, Image.Image):
-                    pil_frames.append(f.convert("RGB"))
+            # read_video returns PIL images
         else:
             raise NotImplementedError(f"Unknown dataset: {self.ds_name}")
 
-        if len(pil_frames) == 0:
+        if not raw_frames:
             return None
 
-        # ── Sub-sample if too many frames ────────────────────────
-        if len(pil_frames) > self.max_frames:
-            indices = np.linspace(0, len(pil_frames) - 1, self.max_frames, dtype=int)
-            pil_frames = [pil_frames[i] for i in indices]
+        # ── Sub-sample BEFORE processing all frames ────────────────
+        if len(raw_frames) > self.max_frames:
+            indices = np.linspace(0, len(raw_frames) - 1, self.max_frames, dtype=int)
+            raw_frames = [raw_frames[i] for i in indices]
 
-        # ── Create MAE-cropped copies ────────────────────────────
-        mae_frames = [self._center_crop(f) for f in pil_frames]
+        # ── Process & Convert to Tensor ──────────────────────────
+        # Resizing and cropping immediately saves RAM
+        processed_frames = []
+        for f in raw_frames:
+            # Resize + Crop
+            p_img = self._center_crop(f)
+            # Convert to numpy then to torch
+            arr = np.array(p_img, dtype=np.uint8)
+            processed_frames.append(arr)
+            
+            # Explicitly close original frame to free memory
+            if hasattr(f, 'close'):
+                f.close()
+            p_img.close()
 
+        # Stack into [T, H, W, C]
+        video_tensor = torch.from_numpy(np.stack(processed_frames)) # uint8 saves RAM over float32
+        
         return {
-            "mae_frames": mae_frames,
+            "mae_frames": video_tensor, # Now a [T, H, W, C] uint8 tensor
             "text": text.lower(),
             "file_id": file_id,
-            "n_frames": len(mae_frames),
         }
 
     @staticmethod
@@ -321,18 +328,37 @@ class MAEFinetuneLora(pl.LightningModule):
     # ── Feature extraction ───────────────────────────────────────────
 
     def _extract_mae_features(
-        self, mae_frames: List[Image.Image], chunk_size: int = 1
+        self, mae_frames: torch.Tensor, chunk_size: int = 1
     ) -> torch.Tensor:
         """Run frames through MAE encoder one clip at a time to save memory."""
-        if len(mae_frames) < 16:
-            mae_frames = mae_frames + [mae_frames[-1]] * (16 - len(mae_frames))
+        # mae_frames: [T, H, W, C] uint8
+        T = mae_frames.shape[0]
+        if T < 16:
+            padding = mae_frames[-1:].expand(16 - T, -1, -1, -1)
+            mae_frames = torch.cat([mae_frames, padding], dim=0)
+            T = 16
 
-        clips = sliding_window_for_list(mae_frames, 16, self.mae_overlap_size)
+        # Create windows manually (since sliding_window_for_list is for lists)
+        step_size = 16 - self.mae_overlap_size
+        clips = []
+        for i in range(0, T, step_size):
+            if i + 16 <= T:
+                clips.append(mae_frames[i : i + 16])
+        
+        if not clips: # Fallback
+            clips = [mae_frames[:16]]
+
         all_feats = []
-
         for i in range(0, len(clips), chunk_size):
-            chunk = clips[i : i + chunk_size]
-            inputs = self.mae_image_processor(images=chunk, return_tensors="pt").to(
+            batch_clips = clips[i : i + chunk_size]
+            # Convert back to numpy or list of images for the processor if needed, 
+            # but processor usually accepts a list of [T, C, H, W] or a list of lists of PIL.
+            # Actually, the processor for VideoMAE usually expects List[List[PIL]] or List[np.ndarray].
+            
+            # Let's convert to list of numpy arrays [T, H, W, C]
+            clip_list = [c.cpu().numpy() for c in batch_clips]
+            
+            inputs = self.mae_image_processor(images=clip_list, return_tensors="pt").to(
                 self.device
             )
 
@@ -343,7 +369,7 @@ class MAEFinetuneLora(pl.LightningModule):
             all_feats.append(outputs[:, 0])
 
             # Free intermediate memory
-            del inputs
+            del inputs, outputs
             torch.cuda.empty_cache()
 
         return torch.cat(all_feats, dim=0)  # [N_clips, D_mae]
