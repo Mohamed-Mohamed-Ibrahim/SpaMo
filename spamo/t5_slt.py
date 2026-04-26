@@ -205,6 +205,9 @@ class FlanT5SLT(AbstractSLT):
                 label_smoothing = 0.1,
             )
         # 
+        print(f"use_hyperbolic: {self.use_hyperbolic}" + 
+              (f" | hyp_dim={self.hyp_dim}, init_c={self.hyp_init_c}, hyp_alpha={self.hyp_alpha}" 
+               if self.use_hyperbolic else ""))
         
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
