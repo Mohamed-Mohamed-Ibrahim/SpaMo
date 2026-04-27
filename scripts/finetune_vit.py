@@ -240,7 +240,7 @@ class ViTFinetuneLora(pl.LightningModule):
             vit_model_name,
             output_hidden_states=True,
             cache_dir=cache_dir,
-            use_safetensors=True,
+            use_safetensors=False,
         )
         for p in self.vit_encoder.parameters():
             p.requires_grad = False
@@ -276,7 +276,7 @@ class ViTFinetuneLora(pl.LightningModule):
             text_model_name, cache_dir=cache_dir
         )
         self.text_encoder = CLIPTextModel.from_pretrained(
-            text_model_name, cache_dir=cache_dir, use_safetensors=True
+            text_model_name, cache_dir=cache_dir, use_safetensors=False
         )
         self.text_encoder.to("cpu")
         self.text_encoder.eval()
