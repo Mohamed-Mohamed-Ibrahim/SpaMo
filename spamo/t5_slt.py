@@ -393,6 +393,19 @@ class FlanT5SLT(AbstractSLT):
             pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
             new_length = spatial_length + spatiotemporal_length + pose_length
 
+            # MASKING BEFORE temporal encoder (on original features)
+            if self.use_adaptive_masking:
+                # Generate uniform importance scores for masking (no segmentation info yet)
+                importance_scores_spatial = torch.full_like(spatial_outputs[:, :, 0], 0.5)
+                spatial_outputs = self.masker(spatial_outputs, importance_scores_spatial, spatial_length.tolist(), self.training)
+                
+                importance_scores_st = torch.full_like(spatiotemporal_outputs[:, :, 0], 0.5)
+                spatiotemporal_outputs = self.masker(spatiotemporal_outputs, importance_scores_st, spatiotemporal_length.tolist(), self.training)
+                
+                if pose:
+                    importance_scores_pose = torch.full_like(pose_outputs[:, :, 0], 0.5)
+                    pose_outputs = self.masker(pose_outputs, importance_scores_pose, pose_length.tolist(), self.training)
+
             # Concatenate spatial, spatiotemporal and pose features for each sample
             joint_outputs = []
             for i in range(bs):
@@ -415,17 +428,11 @@ class FlanT5SLT(AbstractSLT):
             visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
             visual_lengths = visual_conv_outputs['feat_len'].to(torch.int).tolist()
             
-            # FIX 5: Only apply segmentation after warmup epoch
+            # FIX 5: Only apply SEGMENTATION (not masking) after warmup epoch
             seg_enabled = self.current_epoch >= self.segmentation_warmup_epochs
-            if seg_enabled and (self.use_dynamic_segmentation or self.use_adaptive_masking):
-                importance_scores = None
-                if self.use_dynamic_segmentation:
-                    importance_scores = self.segmenter(visual_outputs, visual_lengths)
-                    visual_outputs, visual_lengths = self.segmenter.segment(visual_outputs, importance_scores, visual_lengths)
-                if self.use_adaptive_masking:
-                    if importance_scores is None:
-                        importance_scores = self.segmenter(visual_outputs, visual_lengths)
-                    visual_outputs = self.masker(visual_outputs, importance_scores, visual_lengths, self.training)
+            if seg_enabled and self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(visual_outputs, visual_lengths)
+                visual_outputs, visual_lengths = self.segmenter.segment(visual_outputs, importance_scores, visual_lengths)
 
             visual_masks = create_mask(seq_lengths=visual_lengths, device=self.device)
         
@@ -441,6 +448,17 @@ class FlanT5SLT(AbstractSLT):
                     align_corners=False
                 ).permute(0, 2, 1)
 
+            # MASKING BEFORE temporal encoder (on original features)
+            if self.use_adaptive_masking:
+                spatial_length = spatial_mask.sum(1).tolist()
+                spatiotemporal_length = spatiotemporal_mask.sum(1).tolist()
+                
+                importance_scores_spatial = torch.full_like(spatial_outputs[:, :, 0], 0.5)
+                spatial_outputs = self.masker(spatial_outputs, importance_scores_spatial, spatial_length, self.training)
+                
+                importance_scores_st = torch.full_like(spatiotemporal_outputs[:, :, 0], 0.5)
+                spatiotemporal_outputs = self.masker(spatiotemporal_outputs, importance_scores_st, spatiotemporal_length, self.training)
+
             # 2. Apply Adaptive Fusion
             # Returns (B, T, C)
             fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
@@ -455,17 +473,11 @@ class FlanT5SLT(AbstractSLT):
             visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
             visual_lengths = visual_conv_outputs['feat_len'].to(torch.int).tolist()
 
-            # FIX 5: Only apply segmentation after warmup epoch
+            # FIX 5: Only apply SEGMENTATION (not masking) after warmup epoch
             seg_enabled = self.current_epoch >= self.segmentation_warmup_epochs
-            if seg_enabled and (self.use_dynamic_segmentation or self.use_adaptive_masking):
-                importance_scores = None
-                if self.use_dynamic_segmentation:
-                    importance_scores = self.segmenter(visual_outputs, visual_lengths)
-                    visual_outputs, visual_lengths = self.segmenter.segment(visual_outputs, importance_scores, visual_lengths)
-                if self.use_adaptive_masking:
-                    if importance_scores is None:
-                        importance_scores = self.segmenter(visual_outputs, visual_lengths)
-                    visual_outputs = self.masker(visual_outputs, importance_scores, visual_lengths, self.training)
+            if seg_enabled and self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(visual_outputs, visual_lengths)
+                visual_outputs, visual_lengths = self.segmenter.segment(visual_outputs, importance_scores, visual_lengths)
 
             visual_masks = create_mask(seq_lengths=visual_lengths, device=self.device)
 
@@ -480,6 +492,11 @@ class FlanT5SLT(AbstractSLT):
             else:
                 raise NotImplementedError("Invalid fusion mode")
 
+            # MASKING BEFORE temporal encoder (on original features)
+            if self.use_adaptive_masking:
+                importance_scores = torch.full_like(active_outputs[:, :, 0], 0.5)
+                active_outputs = self.masker(active_outputs, importance_scores, active_lens, self.training)
+
             # FIX 2: Apply temporal encoder FIRST for non-spatiotemporal, then segmentation
             if self.fusion_mode == 'spatiotemporal':
                 visual_outputs = active_outputs
@@ -491,17 +508,11 @@ class FlanT5SLT(AbstractSLT):
                 visual_outputs = conv_outputs['visual_feat'].permute(1,0,2)
                 visual_lengths = conv_outputs['feat_len'].to(torch.int).tolist()
 
-            # FIX 5: Only apply segmentation after warmup epoch
+            # FIX 5: Only apply SEGMENTATION (not masking) after warmup epoch
             seg_enabled = self.current_epoch >= self.segmentation_warmup_epochs
-            if seg_enabled and (self.use_dynamic_segmentation or self.use_adaptive_masking):
-                importance_scores = None
-                if self.use_dynamic_segmentation:
-                    importance_scores = self.segmenter(visual_outputs, visual_lengths)
-                    visual_outputs, visual_lengths = self.segmenter.segment(visual_outputs, importance_scores, visual_lengths)
-                if self.use_adaptive_masking:
-                    if importance_scores is None:
-                        importance_scores = self.segmenter(visual_outputs, visual_lengths)
-                    visual_outputs = self.masker(visual_outputs, importance_scores, visual_lengths, self.training)
+            if seg_enabled and self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(visual_outputs, visual_lengths)
+                visual_outputs, visual_lengths = self.segmenter.segment(visual_outputs, importance_scores, visual_lengths)
 
             visual_masks = create_mask(seq_lengths=visual_lengths, device=self.device)
 
