@@ -730,7 +730,7 @@ def main():
     # ── Strategy ────────────────────────────────────────────────────
     strategy = "auto"
     if args.devices > 1:
-        strategy = DDPStrategy(find_unused_parameters=True)
+        strategy = DDPStrategy(find_unused_parameters=True, broadcast_buffers=False)
 
     # ── Trainer ─────────────────────────────────────────────────────
     trainer = Trainer(
