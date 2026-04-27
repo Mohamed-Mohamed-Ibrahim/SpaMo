@@ -263,7 +263,7 @@ class FlanT5SLT(AbstractSLT):
             pose = self.fusion_mode == 'pose'
 
         if spatial:
-            pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
+            pixel_values = pad_sequence(samples['pixel_values'], batch_first=True).to(self.dtype)
 
             if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
                 pixel_values = self.augmenter(pixel_values, samples['num_frames'])
@@ -272,7 +272,7 @@ class FlanT5SLT(AbstractSLT):
             spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
         
         if spatiotemporal:
-            spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True)
+            spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True).to(self.dtype)
             
             if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
                 spatiotemporal_outputs = self.augmenter(spatiotemporal_outputs, samples['glor_lengths'])
@@ -284,11 +284,11 @@ class FlanT5SLT(AbstractSLT):
             raw_pose_values = samples.get('pose_values', [])
             pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in raw_pose_values]
             if len(pose_values_local) > 0:
-                pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.device).float()
+                pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.dtype)
                 pose_lengths = [int(p.size(0)) for p in pose_values_local]
             else:
                 B = len(samples['pixel_values'])
-                pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=torch.float32)
+                pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=self.dtype)
                 pose_lengths = [0] * B
             pose_outputs = self.pose_proj(pose_padded)
             if not hasattr(self, '_pose_printed'):
