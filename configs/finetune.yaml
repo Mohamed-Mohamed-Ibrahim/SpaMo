@@ -2,18 +2,18 @@ model:
   target: spamo.t5_slt.FlanT5SLT
   params:
 
-    lr: 1.0e-4
+    lr: 6.0e-4
     min_lr: 5.0e-5
     monitor: val/bleu4
     model_name: google/flan-t5-xl
     cache_dir: /home/omar_bishr/spamo_workspace/huggingface_cache
 
-    inter_hidden: 2048
+    inter_hidden: 1024
 
     #inter_hidden: 768
     input_size: 2048
     beam_size: 5
-    max_frame_len: 260
+    max_frame_len: 512
     max_txt_len: 128
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
@@ -28,7 +28,7 @@ model:
 
     # Increase regularization
     lora_dropout: 0.05
-    weight_decay: 0.001
+    weight_decay: 0.01
 
     fusion_mode: joint
 
