@@ -348,7 +348,10 @@ class EncoderFinetuneLora(pl.LightningModule):
         # ── Load ViT encoder + apply LoRA ────────────────────────────
         print("[EncoderFinetuneLora] Loading ViT encoder...")
         self.vit_encoder = CLIPVisionModel.from_pretrained(
-            vit_model_name, output_hidden_states=True, cache_dir=cache_dir
+            vit_model_name,
+            output_hidden_states=True,
+            cache_dir=cache_dir,
+            use_safetensors=False,
         )
         for p in self.vit_encoder.parameters():
             p.requires_grad = False
@@ -364,7 +367,7 @@ class EncoderFinetuneLora(pl.LightningModule):
         # ── Load MAE encoder + apply LoRA ────────────────────────────
         print("[EncoderFinetuneLora] Loading MAE encoder...")
         self.mae_encoder = VideoMAEModel.from_pretrained(
-            mae_model_name, cache_dir=cache_dir
+            mae_model_name, cache_dir=cache_dir, use_safetensors=False
         )
         for p in self.mae_encoder.parameters():
             p.requires_grad = False
@@ -416,7 +419,7 @@ class EncoderFinetuneLora(pl.LightningModule):
                 text_model_name, cache_dir=cache_dir
             )
             self.text_encoder = CLIPTextModel.from_pretrained(
-                text_model_name, cache_dir=cache_dir
+                text_model_name, cache_dir=cache_dir, use_safetensors=False
             )
             self.text_encoder.to("cpu")  # Keep text encoder on CPU to save VRAM
             self.text_encoder.eval()
@@ -870,7 +873,7 @@ _DEFAULTS = dict(
     max_epochs=50,
     devices=1,
     accumulate_grad_batches=8,
-    precision="bf16-mixed",
+    precision="16",
     gradient_clip_val=1.0,
     patience=10,
     seed=42,
