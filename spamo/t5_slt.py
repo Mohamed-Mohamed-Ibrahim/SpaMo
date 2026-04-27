@@ -201,7 +201,7 @@ class FlanT5SLT(AbstractSLT):
             t5_model, 
             cache_dir=self.cache_dir,
             torch_dtype=torch.bfloat16,
-            use_safetensors=True 
+            use_safetensors=False 
         )
 
         self.t5_model.tie_weights()
