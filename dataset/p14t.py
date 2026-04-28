@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
 from spamo.constants import *
 import random
-
+import json
 
 class Phoenix14T(torch.utils.data.Dataset):
     """
@@ -73,6 +73,19 @@ class Phoenix14T(torch.utils.data.Dataset):
             raise FileNotFoundError(f"Annotation file not found: {anno_path}")
         
         self.data = np.load(anno_path, allow_pickle=True).item()
+
+        # --- NEW: Load the Similarity Map ---
+        map_path = self.anno_root / f'{mode}_similarity_map.json'
+        if map_path.exists():
+            with open(map_path, 'r') as f:
+                # Convert string keys from JSON back to integers
+                self.similarity_map = {int(k): int(v) for k, v in json.load(f).items()}
+            # ADD THIS PRINT
+            print(f"\033[92m[SUCCESS] Loaded {len(self.similarity_map)} context mappings from {map_path.name}!\033[0m")
+        else:
+            self.similarity_map = None
+            print(f"\033[91m[WARNING] Similarity map not found at {map_path}. Context will be random.\033[0m")
+        # ------------------------------------
         
         # Set up directory paths
         self.spatial_dir = self.feat_root / self.mode
@@ -218,19 +231,23 @@ class Phoenix14T(torch.utils.data.Dataset):
                 result[f'{lang}_text'] = data[f'{lang}_text']
 
         # ---------------------------------------------------------
-        # NEW FIX: ANTI-LEAKAGE CONTEXT GENERATOR
+        # NEW FIX: SEMANTIC NEAREST-NEIGHBOR CONTEXT
         # ---------------------------------------------------------
-        # Pick a random DIFFERENT video from the dataset to serve as context.
-        # This guarantees the context translation NEVER matches the target.
-        rand_idx = index
-        max_idx = len(self.data) - 2 # Valid dataset indices
+        # Instead of a random video, we use the pre-computed similarity map
+        # to find the most semantically relevant sentence.
         
-        while rand_idx == index:
-            rand_idx = random.randint(0, max_idx)
-            
-        rand_data = self.data[rand_idx]
+        if self.similarity_map is not None and index in self.similarity_map:
+            sim_idx = self.similarity_map[index]
+        else:
+            # Fallback to random if the map fails to load
+            sim_idx = index
+            max_idx = len(self.data) - 2
+            while sim_idx == index:
+                sim_idx = random.randint(0, max_idx)
+                
+        rand_data = self.data[sim_idx]
         
-        # Store the random video's text under special 'ctx_' keys
+        # Store the semantic twin's text under special 'ctx_' keys
         result['ctx_text'] = self._normalize_text(rand_data['text'])
         for lang in ['en', 'es', 'fr']:
             if f'{lang}_text' in rand_data:

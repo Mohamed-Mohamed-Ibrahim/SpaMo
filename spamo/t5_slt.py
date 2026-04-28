@@ -262,7 +262,12 @@ class FlanT5SLT(AbstractSLT):
         
         if self.use_in_context:
             prompts = [f"{p} {c}" for p, c in zip(prompts, samples['ex_lang_trans'])]
-        
+
+        # ADD THIS DEBUG PRINT (Only prints on the first batch)
+        if getattr(self, "printed_prompt", False) == False:
+            print(f"\n\033[93m[PROMPT DEBUG] Example Prompt:\n{prompts}\033[0m\n")
+            self.printed_prompt = True
+
         input_tokens = self.t5_tokenizer(
             prompts,
             padding="longest",
@@ -487,13 +492,13 @@ class FlanT5SLT(AbstractSLT):
 
             # <--- FIX: Clean context handling
             _ex_lang_trans = []
-            if self.num_in_context > 0:
-                if 'ctx_en_text' in sample and 'ctx_text' in sample:
-                    _ex_lang_trans = [
-                        f"{sample.get('ctx_en_text','')}={sample['ctx_text']}",
-                        # f"{sample.get('ctx_fr_text','')}={sample['ctx_text']}",
-                        # f"{sample.get('ctx_es_text','')}={sample['ctx_text']}"
-                    ]
+            if self.num_in_context > 0 and 'ctx_text' in sample:
+                    
+                _ex_lang_trans = [
+                    f"{sample.get('ctx_en_text','')}={sample['ctx_text']}",
+                    f"{sample.get('ctx_fr_text','')}={sample['ctx_text']}",
+                    f"{sample.get('ctx_es_text','')}={sample['ctx_text']}"
+                ]
             
                 # Keep only the number requested
                 trimmed = _ex_lang_trans[:self.num_in_context]
@@ -519,9 +524,9 @@ class FlanT5SLT(AbstractSLT):
                     glor_values.append(sample['glor_value'])
                     glor_lengths.append(len(sample['glor_value']))
 
-        # Only shuffle if we are actually USING context
-        if self.use_in_context and len(ex_lang_translations) > 1:
-            ex_lang_translations = derangement(ex_lang_translations)
+        # # Only shuffle if we are actually USING context
+        # if self.use_in_context and len(ex_lang_translations) > 1:
+        #     ex_lang_translations = derangement(ex_lang_translations)
 
         return {
             'pixel_values': pixel_values,
