@@ -42,6 +42,30 @@ model:
     sign_cl_temporal_window: 12
     sign_cl_every_n_steps: 1
 
+    # Spatial <-> Spatiotemporal contrastive loss (computed BEFORE feature merging)
+    # Aligns the two streams (spatial: ~100-300 frames, spatiotemporal: ~20-50 clips)
+    # via one of five strategies, then applies a symmetric CLIP loss.
+    st_cl_loss: true
+    st_cl_alpha: 1          # weight of this loss in the total loss
+
+    # alignment_mode – how to make the two streams comparable before computing similarity:
+    #   padding        – zero-pad the shorter stream to match the longer one, then mean-pool
+    #   interp_nearest – 1-D nearest-neighbour interpolation to the same length, then mean-pool
+    #   interp_linear  – 1-D linear interpolation to the same length, then mean-pool
+    #   reduction      – independently mean-pool each stream (simplest, no length alignment)
+    #   attention      – cross-attention: spatiotemporal queries attend over spatial keys/values
+    st_cl_alignment_mode: "padding"
+
+    # st_cl_proj_dim: shared projection dim before similarity (0 = no projection, use inter_hidden)
+    st_cl_proj_dim: 0
+
+    # attention-mode specific (ignored for other modes)
+    st_cl_num_heads: 4        # number of attention heads
+    st_cl_attn_dropout: 0.0   # dropout in cross-attention
+
+    # learnable log-temperature initialisation (CLIP default ≈ 2.6592 = ln(14))
+    st_cl_temperature_init: 2.6592
+
     use_in_context: false
     num_in_context: 0
     # NEW AUGMENTATION PARAMETERS
