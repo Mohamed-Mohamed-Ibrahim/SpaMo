@@ -369,7 +369,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         
         return joint_outputs, joint_mask, output_tokens, targets
 
-  def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
+    def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
       if self.fusion_mode == 'joint':
           spatial = self.use_spatial
           spatiotemporal = self.use_spatiotemporal
