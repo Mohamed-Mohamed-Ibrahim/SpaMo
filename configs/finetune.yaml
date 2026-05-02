@@ -54,7 +54,7 @@ model:
     #   interp_linear  – 1-D linear interpolation to the same length, then mean-pool
     #   reduction      – independently mean-pool each stream (simplest, no length alignment)
     #   attention      – cross-attention: spatiotemporal queries attend over spatial keys/values
-    st_cl_alignment_mode: "padding"
+    st_cl_alignment_mode: "interp_linear"
 
     # st_cl_proj_dim: shared projection dim before similarity (0 = no projection, use inter_hidden)
     st_cl_proj_dim: 0
