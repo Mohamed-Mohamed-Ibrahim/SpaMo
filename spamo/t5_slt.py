@@ -20,6 +20,8 @@ from spamo.clip_loss import clip_loss
 from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
+from spamo.ctc_mixin import CTCMixin
+from spamo.geo_sign_hyp import HyperbolicRegulariser
 from sentence_transformers import SentenceTransformer
 from spamo.dynamic_segmentation import DynamicSegmenter, AdaptiveMasker
 
@@ -28,7 +30,7 @@ from spamo.dynamic_segmentation import DynamicSegmenter, AdaptiveMasker
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_float32_matmul_precision('high')
 
-class FlanT5SLT(AbstractSLT):
+class FlanT5SLT(CTCMixin, AbstractSLT):
     """
     FlanT5-based Sign Language Translation model.
     Features: Spatial (ViT/ResNet) + Spatiotemporal (VideoMAE/C3D).
@@ -68,13 +70,23 @@ class FlanT5SLT(AbstractSLT):
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
         use_data_augmentation: bool = True,
-
-        # NEW: 3 Augmentation Parameters
         augmentation_prob: float = 0.5,
         aug_frame_prob: float = 0.1,
         aug_span_prob: float = 0.1,
         aug_channel_prob: float = 0.05,
 
+        conv_type: int = 2,
+        use_ctc: bool = False,
+        ctc_weight: float = 0.3,
+        ctc_blank_id: int = -1,
+        use_spatial: bool = True,
+        use_spatiotemporal: bool = True,
+        use_pose: bool = False,
+
+        use_hyperbolic: bool = False,
+        hyp_dim: int = 256,
+        hyp_init_c: float = 1.0,
+        hyp_alpha: float = 0.1,
         # NEW: InfoLOOB Loss Parameters
         use_infoloob_loss: bool = False,
         infoloob_temperature: float = 0.07,
@@ -94,7 +106,6 @@ class FlanT5SLT(AbstractSLT):
     ):
         super().__init__(**kwargs)
         
-        # Configuration parameters
         self.input_size = input_size
         self.pose_input_size = pose_input_size
         self.prompt = prompt
@@ -130,18 +141,34 @@ class FlanT5SLT(AbstractSLT):
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
         
-        # <--- FIX: Force disable context if count is 0
+        self.use_spatial = use_spatial
+        self.use_spatiotemporal = use_spatiotemporal
+        self.use_pose = use_pose
+
+        # Geo-Sign hyperbolic branch
+        self.use_hyperbolic = use_hyperbolic
+        self.hyp_dim = hyp_dim
+        self.hyp_init_c = hyp_init_c
+        self.hyp_alpha = hyp_alpha
+        
         if self.num_in_context == 0:
             self.use_in_context = False
-
         
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
+        
+        self.conv_type = conv_type
+        self._ctc_use      = use_ctc
+        self._ctc_weight   = ctc_weight
+        self._ctc_blank_id = ctc_blank_id
+
         print("==="*40)
         print(f"use_data_augmentation: {use_data_augmentation}")
-        print(f"sign_cl_loss{sign_cl_loss}")
+        print(f"sign_cl_loss: {sign_cl_loss}")
+        print(f"use_ctc: {use_ctc}  |  ctc_weight: {ctc_weight}")
+        print(f"conv_type: {conv_type}")
         print("==="*40)
         
         # NEW: Dynamic Temporal Segmentation and Masking
@@ -159,16 +186,13 @@ class FlanT5SLT(AbstractSLT):
         
         # Save hyperparameters (ensures self.hparams.lr exists)
         self.save_hyperparameters()
-        
         self.prepare_models(model_name)
 
-        # Apply the selected tuning strategy
         if tuning_type == 'freeze':
             self._freeze_model()
         elif tuning_type == 'lora':
             self._apply_lora()
 
-        # Data augmenter
         if self.use_data_augmentation:
             self.augmenter = FeatureAugmenter(
                 aug_prob=augmentation_prob,
@@ -179,7 +203,6 @@ class FlanT5SLT(AbstractSLT):
             print(
                 f"[AUG] Enabled | frame={aug_frame_prob}, span={aug_span_prob}, channel={aug_channel_prob}"
             )
-
 
         self.set_container()
         
@@ -211,7 +234,6 @@ class FlanT5SLT(AbstractSLT):
         self.references = []
 
     def prepare_models(self, t5_model: str) -> None:
-        # Load the textual model
         self.t5_model = T5ForConditionalGeneration.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
@@ -219,24 +241,34 @@ class FlanT5SLT(AbstractSLT):
             use_safetensors=False 
         )
         
-        # Load the tokenizer
         self.t5_tokenizer = AutoTokenizer.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
             max_length=self.max_txt_len,
         )
 
-        # Load the vision projectors (Spatial + Spatiotemporal ONLY)
-        self.spatio_proj = build_vision_projector('linear', self.input_size, self.inter_hidden)
+        self.spatio_proj = build_vision_projector('linear', 2048, self.inter_hidden)
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
-        # Pose projector: default pose size is 33 keypoints * 3 coords = 99
         self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
         
-        # Load the temporal encoder
-        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
+        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden, conv_type=self.conv_type)
+
+        # ── Geo-Sign hyperbolic regulariser ───────────────────────
+        if self.use_hyperbolic:
+            from spamo.geo_sign_hyp import HyperbolicRegulariser
+            self.hyp_reg = HyperbolicRegulariser(
+                pose_dim        = self.inter_hidden,           # pose_proj output dim
+                text_dim        = self.t5_model.config.hidden_size,
+                hyp_dim         = self.hyp_dim,
+                init_c          = self.hyp_init_c,
+                label_smoothing = 0.1,
+            )
+        # 
+        print(f"use_hyperbolic: {self.use_hyperbolic}" + 
+              (f" | hyp_dim={self.hyp_dim}, init_c={self.hyp_init_c}, hyp_alpha={self.hyp_alpha}" 
+               if self.use_hyperbolic else ""))
         
-        # Initialize adaptive fusion if fusion_mode is 'adaptive'
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
                 input_size_1=self.inter_hidden, 
@@ -245,8 +277,6 @@ class FlanT5SLT(AbstractSLT):
                 output_size=3
             )
             
-
-        # Initialize SignCL loss if enabled
         if self.sign_cl_loss:
             self.sign_cl = TemporalSignCLLoss(
                 temperature=self.sign_cl_temperature,
@@ -266,6 +296,15 @@ class FlanT5SLT(AbstractSLT):
 
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
+        # initialise CTC head via mixin 
+        self.init_ctc(
+            hidden_size  = self.t5_model.config.hidden_size,
+            vocab_size   = self.t5_model.config.vocab_size,
+            blank_id_cfg = self._ctc_blank_id,
+            tokenizer    = self.t5_tokenizer,
+            ctc_weight   = self._ctc_weight,
+            use_ctc      = self._ctc_use,
+        )
         # Knowledge Transfer components
         if self.use_kt_loss:
             self.sbert = SentenceTransformer('all-mpnet-base-v2')
@@ -289,7 +328,6 @@ class FlanT5SLT(AbstractSLT):
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
         bs = visual_outputs.shape[0]
         
-        # Prepare the prompt
         prompts = [f'{self.prompt}'] * bs
         prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
         
@@ -331,203 +369,421 @@ class FlanT5SLT(AbstractSLT):
         
         return joint_outputs, joint_mask, output_tokens, targets
 
-    def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Prepare visual inputs based on the fusion mode.
-        
-        Args:
-            samples: Input samples containing visual features
-            
-        Returns:
-            Tuple of (visual_outputs, visual_masks)
-        """
-        # Determine which visual features to use based on fusion mode
-        if self.fusion_mode in ['joint', 'adaptive']:
-            spatial = spatiotemporal = pose = True
-        else:
-            spatial = self.fusion_mode == 'spatial'
-            spatiotemporal = self.fusion_mode == 'spatiotemporal'
-            pose = self.fusion_mode == 'pose'
+  def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
+      if self.fusion_mode == 'joint':
+          spatial = self.use_spatial
+          spatiotemporal = self.use_spatiotemporal
+          pose = self.use_pose
+      elif self.fusion_mode == 'adaptive':
+          spatial = spatiotemporal = pose = True
+      else:
+          spatial = self.fusion_mode == 'spatial'
+          spatiotemporal = self.fusion_mode == 'spatiotemporal'
+          pose = self.fusion_mode == 'pose'
 
-        # Process spatial features
-        if spatial:
-            pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
+      if spatial:
+          pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
 
-            if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
-                pixel_values = self.augmenter(pixel_values, samples['num_frames'])
+          if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
+              pixel_values = self.augmenter(pixel_values, samples['num_frames'])
 
-            spatial_outputs = self.spatio_proj(pixel_values)
-            spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
-        
-        # Process spatiotemporal features
-        if spatiotemporal:
-            spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True)
-            
-            if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
-                spatiotemporal_outputs = self.augmenter(spatiotemporal_outputs, samples['glor_lengths'])
-            
-            spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
-            spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
-        
-        # Process pose features if needed
-        if pose:
-            # pose_values should be a list of [T, pose_input_size] tensors (cpu tensors from get_inputs)
-            raw_pose_values = samples.get('pose_values', [])
-            pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in raw_pose_values]
-            if len(pose_values_local) > 0:
-                # pad and move to device; ensure float dtype
-                pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.device).float()
-                pose_lengths = [int(p.size(0)) for p in pose_values_local]
-            else:
-                B = len(samples['pixel_values'])
-                pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=torch.float32)
-                pose_lengths = [0] * B
-            pose_outputs = self.pose_proj(pose_padded)
-            pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
-        
-        # Combine features for joint mode
-        if self.fusion_mode == 'joint':
-            bs = spatial_outputs.shape[0]
-            spatial_length = spatial_mask.sum(1)
-            spatiotemporal_length = spatiotemporal_mask.sum(1)
-            pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
-            new_length = spatial_length + spatiotemporal_length + pose_length
+          spatial_outputs = self.spatio_proj(pixel_values)
+          spatial_mask = create_mask(
+              seq_lengths=samples['num_frames'],
+              device=self.device
+          )
 
-            # MASKING BEFORE temporal encoder (on original features)
-            if self.use_adaptive_masking:
-                # Generate uniform importance scores for masking (no segmentation info yet)
-                importance_scores_spatial = torch.full_like(spatial_outputs[:, :, 0], 0.5)
-                spatial_outputs = self.masker(spatial_outputs, importance_scores_spatial, spatial_length.tolist(), self.training)
-                
-                importance_scores_st = torch.full_like(spatiotemporal_outputs[:, :, 0], 0.5)
-                spatiotemporal_outputs = self.masker(spatiotemporal_outputs, importance_scores_st, spatiotemporal_length.tolist(), self.training)
-                
-                if pose:
-                    importance_scores_pose = torch.full_like(pose_outputs[:, :, 0], 0.5)
-                    pose_outputs = self.masker(pose_outputs, importance_scores_pose, pose_length.tolist(), self.training)
+      if spatiotemporal:
+          spatiotemporal_outputs = pad_sequence(
+              samples['glor_values'],
+              batch_first=True
+          )
 
-            # Concatenate spatial, spatiotemporal and pose features for each sample
-            joint_outputs = []
-            for i in range(bs):
-                parts = []
-                if spatial:
-                    parts.append(spatial_outputs[i, :spatial_length[i], :])
-                if spatiotemporal:
-                    parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
-                if pose:
-                    parts.append(pose_outputs[i, :pose_length[i], :])
-                concat_sample = torch.cat(parts, dim=0)
-                joint_outputs.append(concat_sample)
-            joint_outputs = pad_sequence(joint_outputs, batch_first=True)
+          if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
+              spatiotemporal_outputs = self.augmenter(
+                  spatiotemporal_outputs,
+                  samples['glor_lengths']
+              )
 
-            # FIX 2: Apply temporal encoder FIRST, then segmentation
-            visual_conv_outputs = self.temporal_encoder(
-                joint_outputs.permute(0,2,1), torch.tensor(new_length, device=self.device)
-            )
+          spatiotemporal_outputs = self.spatiotemp_proj(
+              spatiotemporal_outputs
+          )
 
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1,0,2)
-            visual_lengths = visual_conv_outputs['feat_len'].to(torch.int).tolist()
-            
-            # FIX 5: Only apply SEGMENTATION (not masking) after warmup epoch
-            seg_enabled = self.current_epoch >= self.segmentation_warmup_epochs
-            if seg_enabled and self.use_dynamic_segmentation:
-                importance_scores = self.segmenter(visual_outputs, visual_lengths)
-                visual_outputs, visual_lengths = self.segmenter.segment(visual_outputs, importance_scores, visual_lengths)
+          spatiotemporal_mask = create_mask(
+              seq_lengths=samples['glor_lengths'],
+              device=self.device
+          )
 
-            visual_masks = create_mask(seq_lengths=visual_lengths, device=self.device)
-        
-        elif self.fusion_mode == 'adaptive':
-            
-            # 1. Align Dimensions: Interpolate spatiotemporal (T_st) to match spatial (T_s) length
-            # Input shapes are (B, T, C). Interpolate expects (B, C, T)
-            if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
-                spatiotemporal_outputs = F.interpolate(
-                    spatiotemporal_outputs.permute(0, 2, 1), 
-                    size=spatial_outputs.shape[1], 
-                    mode='linear', 
-                    align_corners=False
-                ).permute(0, 2, 1)
+      if pose:
+          raw_pose_values = samples.get('pose_values', [])
 
-            # MASKING BEFORE temporal encoder (on original features)
-            if self.use_adaptive_masking:
-                spatial_length = spatial_mask.sum(1).tolist()
-                spatiotemporal_length = spatiotemporal_mask.sum(1).tolist()
-                
-                importance_scores_spatial = torch.full_like(spatial_outputs[:, :, 0], 0.5)
-                spatial_outputs = self.masker(spatial_outputs, importance_scores_spatial, spatial_length, self.training)
-                
-                importance_scores_st = torch.full_like(spatiotemporal_outputs[:, :, 0], 0.5)
-                spatiotemporal_outputs = self.masker(spatiotemporal_outputs, importance_scores_st, spatiotemporal_length, self.training)
+          pose_values_local = [
+              pv if pv.dim() == 2 else pv.view(pv.shape[0], -1)
+              for pv in raw_pose_values
+          ]
 
-            # 2. Apply Adaptive Fusion
-            # Returns (B, T, C)
-            fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
+          if len(pose_values_local) > 0:
+              pose_padded = pad_sequence(
+                  pose_values_local,
+                  batch_first=True
+              ).to(self.device).float()
 
-            # 3. Pass through Temporal Encoder FIRST
-            fused_lengths = samples['num_frames']
-            visual_conv_outputs = self.temporal_encoder(
-                fused_outputs.permute(0, 2, 1), 
-                torch.tensor(fused_lengths, device=self.device)
-            )
+              pose_lengths = [
+                  int(p.size(0))
+                  for p in pose_values_local
+              ]
+          else:
+              B = len(samples['pixel_values'])
+              pose_padded = torch.zeros(
+                  (B, 1, self.pose_input_size),
+                  device=self.device,
+                  dtype=torch.float32
+              )
+              pose_lengths = [0] * B
 
-            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
-            visual_lengths = visual_conv_outputs['feat_len'].to(torch.int).tolist()
+          pose_outputs = self.pose_proj(pose_padded)
 
-            # FIX 5: Only apply SEGMENTATION (not masking) after warmup epoch
-            seg_enabled = self.current_epoch >= self.segmentation_warmup_epochs
-            if seg_enabled and self.use_dynamic_segmentation:
-                importance_scores = self.segmenter(visual_outputs, visual_lengths)
-                visual_outputs, visual_lengths = self.segmenter.segment(visual_outputs, importance_scores, visual_lengths)
+          if not hasattr(self, '_pose_printed'):
+              print(
+                  f"[POSE DEBUG] shape={pose_padded.shape}, "
+                  f"mean={pose_padded[0].abs().mean():.6f}, "
+                  f"zeros={pose_padded[0].abs().sum()==0}"
+              )
+              self._pose_printed = True
 
-            visual_masks = create_mask(seq_lengths=visual_lengths, device=self.device)
+          pose_mask = create_mask(
+              seq_lengths=pose_lengths,
+              device=self.device
+          )
 
-        else:
-            # Single feature mode
-            if spatial:
-                active_outputs, active_lens = spatial_outputs, samples['num_frames']
-            elif spatiotemporal:
-                active_outputs, active_lens = spatiotemporal_outputs, samples['glor_lengths']
-            elif pose:
-                active_outputs, active_lens = pose_outputs, pose_lengths
-            else:
-                raise NotImplementedError("Invalid fusion mode")
+      # =========================================================
+      # JOINT FUSION
+      # =========================================================
 
-            # MASKING BEFORE temporal encoder (on original features)
-            if self.use_adaptive_masking:
-                importance_scores = torch.full_like(active_outputs[:, :, 0], 0.5)
-                active_outputs = self.masker(active_outputs, importance_scores, active_lens, self.training)
+      if self.fusion_mode == 'joint':
+          bs = spatial_outputs.shape[0]
 
-            # FIX 2: Apply temporal encoder FIRST for non-spatiotemporal, then segmentation
-            if self.fusion_mode == 'spatiotemporal':
-                visual_outputs = active_outputs
-                visual_lengths = active_lens
-            else:
-                conv_outputs = self.temporal_encoder(
-                    active_outputs.permute(0,2,1), torch.tensor(active_lens, device=self.device)
-                )
-                visual_outputs = conv_outputs['visual_feat'].permute(1,0,2)
-                visual_lengths = conv_outputs['feat_len'].to(torch.int).tolist()
+          spatial_length = spatial_mask.sum(1)
+          spatiotemporal_length = spatiotemporal_mask.sum(1)
+          pose_length = (
+              pose_mask.sum(1)
+              if pose else torch.zeros_like(spatial_length)
+          )
 
-            # FIX 5: Only apply SEGMENTATION (not masking) after warmup epoch
-            seg_enabled = self.current_epoch >= self.segmentation_warmup_epochs
-            if seg_enabled and self.use_dynamic_segmentation:
-                importance_scores = self.segmenter(visual_outputs, visual_lengths)
-                visual_outputs, visual_lengths = self.segmenter.segment(visual_outputs, importance_scores, visual_lengths)
+          new_length = (
+              spatial_length
+              + spatiotemporal_length
+              + pose_length
+          )
 
-            visual_masks = create_mask(seq_lengths=visual_lengths, device=self.device)
+          # ---------------------------------------------
+          # Adaptive masking BEFORE temporal encoder
+          # ---------------------------------------------
+          if self.use_adaptive_masking:
+              if spatial:
+                  importance_scores_spatial = torch.full_like(
+                      spatial_outputs[:, :, 0],
+                      0.5
+                  )
 
-        return visual_outputs, visual_masks
+                  spatial_outputs = self.masker(
+                      spatial_outputs,
+                      importance_scores_spatial,
+                      spatial_length.tolist(),
+                      self.training
+                  )
+
+              if spatiotemporal:
+                  importance_scores_st = torch.full_like(
+                      spatiotemporal_outputs[:, :, 0],
+                      0.5
+                  )
+
+                  spatiotemporal_outputs = self.masker(
+                      spatiotemporal_outputs,
+                      importance_scores_st,
+                      spatiotemporal_length.tolist(),
+                      self.training
+                  )
+
+              if pose:
+                  importance_scores_pose = torch.full_like(
+                      pose_outputs[:, :, 0],
+                      0.5
+                  )
+
+                  pose_outputs = self.masker(
+                      pose_outputs,
+                      importance_scores_pose,
+                      pose_length.tolist(),
+                      self.training
+                  )
+
+          # ---------------------------------------------
+          # Concatenate modalities
+          # ---------------------------------------------
+          joint_outputs = []
+
+          for i in range(bs):
+              parts = []
+
+              if spatial:
+                  parts.append(
+                      spatial_outputs[i, :spatial_length[i], :]
+                  )
+
+              if spatiotemporal:
+                  parts.append(
+                      spatiotemporal_outputs[
+                          i,
+                          :spatiotemporal_length[i],
+                          :
+                      ]
+                  )
+
+              if pose:
+                  parts.append(
+                      pose_outputs[i, :pose_length[i], :]
+                  )
+
+              concat_sample = torch.cat(parts, dim=0)
+              joint_outputs.append(concat_sample)
+
+          joint_outputs = pad_sequence(
+              joint_outputs,
+              batch_first=True
+          )
+
+          # ---------------------------------------------
+          # Temporal encoder FIRST
+          # ---------------------------------------------
+          visual_conv_outputs = self.temporal_encoder(
+              joint_outputs.permute(0, 2, 1),
+              torch.tensor(new_length, device=self.device)
+          )
+
+          visual_outputs = visual_conv_outputs[
+              'visual_feat'
+          ].permute(1, 0, 2)
+
+          visual_lengths = visual_conv_outputs[
+              'feat_len'
+          ].to(torch.int).tolist()
+
+          # ---------------------------------------------
+          # Dynamic segmentation AFTER encoder
+          # ---------------------------------------------
+          seg_enabled = (
+              self.current_epoch
+              >= self.segmentation_warmup_epochs
+          )
+
+          if seg_enabled and self.use_dynamic_segmentation:
+              importance_scores = self.segmenter(
+                  visual_outputs,
+                  visual_lengths
+              )
+
+              visual_outputs, visual_lengths = (
+                  self.segmenter.segment(
+                      visual_outputs,
+                      importance_scores,
+                      visual_lengths
+                  )
+              )
+
+          visual_masks = create_mask(
+              seq_lengths=visual_lengths,
+              device=self.device
+          )
+
+      # =========================================================
+      # ADAPTIVE FUSION
+      # =========================================================
+
+      elif self.fusion_mode == 'adaptive':
+          if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
+              spatiotemporal_outputs = F.interpolate(
+                  spatiotemporal_outputs.permute(0, 2, 1),
+                  size=spatial_outputs.shape[1],
+                  mode='linear',
+                  align_corners=False
+              ).permute(0, 2, 1)
+
+          # ---------------------------------------------
+          # Adaptive masking BEFORE encoder
+          # ---------------------------------------------
+          if self.use_adaptive_masking:
+              spatial_length = spatial_mask.sum(1).tolist()
+              spatiotemporal_length = spatiotemporal_mask.sum(1).tolist()
+
+              importance_scores_spatial = torch.full_like(
+                  spatial_outputs[:, :, 0],
+                  0.5
+              )
+
+              spatial_outputs = self.masker(
+                  spatial_outputs,
+                  importance_scores_spatial,
+                  spatial_length,
+                  self.training
+              )
+
+              importance_scores_st = torch.full_like(
+                  spatiotemporal_outputs[:, :, 0],
+                  0.5
+              )
+
+              spatiotemporal_outputs = self.masker(
+                  spatiotemporal_outputs,
+                  importance_scores_st,
+                  spatiotemporal_length,
+                  self.training
+              )
+
+          # ---------------------------------------------
+          # Adaptive fusion
+          # ---------------------------------------------
+          fused_outputs = self.adaptive_fusion(
+              spatial_outputs,
+              spatiotemporal_outputs,
+              pose_outputs
+          )
+
+          fused_lengths = samples['num_frames']
+
+          # ---------------------------------------------
+          # Temporal encoder FIRST
+          # ---------------------------------------------
+          visual_conv_outputs = self.temporal_encoder(
+              fused_outputs.permute(0, 2, 1),
+              torch.tensor(fused_lengths, device=self.device)
+          )
+
+          visual_outputs = visual_conv_outputs[
+              'visual_feat'
+          ].permute(1, 0, 2)
+
+          visual_lengths = visual_conv_outputs[
+              'feat_len'
+          ].to(torch.int).tolist()
+
+          # ---------------------------------------------
+          # Dynamic segmentation AFTER encoder
+          # ---------------------------------------------
+          seg_enabled = (
+              self.current_epoch
+              >= self.segmentation_warmup_epochs
+          )
+
+          if seg_enabled and self.use_dynamic_segmentation:
+              importance_scores = self.segmenter(
+                  visual_outputs,
+                  visual_lengths
+              )
+
+              visual_outputs, visual_lengths = (
+                  self.segmenter.segment(
+                      visual_outputs,
+                      importance_scores,
+                      visual_lengths
+                  )
+              )
+
+          visual_masks = create_mask(
+              seq_lengths=visual_lengths,
+              device=self.device
+          )
+
+      # =========================================================
+      # SINGLE MODALITY
+      # =========================================================
+
+      else:
+          if spatial:
+              active_outputs = spatial_outputs
+              active_lens = samples['num_frames']
+
+          elif spatiotemporal:
+              active_outputs = spatiotemporal_outputs
+              active_lens = samples['glor_lengths']
+
+          elif pose:
+              active_outputs = pose_outputs
+              active_lens = pose_lengths
+
+          else:
+              raise NotImplementedError(
+                  "Invalid fusion mode"
+              )
+
+          # ---------------------------------------------
+          # Adaptive masking BEFORE encoder
+          # ---------------------------------------------
+          if self.use_adaptive_masking:
+              importance_scores = torch.full_like(
+                  active_outputs[:, :, 0],
+                  0.5
+              )
+
+              active_outputs = self.masker(
+                  active_outputs,
+                  importance_scores,
+                  active_lens,
+                  self.training
+              )
+
+          # ---------------------------------------------
+          # Temporal encoder FIRST
+          # ---------------------------------------------
+          if self.fusion_mode == 'spatiotemporal':
+              visual_outputs = active_outputs
+              visual_lengths = active_lens
+
+          else:
+              conv_outputs = self.temporal_encoder(
+                  active_outputs.permute(0, 2, 1),
+                  torch.tensor(active_lens, device=self.device)
+              )
+
+              visual_outputs = conv_outputs[
+                  'visual_feat'
+              ].permute(1, 0, 2)
+
+              visual_lengths = conv_outputs[
+                  'feat_len'
+              ].to(torch.int).tolist()
+
+          # ---------------------------------------------
+          # Dynamic segmentation AFTER encoder
+          # ---------------------------------------------
+          seg_enabled = (
+              self.current_epoch
+              >= self.segmentation_warmup_epochs
+          )
+
+          if seg_enabled and self.use_dynamic_segmentation:
+              importance_scores = self.segmenter(
+                  visual_outputs,
+                  visual_lengths
+              )
+
+              visual_outputs, visual_lengths = (
+                  self.segmenter.segment(
+                      visual_outputs,
+                      importance_scores,
+                      visual_lengths
+                  )
+              )
+
+          visual_masks = create_mask(
+              seq_lengths=visual_lengths,
+              device=self.device
+          )
+
+      return visual_outputs, visual_masks
 
     def get_inputs(self, batch: List) -> Dict:
-        """
-        Process batch inputs into a structured dictionary.
-        
-        Args:
-            batch: Raw batch from dataloader
-
-        Returns:
-            Processed inputs dictionary
-        """
         pixel_values, glor_values, masks, ids = [], [], [], []
         pose_values = []
         texts, glosses = [], []
@@ -548,7 +804,6 @@ class FlanT5SLT(AbstractSLT):
             glosses.append(sample['gloss'])
             langs.append(sample['lang'])
 
-            # <--- FIX: Clean context handling
             _ex_lang_trans = []
             if self.num_in_context > 0:
                 if 'en_text' in sample and 'text' in sample:
@@ -558,14 +813,10 @@ class FlanT5SLT(AbstractSLT):
                         f"{sample.get('es_text','')}={sample['text']}"
                     ]
             
-                # Keep only the number requested
                 trimmed = _ex_lang_trans[:self.num_in_context]
-            
-                # Join them into one string
                 ex_lang_translations.append(' '.join(trimmed))
             else:
                 ex_lang_translations.append("")
-
 
             if nframe > max_frame_len:
                 nframe = max_frame_len
@@ -575,7 +826,13 @@ class FlanT5SLT(AbstractSLT):
             num_frames.append(nframe)
             pixel_values.append(pval)
 
-            # Removed Pose and I3D processing blocks
+            pv = sample.get('pose_value')
+            if pv is not None and isinstance(pv, torch.Tensor) and pv.numel() > 0:
+                if pv.dim() == 1:
+                    pv = pv.unsqueeze(0)
+                pose_values.append(pv.float())
+            else:
+                pose_values.append(torch.zeros(1, self.pose_input_size, dtype=torch.float32))
 
             if sample.get('glor_value') is not None:
                 if isinstance(sample['glor_value'], list):
@@ -585,7 +842,6 @@ class FlanT5SLT(AbstractSLT):
                     glor_values.append(sample['glor_value'])
                     glor_lengths.append(len(sample['glor_value']))
 
-        # Only shuffle if we are actually USING context
         if self.use_in_context and len(ex_lang_translations) > 1:
             ex_lang_translations = derangement(ex_lang_translations)
 
@@ -667,56 +923,208 @@ class FlanT5SLT(AbstractSLT):
             loss = clip_loss(logits_per_text)
             return loss, 'clip'
 
-    def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
+
+    # ── Geo-Sign hyperbolic regularisation helper ────────────────────────────
+    def _compute_hyp_loss(self, samples: Dict) -> torch.Tensor:
+        """
+        Computes the Geo-Sign hyperbolic contrastive loss between
+        projected pose features and T5 text embeddings.
+
+        Returns a scalar tensor (0.0 if use_hyperbolic is False or
+        pose_values are empty).
+        """
+        zero = torch.tensor(0.0, device=self.device)
+
+        if not self.use_hyperbolic or not self.training:
+            return zero
+
+        raw_pose = samples.get('pose_values', [])
+        if not raw_pose:
+            return zero
+
+        # ── Rebuild pose features (mirrors prepare_visual_inputs pose branch) ─
+        pose_local = [
+            pv if pv.dim() == 2 else pv.view(pv.shape[0], -1)
+            for pv in raw_pose
+        ]
+        pose_padded = pad_sequence(pose_local, batch_first=True).to(self.device).float()
+        pose_lengths = [int(p.size(0)) for p in pose_local]
+
+        # pose_proj maps (B, T, pose_input_size) → (B, T, inter_hidden)
+        pose_feats = self.pose_proj(pose_padded)                    # (B, T, inter_hidden)
+        pose_mask  = create_mask(seq_lengths=pose_lengths, device=self.device)  # (B, T) bool
+
+        # ── Text embeddings from T5 encoder embed_tokens ─────────────────────
+        output_tokens = self.t5_tokenizer(
+            samples['text'],
+            padding="longest",
+            return_tensors="pt",
+        ).to(self.device)
+
+        with torch.no_grad():
+            text_embeds = self.t5_model.encoder.embed_tokens(
+                output_tokens.input_ids
+            )                                                        # (B, T_txt, hidden)
+
+        text_mask = output_tokens.attention_mask.bool()              # (B, T_txt)
+
+        # ── Hyperbolic contrastive loss ───────────────────────────────────────
+        return self.hyp_reg(pose_feats, pose_mask, text_embeds, text_mask)
+
+    def shared_step(
+        self,
+        inputs: Dict,
+        split: str,
+        batch_idx: int
+    ) -> Tuple[torch.Tensor, Dict]:
+
         visual_outputs, visual_masks = self.prepare_visual_inputs(inputs)
+
+        # --------------------------------------------------
+        # Geo-Sign Hyperbolic Regularization
+        # --------------------------------------------------
+        hyp_loss = self._compute_hyp_loss(inputs)
+
+        # Project to T5 hidden size
         visual_outputs = self.fusion_proj(visual_outputs)
-        
+
         log_dict = {}
-        
+
+        # ==================================================
+        # Cross-modal alignment branch
+        # ==================================================
         if self.cross_modal_align:
+
+            # ----------------------------------------------
+            # Stage 1:
+            # Only contrastive learning (no decoder loss)
+            # ----------------------------------------------
             if self.warm_up_steps is None and not self.combined_loss:
+
                 with torch.no_grad():
                     input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
-                        visual_outputs, visual_masks, inputs, split, batch_idx
+                        visual_outputs,
+                        visual_masks,
+                        inputs,
+                        split,
+                        batch_idx
                     )
-                
-                cont_loss, loss_type = self.visual_textual_align(visual_outputs, visual_masks, inputs)
-                loss_key = f"{split}/infoloob_loss" if loss_type == 'infoloob' else f"{split}/contra_loss"
+
+                cont_loss, loss_type = self.visual_textual_align(
+                    visual_outputs,
+                    visual_masks,
+                    inputs
+                )
+
+                loss_key = (
+                    f"{split}/infoloob_loss"
+                    if loss_type == "infoloob"
+                    else f"{split}/contra_loss"
+                )
+
                 log_dict[loss_key] = cont_loss
-                loss = cont_loss
-                
-            elif self.warm_up_steps is not None and self.global_step <= self.warm_up_steps:
+
+                # Keep hyperbolic loss too
+                loss = cont_loss + self.hyp_alpha * hyp_loss
+                log_dict[f"{split}/hyp_loss"] = hyp_loss
+
+            # ----------------------------------------------
+            # Stage 2:
+            # Warmup steps → contrastive + hyperbolic
+            # ----------------------------------------------
+            elif (
+                self.warm_up_steps is not None
+                and self.global_step <= self.warm_up_steps
+            ):
+
                 with torch.no_grad():
                     input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
-                        visual_outputs, visual_masks, inputs, split, batch_idx
+                        visual_outputs,
+                        visual_masks,
+                        inputs,
+                        split,
+                        batch_idx
                     )
-                
-                # Visual-textual contrastive loss (CLIP-style or InfoLOOB)
-                cont_loss, loss_type = self.visual_textual_align(visual_outputs, visual_masks, inputs)
-                loss_key = f"{split}/infoloob_loss" if loss_type == 'infoloob' else f"{split}/contra_loss"
+
+                # CLIP or InfoLOOB
+                cont_loss, loss_type = self.visual_textual_align(
+                    visual_outputs,
+                    visual_masks,
+                    inputs
+                )
+
+                loss_key = (
+                    f"{split}/infoloob_loss"
+                    if loss_type == "infoloob"
+                    else f"{split}/contra_loss"
+                )
+
                 log_dict[loss_key] = cont_loss
-                loss = cont_loss
-                
-                # Sign Contrastive Learning loss (SignCL) - temporal neighborhoods
+
+                # Hyperbolic loss added here
+                loss = cont_loss + self.hyp_alpha * hyp_loss
+                log_dict[f"{split}/hyp_loss"] = hyp_loss
+
+                # ------------------------------------------
+                # SignCL loss during warmup
+                # ------------------------------------------
                 if (
                     self.sign_cl_loss
                     and self.sign_cl is not None
-                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
+                    and (
+                        self.sign_cl_every_n_steps <= 1
+                        or (
+                            self.global_step
+                            % self.sign_cl_every_n_steps
+                        ) == 0
+                    )
                 ):
-                    # Project visual features into the SignCL embedding space (MLP -> normalize)
-                    proj_vis = self.sign_cl_proj(visual_outputs)
-                    proj_vis = F.normalize(proj_vis, dim=2)
-                    sign_cl_loss_val = self.sign_cl(proj_vis, visual_masks)
-                    if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
-                        loss = loss + self.sign_cl_alpha * sign_cl_loss_val
-                        log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
-                        log_dict[f"{split}/warmup_total_loss"] = loss
-                
+                    proj_vis = self.sign_cl_proj(
+                        visual_outputs
+                    )
+
+                    proj_vis = F.normalize(
+                        proj_vis,
+                        dim=2
+                    )
+
+                    sign_cl_loss_val = self.sign_cl(
+                        proj_vis,
+                        visual_masks
+                    )
+
+                    if (
+                        sign_cl_loss_val is not None
+                        and sign_cl_loss_val > 0
+                    ):
+                        loss = (
+                            loss
+                            + self.sign_cl_alpha
+                            * sign_cl_loss_val
+                        )
+
+                        log_dict[
+                            f"{split}/sign_cl_loss"
+                        ] = sign_cl_loss_val
+
+                        log_dict[
+                            f"{split}/warmup_total_loss"
+                        ] = loss
+
+            # ----------------------------------------------
+            # Stage 3:
+            # Full decoder training
+            # ----------------------------------------------
             else:
+
                 input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
-                    visual_outputs, visual_masks, inputs, split, batch_idx
+                    visual_outputs,
+                    visual_masks,
+                    inputs,
+                    split,
+                    batch_idx
                 )
-                
+
                 outputs = self.t5_model(
                     inputs_embeds=input_embeds,
                     attention_mask=input_masks,
@@ -725,44 +1133,141 @@ class FlanT5SLT(AbstractSLT):
                     output_hidden_states=True,
                     return_dict=True
                 )
-                
+
                 t5_loss = outputs.loss
                 log_dict[f"{split}/loss"] = t5_loss
-                
-                # Add visual-textual contrastive component
-                cont_loss, loss_type = self.visual_textual_align(visual_outputs, visual_masks, inputs)
+
+                # ------------------------------------------
+                # Contrastive loss
+                # ------------------------------------------
+                cont_loss, loss_type = self.visual_textual_align(
+                    visual_outputs,
+                    visual_masks,
+                    inputs
+                )
+
                 loss = t5_loss + self.alpha * cont_loss
-                loss_key = f"{split}/infoloob_loss" if loss_type == 'infoloob' else f"{split}/contra_loss"
+
+                loss_key = (
+                    f"{split}/infoloob_loss"
+                    if loss_type == "infoloob"
+                    else f"{split}/contra_loss"
+                )
+
                 log_dict[loss_key] = cont_loss
-                
-                # Add SignCL loss if enabled (reduces representation density)
+
+                # ------------------------------------------
+                # SignCL
+                # ------------------------------------------
                 if (
                     self.sign_cl_loss
                     and self.sign_cl is not None
-                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
+                    and (
+                        self.sign_cl_every_n_steps <= 1
+                        or (
+                            self.global_step
+                            % self.sign_cl_every_n_steps
+                        ) == 0
+                    )
                 ):
-                    # Project visual features into the SignCL embedding space (MLP -> normalize)
-                    proj_vis = self.sign_cl_proj(visual_outputs)
-                    proj_vis = F.normalize(proj_vis, dim=2)
-                    sign_cl_loss_val = self.sign_cl(proj_vis, visual_masks)
-                    if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
-                        loss = loss + self.sign_cl_alpha * sign_cl_loss_val
-                        log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
+                    proj_vis = self.sign_cl_proj(
+                        visual_outputs
+                    )
 
-                # Knowledge Transfer Loss
+                    proj_vis = F.normalize(
+                        proj_vis,
+                        dim=2
+                    )
+
+                    sign_cl_loss_val = self.sign_cl(
+                        proj_vis,
+                        visual_masks
+                    )
+
+                    if (
+                        sign_cl_loss_val is not None
+                        and sign_cl_loss_val > 0
+                    ):
+                        loss = (
+                            loss
+                            + self.sign_cl_alpha
+                            * sign_cl_loss_val
+                        )
+
+                        log_dict[
+                            f"{split}/sign_cl_loss"
+                        ] = sign_cl_loss_val
+
+                # ------------------------------------------
+                # Knowledge Transfer
+                # ------------------------------------------
                 if self.use_kt_loss:
-                    video_emb = self.kt_proj(visual_outputs.mean(dim=1))
-                    text_emb = torch.tensor(self.sbert.encode(inputs['text'])).to(self.device)
-                    loss_kt = F.mse_loss(video_emb, text_emb)
-                    loss += self.kt_lambda * loss_kt
-                    log_dict[f"{split}/kt_loss"] = loss_kt
-                
-                log_dict[f"{split}/combined_loss"] = loss
+                    video_emb = self.kt_proj(
+                        visual_outputs.mean(dim=1)
+                    )
+
+                    text_emb = torch.tensor(
+                        self.sbert.encode(inputs["text"])
+                    ).to(self.device)
+
+                    loss_kt = F.mse_loss(
+                        video_emb,
+                        text_emb
+                    )
+
+                    loss = (
+                        loss
+                        + self.kt_lambda * loss_kt
+                    )
+
+                    log_dict[
+                        f"{split}/kt_loss"
+                    ] = loss_kt
+
+                # ------------------------------------------
+                # CTC loss
+                # ------------------------------------------
+                ctc_loss = self.compute_ctc_loss(
+                    visual_outputs,
+                    visual_masks,
+                    inputs
+                )
+
+                loss = loss + ctc_loss
+
+                log_dict[
+                    f"{split}/ctc_loss"
+                ] = ctc_loss
+
+                # ------------------------------------------
+                # Hyperbolic loss
+                # ------------------------------------------
+                loss = (
+                    loss
+                    + self.hyp_alpha * hyp_loss
+                )
+
+                log_dict[
+                    f"{split}/hyp_loss"
+                ] = hyp_loss
+
+                log_dict[
+                    f"{split}/combined_loss"
+                ] = loss
+
+        # ==================================================
+        # No cross-modal alignment branch
+        # ==================================================
         else:
+
             input_embeds, input_masks, output_tokens, targets = self.prepare_inputs(
-                visual_outputs, visual_masks, inputs, split, batch_idx
+                visual_outputs,
+                visual_masks,
+                inputs,
+                split,
+                batch_idx
             )
-            
+
             outputs = self.t5_model(
                 inputs_embeds=input_embeds,
                 attention_mask=input_masks,
@@ -771,23 +1276,75 @@ class FlanT5SLT(AbstractSLT):
                 output_hidden_states=True,
                 return_dict=True
             )
-            
-            loss = outputs.loss
-            log_dict[f"{split}/loss"] = loss
 
-            # Knowledge Transfer Loss
-            if self.use_kt_loss:
-                video_emb = self.kt_proj(visual_outputs.mean(dim=1))
-                text_emb = torch.tensor(self.sbert.encode(inputs['text'])).to(self.device)
-                loss_kt = F.mse_loss(video_emb, text_emb)
-                loss += self.kt_lambda * loss_kt
-                log_dict[f"{split}/kt_loss"] = loss_kt
-
-        if split != "train":
-            input_embeds, input_masks, _, _ = self.prepare_inputs(
-                visual_outputs, visual_masks, inputs, split, batch_idx
+            loss = (
+                outputs.loss
+                + self.hyp_alpha * hyp_loss
             )
-            
+
+            log_dict[
+                f"{split}/loss"
+            ] = outputs.loss
+
+            log_dict[
+                f"{split}/hyp_loss"
+            ] = hyp_loss
+
+            # ----------------------------------------------
+            # CTC
+            # ----------------------------------------------
+            if split == "train":
+                ctc_loss = self.compute_ctc_loss(
+                    visual_outputs,
+                    visual_masks,
+                    inputs
+                )
+
+                loss = loss + ctc_loss
+
+                log_dict[
+                    f"{split}/ctc_loss"
+                ] = ctc_loss
+
+            # ----------------------------------------------
+            # Knowledge Transfer
+            # ----------------------------------------------
+            if self.use_kt_loss:
+                video_emb = self.kt_proj(
+                    visual_outputs.mean(dim=1)
+                )
+
+                text_emb = torch.tensor(
+                    self.sbert.encode(inputs["text"])
+                ).to(self.device)
+
+                loss_kt = F.mse_loss(
+                    video_emb,
+                    text_emb
+                )
+
+                loss = (
+                    loss
+                    + self.kt_lambda * loss_kt
+                )
+
+                log_dict[
+                    f"{split}/kt_loss"
+                ] = loss_kt
+
+        # ==================================================
+        # Validation / Test generation
+        # ==================================================
+        if split != "train":
+
+            input_embeds, input_masks, _, _ = self.prepare_inputs(
+                visual_outputs,
+                visual_masks,
+                inputs,
+                split,
+                batch_idx
+            )
+
             generated = self.t5_model.generate(
                 inputs_embeds=input_embeds,
                 attention_mask=input_masks,
@@ -796,15 +1353,34 @@ class FlanT5SLT(AbstractSLT):
                 top_p=0.9,
                 do_sample=True,
             )
-            
-            generated_strings = self.t5_tokenizer.batch_decode(generated, skip_special_tokens=True)
-            generated_strings = [gen.lower() for gen in generated_strings]
-            
-            reference_strings = self.t5_tokenizer.batch_decode(output_tokens.input_ids, skip_special_tokens=True)
-            reference_strings = [ref.lower() for ref in reference_strings]
 
-            self.generated.extend(generated_strings)
-            self.references.extend(reference_strings)
+            generated_strings = self.t5_tokenizer.batch_decode(
+                generated,
+                skip_special_tokens=True
+            )
+
+            generated_strings = [
+                gen.lower()
+                for gen in generated_strings
+            ]
+
+            reference_strings = self.t5_tokenizer.batch_decode(
+                output_tokens.input_ids,
+                skip_special_tokens=True
+            )
+
+            reference_strings = [
+                ref.lower()
+                for ref in reference_strings
+            ]
+
+            self.generated.extend(
+                generated_strings
+            )
+
+            self.references.extend(
+                reference_strings
+            )
 
         return loss, log_dict
 
@@ -843,12 +1419,10 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
 
     def configure_optimizers(self):
-        # 1. Filter parameters
         trainable_params = [p for p in self.parameters() if p.requires_grad]
         if len(trainable_params) == 0:
             raise RuntimeError("No trainable parameters found.")
 
-        # 2. Setup AdamW 
         optimizer = torch.optim.AdamW(
             trainable_params,
             lr=self.hparams.lr,
@@ -857,7 +1431,6 @@ class FlanT5SLT(AbstractSLT):
             betas=(0.9, 0.98)
         )
         
-        # 3. Dynamic Step Calculation
         if hasattr(self.trainer, 'estimated_stepping_batches'):
             total_steps = int(self.trainer.estimated_stepping_batches)
         else:
@@ -869,7 +1442,6 @@ class FlanT5SLT(AbstractSLT):
             acc_batches = self.trainer.accumulate_grad_batches if hasattr(self.trainer, 'accumulate_grad_batches') else 1
             total_steps = (batches_per_epoch // acc_batches) * max_epochs
         
-        # 4. Warmup Logic (Priority: YAML value)
         if self.warm_up_steps is not None:
             warmup_steps = self.warm_up_steps
         else:
@@ -877,21 +1449,18 @@ class FlanT5SLT(AbstractSLT):
 
         print(f"--> Optimizer Setup: Total Steps={total_steps}, Warmup Steps={warmup_steps}")
 
-        # 5. Cosine Scheduler
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
             num_training_steps=total_steps,
         )
 
-        # log parameter counts for debugging DDP issues
         try:
             total = sum(p.numel() for p in self.parameters())
             trainable = sum(p.numel() for p in trainable_params)
             self.log('model/total_params', float(total), prog_bar=False)
             self.log('model/trainable_params', float(trainable), prog_bar=False)
         except Exception:
-            # logging may not be available at construction time in some contexts
             pass
 
         return {
