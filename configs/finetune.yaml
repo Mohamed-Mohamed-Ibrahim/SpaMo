@@ -17,6 +17,10 @@ model:
 
     tuning_type: lora
 
+    use_spatial: true
+    use_spatiotemporal: true
+    use_pose: false
+
     # Reduce model capacity
     lora_r: 32
     lora_alpha: 64
@@ -50,9 +54,15 @@ model:
 
     conv_type: 3
     use_ctc: true        # master on/off switch
-    ctc_weight: 0.8      # λ_Txt — weight of L_TxtCTC in total loss
+    ctc_weight: 0.5      # λ_Txt — weight of L_TxtCTC in total loss
     ctc_blank_id: -1     # -1 means auto-resolve from tokenizer.pad_token_id
 
+
+    use_hyperbolic: true
+    hyp_dim: 256            # embedding dim on the Poincaré ball
+    hyp_init_c: 1.0         # initial curvature (learnable); set 0.001 for near-Euclidean ablation
+    hyp_alpha: 0.5          # weight of hyp loss in final loss sum
+ 
 
 lightning:
   callback:
@@ -87,7 +97,7 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: True
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -103,7 +113,7 @@ data:
         mode: dev
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: True
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
@@ -119,7 +129,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: True
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
