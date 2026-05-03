@@ -62,7 +62,7 @@ model:
 
 
     use_hyperbolic: true
-    hyp_dim: 128            # embedding dim on the Poincaré ball
+    hyp_dim: 512            # embedding dim on the Poincaré ball
     hyp_init_c: 1.0         # initial curvature (learnable); set 0.001 for near-Euclidean ablation
     hyp_alpha: 0.5          # weight of hyp loss in final loss sum
  
