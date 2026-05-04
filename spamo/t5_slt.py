@@ -476,52 +476,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
               + pose_length
           )
 
-          # ---------------------------------------------
-          # Adaptive masking BEFORE temporal encoder
-          # ---------------------------------------------
-          if self.use_adaptive_masking:
-              if spatial:
-                  importance_scores_spatial = torch.full_like(
-                      spatial_outputs[:, :, 0],
-                      0.5
-                  )
-
-                  spatial_outputs = self.masker(
-                      spatial_outputs,
-                      importance_scores_spatial,
-                      spatial_length.tolist(),
-                      self.training
-                  )
-
-              if spatiotemporal:
-                  importance_scores_st = torch.full_like(
-                      spatiotemporal_outputs[:, :, 0],
-                      0.5
-                  )
-
-                  spatiotemporal_outputs = self.masker(
-                      spatiotemporal_outputs,
-                      importance_scores_st,
-                      spatiotemporal_length.tolist(),
-                      self.training
-                  )
-
-              if pose:
-                  importance_scores_pose = torch.full_like(
-                      pose_outputs[:, :, 0],
-                      0.5
-                  )
-
-                  pose_outputs = self.masker(
-                      pose_outputs,
-                      importance_scores_pose,
-                      pose_length.tolist(),
-                      self.training
-                  )
-
-          # ---------------------------------------------
           # Concatenate modalities
-          # ---------------------------------------------
           joint_outputs = []
 
           for i in range(bs):
@@ -554,9 +509,32 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
               batch_first=True
           )
 
-          # ---------------------------------------------
-          # Temporal encoder FIRST
-          # ---------------------------------------------
+          # NEW: Apply Dynamic Segmentation and Adaptive Masking BEFORE encoder
+          importance_scores = None
+          if self.use_dynamic_segmentation:
+              importance_scores = self.segmenter(
+                  joint_outputs, new_length
+              )
+              joint_outputs, new_length = (
+                  self.segmenter.segment(
+                      joint_outputs,
+                      importance_scores,
+                      new_length
+                  )
+              )
+          if self.use_adaptive_masking:
+              if importance_scores is None:
+                  importance_scores = self.segmenter(
+                      joint_outputs, new_length
+                  )
+              joint_outputs = self.masker(
+                  joint_outputs,
+                  importance_scores,
+                  new_length,
+                  self.training
+              )
+
+          # Apply temporal encoder
           visual_conv_outputs = self.temporal_encoder(
               joint_outputs.permute(0, 2, 1),
               torch.tensor(new_length, device=self.device)
@@ -569,28 +547,6 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
           visual_lengths = visual_conv_outputs[
               'feat_len'
           ].to(torch.int).tolist()
-
-          # ---------------------------------------------
-          # Dynamic segmentation AFTER encoder
-          # ---------------------------------------------
-          seg_enabled = (
-              self.current_epoch
-              >= self.segmentation_warmup_epochs
-          )
-
-          if seg_enabled and self.use_dynamic_segmentation:
-              importance_scores = self.segmenter(
-                  visual_outputs,
-                  visual_lengths
-              )
-
-              visual_outputs, visual_lengths = (
-                  self.segmenter.segment(
-                      visual_outputs,
-                      importance_scores,
-                      visual_lengths
-                  )
-              )
 
           visual_masks = create_mask(
               seq_lengths=visual_lengths,
@@ -610,40 +566,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                   align_corners=False
               ).permute(0, 2, 1)
 
-          # ---------------------------------------------
-          # Adaptive masking BEFORE encoder
-          # ---------------------------------------------
-          if self.use_adaptive_masking:
-              spatial_length = spatial_mask.sum(1).tolist()
-              spatiotemporal_length = spatiotemporal_mask.sum(1).tolist()
-
-              importance_scores_spatial = torch.full_like(
-                  spatial_outputs[:, :, 0],
-                  0.5
-              )
-
-              spatial_outputs = self.masker(
-                  spatial_outputs,
-                  importance_scores_spatial,
-                  spatial_length,
-                  self.training
-              )
-
-              importance_scores_st = torch.full_like(
-                  spatiotemporal_outputs[:, :, 0],
-                  0.5
-              )
-
-              spatiotemporal_outputs = self.masker(
-                  spatiotemporal_outputs,
-                  importance_scores_st,
-                  spatiotemporal_length,
-                  self.training
-              )
-
-          # ---------------------------------------------
-          # Adaptive fusion
-          # ---------------------------------------------
+          # Apply Adaptive Fusion
           fused_outputs = self.adaptive_fusion(
               spatial_outputs,
               spatiotemporal_outputs,
@@ -652,9 +575,33 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
 
           fused_lengths = samples['num_frames']
 
-          # ---------------------------------------------
-          # Temporal encoder FIRST
-          # ---------------------------------------------
+          # NEW: Apply Dynamic Segmentation and Adaptive Masking BEFORE encoder
+          importance_scores = None
+          if self.use_dynamic_segmentation:
+              importance_scores = self.segmenter(
+                  fused_outputs, fused_lengths
+              )
+              fused_outputs, fused_lengths = (
+                  self.segmenter.segment(
+                      fused_outputs,
+                      importance_scores,
+                      fused_lengths
+                  )
+              )
+          if self.use_adaptive_masking:
+              if importance_scores is None:
+                  importance_scores = self.segmenter(
+                      fused_outputs, fused_lengths
+                  )
+              fused_outputs = self.masker(
+                  fused_outputs,
+                  importance_scores,
+                  fused_lengths,
+                  self.training
+              )
+
+          # Pass through Temporal Encoder
+          # TemporalConv expects (B, C, T) input
           visual_conv_outputs = self.temporal_encoder(
               fused_outputs.permute(0, 2, 1),
               torch.tensor(fused_lengths, device=self.device)
@@ -667,28 +614,6 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
           visual_lengths = visual_conv_outputs[
               'feat_len'
           ].to(torch.int).tolist()
-
-          # ---------------------------------------------
-          # Dynamic segmentation AFTER encoder
-          # ---------------------------------------------
-          seg_enabled = (
-              self.current_epoch
-              >= self.segmentation_warmup_epochs
-          )
-
-          if seg_enabled and self.use_dynamic_segmentation:
-              importance_scores = self.segmenter(
-                  visual_outputs,
-                  visual_lengths
-              )
-
-              visual_outputs, visual_lengths = (
-                  self.segmenter.segment(
-                      visual_outputs,
-                      importance_scores,
-                      visual_lengths
-                  )
-              )
 
           visual_masks = create_mask(
               seq_lengths=visual_lengths,
@@ -717,15 +642,24 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                   "Invalid fusion mode"
               )
 
-          # ---------------------------------------------
-          # Adaptive masking BEFORE encoder
-          # ---------------------------------------------
-          if self.use_adaptive_masking:
-              importance_scores = torch.full_like(
-                  active_outputs[:, :, 0],
-                  0.5
+          # Apply Dynamic Segmentation and Adaptive Masking BEFORE encoder
+          importance_scores = None
+          if self.use_dynamic_segmentation:
+              importance_scores = self.segmenter(
+                  active_outputs, active_lens
               )
-
+              active_outputs, active_lens = (
+                  self.segmenter.segment(
+                      active_outputs,
+                      importance_scores,
+                      active_lens
+                  )
+              )
+          if self.use_adaptive_masking:
+              if importance_scores is None:
+                  importance_scores = self.segmenter(
+                      active_outputs, active_lens
+                  )
               active_outputs = self.masker(
                   active_outputs,
                   importance_scores,
@@ -733,9 +667,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                   self.training
               )
 
-          # ---------------------------------------------
-          # Temporal encoder FIRST
-          # ---------------------------------------------
+          # Temporal encoder
           if self.fusion_mode == 'spatiotemporal':
               visual_outputs = active_outputs
               visual_lengths = active_lens
@@ -753,28 +685,6 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
               visual_lengths = conv_outputs[
                   'feat_len'
               ].to(torch.int).tolist()
-
-          # ---------------------------------------------
-          # Dynamic segmentation AFTER encoder
-          # ---------------------------------------------
-          seg_enabled = (
-              self.current_epoch
-              >= self.segmentation_warmup_epochs
-          )
-
-          if seg_enabled and self.use_dynamic_segmentation:
-              importance_scores = self.segmenter(
-                  visual_outputs,
-                  visual_lengths
-              )
-
-              visual_outputs, visual_lengths = (
-                  self.segmenter.segment(
-                      visual_outputs,
-                      importance_scores,
-                      visual_lengths
-                  )
-              )
 
           visual_masks = create_mask(
               seq_lengths=visual_lengths,
