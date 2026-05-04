@@ -54,7 +54,14 @@ model:
     #   interp_linear  – 1-D linear interpolation to the same length, then mean-pool
     #   reduction      – independently mean-pool each stream (simplest, no length alignment)
     #   attention      – cross-attention: spatiotemporal queries attend over spatial keys/values
-    st_cl_alignment_mode: "reduction"
+    #   upsample_st    – learnable depthwise ConvTranspose1d upsamples ST to spatial length,
+    #                    element-wise avg, then mean-pool (spatial preserved; ST never downsampled)
+    st_cl_alignment_mode: "upsample_st"
+
+    # upsample_factor: stride of the ConvTranspose1d in upsample_st mode.
+    # Set ≈ Ts / Tt  (spatial frames / spatiotemporal clips).
+    # Phoenix14T typical: ~200 / 32 ≈ 6.  Ignored for all other alignment modes.
+    st_cl_upsample_factor: 6
 
     # st_cl_proj_dim: shared projection dim before similarity (0 = no projection, use inter_hidden)
     st_cl_proj_dim: 0
