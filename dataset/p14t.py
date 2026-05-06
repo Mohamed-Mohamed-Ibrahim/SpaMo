@@ -230,24 +230,43 @@ class Phoenix14T(torch.utils.data.Dataset):
             if f'{lang}_text' in data:
                 result[f'{lang}_text'] = data[f'{lang}_text']
 
-        # ---------------------------------------------------------
-        # NEW FIX: SEMANTIC NEAREST-NEIGHBOR CONTEXT
-        # ---------------------------------------------------------
-        # Instead of a random video, we use the pre-computed similarity map
-        # to find the most semantically relevant sentence.
+        # # ---------------------------------------------------------
+        # # NEW FIX: SEMANTIC NEAREST-NEIGHBOR CONTEXT
+        # # ---------------------------------------------------------
+        # # Instead of a random video, we use the pre-computed similarity map
+        # # to find the most semantically relevant sentence.
         
-        if self.similarity_map is not None and index in self.similarity_map:
-            sim_idx = self.similarity_map[index]
-        else:
-            # Fallback to random if the map fails to load
-            sim_idx = index
-            max_idx = len(self.data) - 2
-            while sim_idx == index:
-                sim_idx = random.randint(0, max_idx)
+        # if self.similarity_map is not None and index in self.similarity_map:
+        #     sim_idx = self.similarity_map[index]
+        # else:
+        #     # Fallback to random if the map fails to load
+        #     sim_idx = index
+        #     max_idx = len(self.data) - 2
+        #     while sim_idx == index:
+        #         sim_idx = random.randint(0, max_idx)
                 
-        rand_data = self.data[sim_idx]
+        # rand_data = self.data[sim_idx]
         
-        # Store the semantic twin's text under special 'ctx_' keys
+        # # Store the semantic twin's text under special 'ctx_' keys
+        # result['ctx_text'] = self._normalize_text(rand_data['text'])
+        # for lang in ['en', 'es', 'fr']:
+        #     if f'{lang}_text' in rand_data:
+        #         result[f'ctx_{lang}_text'] = rand_data[f'{lang}_text']
+        # # ---------------------------------------------------------
+        # ---------------------------------------------------------
+        # PURE RANDOM CONTEXT (ENTIRE DATASET)
+        # ---------------------------------------------------------
+        # Pick a random video from the entire dataset to serve as context.
+        # This guarantees global randomness, not batch-level shuffling.
+        rand_idx = index
+        max_idx = len(self.data) - 2 # Valid dataset indices
+        
+        while rand_idx == index:
+            rand_idx = random.randint(0, max_idx)
+            
+        rand_data = self.data[rand_idx]
+        
+        # Store the random video's text under special 'ctx_' keys
         result['ctx_text'] = self._normalize_text(rand_data['text'])
         for lang in ['en', 'es', 'fr']:
             if f'{lang}_text' in rand_data:
