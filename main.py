@@ -218,6 +218,13 @@ def main():
         trainer.test(model, dataloaders=train_loader, ckpt_path=ckpt)
         trainer.validate(model, data, ckpt_path=ckpt) 
         #trainer.test(model, data, ckpt_path=ckpt)
+        # print("\n!!! OVERRIDE: Running Inference on DEV set for Error Analysis !!!\n")
+        
+        # # Grab the Dev Set (validation dataloader)
+        # dev_loader = data.val_dataloader()
+        
+        # # Run it through the test loop so it triggers the CSV dump
+        # trainer.test(model, dataloaders=dev_loader, ckpt_path=ckpt)
 
 
 if __name__ == '__main__':
