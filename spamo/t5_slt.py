@@ -370,328 +370,208 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         return joint_outputs, joint_mask, output_tokens, targets
 
     def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
-      if self.fusion_mode == 'joint':
-          spatial = self.use_spatial
-          spatiotemporal = self.use_spatiotemporal
-          pose = self.use_pose
-      elif self.fusion_mode == 'adaptive':
-          spatial = spatiotemporal = pose = True
-      else:
-          spatial = self.fusion_mode == 'spatial'
-          spatiotemporal = self.fusion_mode == 'spatiotemporal'
-          pose = self.fusion_mode == 'pose'
+        if self.fusion_mode == 'joint':
+            spatial = self.use_spatial
+            spatiotemporal = self.use_spatiotemporal
+            pose = self.use_pose
+        elif self.fusion_mode == 'adaptive':
+            spatial = spatiotemporal = pose = True
+        else:
+            spatial = self.fusion_mode == 'spatial'
+            spatiotemporal = self.fusion_mode == 'spatiotemporal'
+            pose = self.fusion_mode == 'pose'
 
-      if spatial:
-          pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
+        # ── Process spatial features ──────────────────────────────────────────
+        if spatial:
+            pixel_values = pad_sequence(samples['pixel_values'], batch_first=True)
 
-          if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
-              pixel_values = self.augmenter(pixel_values, samples['num_frames'])
+            if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
+                pixel_values = self.augmenter(pixel_values, samples['num_frames'])
 
-          spatial_outputs = self.spatio_proj(pixel_values)
-          spatial_mask = create_mask(
-              seq_lengths=samples['num_frames'],
-              device=self.device
-          )
+            spatial_outputs = self.spatio_proj(pixel_values)
+            spatial_mask = create_mask(seq_lengths=samples['num_frames'], device=self.device)
 
-      if spatiotemporal:
-          spatiotemporal_outputs = pad_sequence(
-              samples['glor_values'],
-              batch_first=True
-          )
+        # ── Process spatiotemporal features ───────────────────────────────────
+        if spatiotemporal:
+            spatiotemporal_outputs = pad_sequence(samples['glor_values'], batch_first=True)
 
-          if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
-              spatiotemporal_outputs = self.augmenter(
-                  spatiotemporal_outputs,
-                  samples['glor_lengths']
-              )
+            if self.training and hasattr(self, 'use_data_augmentation') and self.use_data_augmentation:
+                spatiotemporal_outputs = self.augmenter(spatiotemporal_outputs, samples['glor_lengths'])
 
-          spatiotemporal_outputs = self.spatiotemp_proj(
-              spatiotemporal_outputs
-          )
+            spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
+            spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
 
-          spatiotemporal_mask = create_mask(
-              seq_lengths=samples['glor_lengths'],
-              device=self.device
-          )
+        # ── Process pose features ─────────────────────────────────────────────
+        if pose:
+            raw_pose_values = samples.get('pose_values', [])
+            pose_values_local = [
+                pv if pv.dim() == 2 else pv.view(pv.shape[0], -1)
+                for pv in raw_pose_values
+            ]
+            if len(pose_values_local) > 0:
+                pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.device).float()
+                pose_lengths = [int(p.size(0)) for p in pose_values_local]
+            else:
+                B = len(samples['pixel_values'])
+                pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=torch.float32)
+                pose_lengths = [0] * B
 
-      if pose:
-          raw_pose_values = samples.get('pose_values', [])
+            pose_outputs = self.pose_proj(pose_padded)
+            pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
 
-          pose_values_local = [
-              pv if pv.dim() == 2 else pv.view(pv.shape[0], -1)
-              for pv in raw_pose_values
-          ]
+        # =========================================================
+        # SINGLE MODALITY — apply masking PER-MODE exactly like File 1
+        # =========================================================
+        # NOTE: This block must come BEFORE joint/adaptive so that
+        # importance_scores are computed on the right (pre-concat) tensor.
+        if self.fusion_mode == 'spatial' and spatial and (self.use_dynamic_segmentation or self.use_adaptive_masking):
+            importance_scores = None
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(spatial_outputs, samples['num_frames'])
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = torch.full_like(spatial_outputs[:, :, 0], 0.5)
+                spatial_outputs = self.masker(spatial_outputs, importance_scores, samples['num_frames'], self.training)
 
-          if len(pose_values_local) > 0:
-              pose_padded = pad_sequence(
-                  pose_values_local,
-                  batch_first=True
-              ).to(self.device).float()
+        elif self.fusion_mode == 'spatiotemporal' and spatiotemporal and (self.use_dynamic_segmentation or self.use_adaptive_masking):
+            importance_scores = None
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(spatiotemporal_outputs, samples['glor_lengths'])
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = torch.full_like(spatiotemporal_outputs[:, :, 0], 0.5)
+                spatiotemporal_outputs = self.masker(spatiotemporal_outputs, importance_scores, samples['glor_lengths'], self.training)
 
-              pose_lengths = [
-                  int(p.size(0))
-                  for p in pose_values_local
-              ]
-          else:
-              B = len(samples['pixel_values'])
-              pose_padded = torch.zeros(
-                  (B, 1, self.pose_input_size),
-                  device=self.device,
-                  dtype=torch.float32
-              )
-              pose_lengths = [0] * B
+        elif self.fusion_mode == 'pose' and pose and (self.use_dynamic_segmentation or self.use_adaptive_masking):
+            importance_scores = None
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(pose_outputs, pose_lengths)
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = torch.full_like(pose_outputs[:, :, 0], 0.5)
+                pose_outputs = self.masker(pose_outputs, importance_scores, pose_lengths, self.training)
 
-          pose_outputs = self.pose_proj(pose_padded)
+        # =========================================================
+        # JOINT FUSION
+        # =========================================================
+        if self.fusion_mode == 'joint':
+            bs = spatial_outputs.shape[0]
 
-          if not hasattr(self, '_pose_printed'):
-              print(
-                  f"[POSE DEBUG] shape={pose_padded.shape}, "
-                  f"mean={pose_padded[0].abs().mean():.6f}, "
-                  f"zeros={pose_padded[0].abs().sum()==0}"
-              )
-              self._pose_printed = True
+            spatial_length = spatial_mask.sum(1)
+            spatiotemporal_length = spatiotemporal_mask.sum(1)
+            pose_length = (
+                pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
+            )
+            new_length = spatial_length + spatiotemporal_length + pose_length
 
-          pose_mask = create_mask(
-              seq_lengths=pose_lengths,
-              device=self.device
-          )
+            joint_outputs = []
+            for i in range(bs):
+                parts = []
+                if spatial:
+                    parts.append(spatial_outputs[i, :spatial_length[i], :])
+                if spatiotemporal:
+                    parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
+                if pose:
+                    parts.append(pose_outputs[i, :pose_length[i], :])
+                concat_sample = torch.cat(parts, dim=0)
+                joint_outputs.append(concat_sample)
 
-      # =========================================================
-      # JOINT FUSION
-      # =========================================================
+            joint_outputs = pad_sequence(joint_outputs, batch_first=True)
 
-      if self.fusion_mode == 'joint':
-          bs = spatial_outputs.shape[0]
+            # Masking on the concatenated joint tensor (same as File 1)
+            importance_scores = None
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(joint_outputs, new_length)
+                joint_outputs, new_length = self.segmenter.segment(
+                    joint_outputs, importance_scores, new_length
+                )
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = self.segmenter(joint_outputs, new_length)
+                joint_outputs = self.masker(
+                    joint_outputs, importance_scores, new_length, self.training
+                )
 
-          spatial_length = spatial_mask.sum(1)
-          spatiotemporal_length = spatiotemporal_mask.sum(1)
-          pose_length = (
-              pose_mask.sum(1)
-              if pose else torch.zeros_like(spatial_length)
-          )
+            visual_conv_outputs = self.temporal_encoder(
+                joint_outputs.permute(0, 2, 1),
+                torch.tensor(new_length, device=self.device)
+            )
 
-          new_length = (
-              spatial_length
-              + spatiotemporal_length
-              + pose_length
-          )
+            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
+            visual_masks = create_mask(
+                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
+                device=self.device
+            )
 
-          # Concatenate modalities
-          joint_outputs = []
+        # =========================================================
+        # ADAPTIVE FUSION
+        # =========================================================
+        elif self.fusion_mode == 'adaptive':
+            if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
+                spatiotemporal_outputs = F.interpolate(
+                    spatiotemporal_outputs.permute(0, 2, 1),
+                    size=spatial_outputs.shape[1],
+                    mode='linear',
+                    align_corners=False
+                ).permute(0, 2, 1)
 
-          for i in range(bs):
-              parts = []
+            fused_outputs = self.adaptive_fusion(spatial_outputs, spatiotemporal_outputs, pose_outputs)
+            fused_lengths = samples['num_frames']
 
-              if spatial:
-                  parts.append(
-                      spatial_outputs[i, :spatial_length[i], :]
-                  )
+            # Masking on fused tensor (same as File 1)
+            importance_scores = None
+            if self.use_dynamic_segmentation:
+                importance_scores = self.segmenter(fused_outputs, fused_lengths)
+                fused_outputs, fused_lengths = self.segmenter.segment(
+                    fused_outputs, importance_scores, fused_lengths
+                )
+            if self.use_adaptive_masking:
+                if importance_scores is None:
+                    importance_scores = self.segmenter(fused_outputs, fused_lengths)
+                fused_outputs = self.masker(
+                    fused_outputs, importance_scores, fused_lengths, self.training
+                )
 
-              if spatiotemporal:
-                  parts.append(
-                      spatiotemporal_outputs[
-                          i,
-                          :spatiotemporal_length[i],
-                          :
-                      ]
-                  )
+            visual_conv_outputs = self.temporal_encoder(
+                fused_outputs.permute(0, 2, 1),
+                torch.tensor(fused_lengths, device=self.device)
+            )
 
-              if pose:
-                  parts.append(
-                      pose_outputs[i, :pose_length[i], :]
-                  )
+            visual_outputs = visual_conv_outputs['visual_feat'].permute(1, 0, 2)
+            visual_masks = create_mask(
+                seq_lengths=visual_conv_outputs['feat_len'].to(torch.int).tolist(),
+                device=self.device
+            )
 
-              concat_sample = torch.cat(parts, dim=0)
-              joint_outputs.append(concat_sample)
+        # =========================================================
+        # SINGLE MODALITY — temporal encoder + mask creation
+        # =========================================================
+        else:
+            if spatial:
+                active_outputs, active_lens = spatial_outputs, samples['num_frames']
+            elif spatiotemporal:
+                active_outputs, active_lens = spatiotemporal_outputs, samples['glor_lengths']
+            elif pose:
+                active_outputs, active_lens = pose_outputs, pose_lengths
+            else:
+                raise NotImplementedError("Invalid fusion mode")
 
-          joint_outputs = pad_sequence(
-              joint_outputs,
-              batch_first=True
-          )
+            # spatiotemporal skips the temporal encoder — mirrors File 1 exactly
+            if self.fusion_mode == 'spatiotemporal':
+                visual_outputs = active_outputs
+                visual_masks = create_mask(seq_lengths=active_lens, device=self.device)
+            else:
+                conv_outputs = self.temporal_encoder(
+                    active_outputs.permute(0, 2, 1),
+                    torch.tensor(active_lens, device=self.device)
+                )
+                visual_outputs = conv_outputs['visual_feat'].permute(1, 0, 2)
+                visual_masks = create_mask(
+                    seq_lengths=conv_outputs['feat_len'].to(torch.int).tolist(),
+                    device=self.device
+                )
 
-          # NEW: Apply Dynamic Segmentation and Adaptive Masking BEFORE encoder
-          importance_scores = None
-          if self.use_dynamic_segmentation:
-              importance_scores = self.segmenter(
-                  joint_outputs, new_length
-              )
-              joint_outputs, new_length = (
-                  self.segmenter.segment(
-                      joint_outputs,
-                      importance_scores,
-                      new_length
-                  )
-              )
-          if self.use_adaptive_masking:
-              if importance_scores is None:
-                  importance_scores = self.segmenter(
-                      joint_outputs, new_length
-                  )
-              joint_outputs = self.masker(
-                  joint_outputs,
-                  importance_scores,
-                  new_length,
-                  self.training
-              )
-
-          # Apply temporal encoder
-          visual_conv_outputs = self.temporal_encoder(
-              joint_outputs.permute(0, 2, 1),
-              torch.tensor(new_length, device=self.device)
-          )
-
-          visual_outputs = visual_conv_outputs[
-              'visual_feat'
-          ].permute(1, 0, 2)
-
-          visual_lengths = visual_conv_outputs[
-              'feat_len'
-          ].to(torch.int).tolist()
-
-          visual_masks = create_mask(
-              seq_lengths=visual_lengths,
-              device=self.device
-          )
-
-      # =========================================================
-      # ADAPTIVE FUSION
-      # =========================================================
-
-      elif self.fusion_mode == 'adaptive':
-          if spatial_outputs.shape[1] != spatiotemporal_outputs.shape[1]:
-              spatiotemporal_outputs = F.interpolate(
-                  spatiotemporal_outputs.permute(0, 2, 1),
-                  size=spatial_outputs.shape[1],
-                  mode='linear',
-                  align_corners=False
-              ).permute(0, 2, 1)
-
-          # Apply Adaptive Fusion
-          fused_outputs = self.adaptive_fusion(
-              spatial_outputs,
-              spatiotemporal_outputs,
-              pose_outputs
-          )
-
-          fused_lengths = samples['num_frames']
-
-          # NEW: Apply Dynamic Segmentation and Adaptive Masking BEFORE encoder
-          importance_scores = None
-          if self.use_dynamic_segmentation:
-              importance_scores = self.segmenter(
-                  fused_outputs, fused_lengths
-              )
-              fused_outputs, fused_lengths = (
-                  self.segmenter.segment(
-                      fused_outputs,
-                      importance_scores,
-                      fused_lengths
-                  )
-              )
-          if self.use_adaptive_masking:
-              if importance_scores is None:
-                  importance_scores = self.segmenter(
-                      fused_outputs, fused_lengths
-                  )
-              fused_outputs = self.masker(
-                  fused_outputs,
-                  importance_scores,
-                  fused_lengths,
-                  self.training
-              )
-
-          # Pass through Temporal Encoder
-          # TemporalConv expects (B, C, T) input
-          visual_conv_outputs = self.temporal_encoder(
-              fused_outputs.permute(0, 2, 1),
-              torch.tensor(fused_lengths, device=self.device)
-          )
-
-          visual_outputs = visual_conv_outputs[
-              'visual_feat'
-          ].permute(1, 0, 2)
-
-          visual_lengths = visual_conv_outputs[
-              'feat_len'
-          ].to(torch.int).tolist()
-
-          visual_masks = create_mask(
-              seq_lengths=visual_lengths,
-              device=self.device
-          )
-
-      # =========================================================
-      # SINGLE MODALITY
-      # =========================================================
-
-      else:
-          if spatial:
-              active_outputs = spatial_outputs
-              active_lens = samples['num_frames']
-
-          elif spatiotemporal:
-              active_outputs = spatiotemporal_outputs
-              active_lens = samples['glor_lengths']
-
-          elif pose:
-              active_outputs = pose_outputs
-              active_lens = pose_lengths
-
-          else:
-              raise NotImplementedError(
-                  "Invalid fusion mode"
-              )
-
-          # Apply Dynamic Segmentation and Adaptive Masking BEFORE encoder
-          importance_scores = None
-          if self.use_dynamic_segmentation:
-              importance_scores = self.segmenter(
-                  active_outputs, active_lens
-              )
-              active_outputs, active_lens = (
-                  self.segmenter.segment(
-                      active_outputs,
-                      importance_scores,
-                      active_lens
-                  )
-              )
-          if self.use_adaptive_masking:
-              if importance_scores is None:
-                  importance_scores = self.segmenter(
-                      active_outputs, active_lens
-                  )
-              active_outputs = self.masker(
-                  active_outputs,
-                  importance_scores,
-                  active_lens,
-                  self.training
-              )
-
-          # Temporal encoder
-          if self.fusion_mode == 'spatiotemporal':
-              visual_outputs = active_outputs
-              visual_lengths = active_lens
-
-          else:
-              conv_outputs = self.temporal_encoder(
-                  active_outputs.permute(0, 2, 1),
-                  torch.tensor(active_lens, device=self.device)
-              )
-
-              visual_outputs = conv_outputs[
-                  'visual_feat'
-              ].permute(1, 0, 2)
-
-              visual_lengths = conv_outputs[
-                  'feat_len'
-              ].to(torch.int).tolist()
-
-          visual_masks = create_mask(
-              seq_lengths=visual_lengths,
-              device=self.device
-          )
-
-      return visual_outputs, visual_masks
+        return visual_outputs, visual_masks
 
     def get_inputs(self, batch: List) -> Dict:
         pixel_values, glor_values, masks, ids = [], [], [], []
