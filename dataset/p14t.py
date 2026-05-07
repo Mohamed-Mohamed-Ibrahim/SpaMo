@@ -12,7 +12,7 @@ class Phoenix14T(torch.utils.data.Dataset):
     Dataset class for the Phoenix14T sign language dataset.
     
     This class handles loading video features and annotations for sign language translation,
-    supporting both spatial and spatiotemporal feature types.
+    supporting spatial, spatiotemporal, pose, and gfslt feature types.
     """
     def __init__(
         self,
@@ -20,14 +20,17 @@ class Phoenix14T(torch.utils.data.Dataset):
         vid_root: str,
         feat_root: str,
         mae_feat_root: str,
-        pose_root: str,    # <--- NEW
+       pose_root: str,    
+        gfslt_root: str = "",               # <--- NEW
         mode: str = 'dev',
         spatial: bool = False,
         spatiotemporal: bool = False,
         spatial_postfix: str = '',
         spatiotemporal_postfix: Union[str, List[str]] = '',
-        pose_postfix: str = '',            # <--- NEW
-        pose: bool = False           # <--- NEW
+        pose_postfix: str = '',            
+        pose: bool = False,                
+        gfslt: bool = False,               # <--- NEW
+        gfslt_postfix: str = ''            # <--- NEW
     ):
         """
         Initialize the Phoenix14T dataset.
@@ -37,12 +40,17 @@ class Phoenix14T(torch.utils.data.Dataset):
             vid_root: Root directory for video files
             feat_root: Root directory for spatial features
             mae_feat_root: Root directory for spatiotemporal features
+            pose_root: Root directory for pose features
+            gfslt_root: Root directory for gfslt features
             mode: Dataset split ('train', 'dev', or 'test')
             spatial: Whether to load spatial features
             spatiotemporal: Whether to load spatiotemporal features
             spatial_postfix: Filename postfix for spatial features
-            spatiotemporal_postfix: Filename postfix for spatiotemporal features,
-                                    can be a string or a list of strings
+            spatiotemporal_postfix: Filename postfix for spatiotemporal features
+            pose_postfix: Filename postfix for pose features
+            pose: Whether to load pose features
+            gfslt: Whether to load gfslt features
+            gfslt_postfix: Filename postfix for gfslt features
         """
         super().__init__()
         
@@ -51,21 +59,32 @@ class Phoenix14T(torch.utils.data.Dataset):
         self.feat_root = Path(feat_root)
         self.mae_feat_root = Path(mae_feat_root)
         self.mode = mode
+        
+        # Feature flags
         self.spatial = spatial
         self.spatiotemporal = spatiotemporal
+        self.pose = pose
+        self.gfslt = gfslt
+        
+        # Postfixes
         self.spatial_postfix = spatial_postfix
         self.spatiotemporal_postfix = spatiotemporal_postfix
-        # pose_root may be None or empty string if pose features are not used
-        self.pose_root = Path(pose_root) if pose_root else None
         self.pose_postfix = pose_postfix
-        self.pose = pose
+        self.gfslt_postfix = gfslt_postfix
+        
+        # Roots
+        self.pose_root = Path(pose_root) if pose_root else None
+        self.gfslt_root = Path(gfslt_root) if gfslt_root else None
         
         # Validate inputs
-        if not (spatial or spatiotemporal):
-            raise ValueError("At least one of 'spatial' or 'spatiotemporal' must be True")
+        if not (spatial or spatiotemporal or pose or gfslt):
+            raise ValueError("At least one of 'spatial', 'spatiotemporal', 'pose', or 'gfslt' must be True")
         
-        if  not (pose):
+        if not pose:
             print("No Pose features will be loaded.")
+            
+        if not gfslt:
+            print("No GFSLT features will be loaded.")
  
         # Load annotations
         anno_path = self.anno_root / f'{mode}_info_ml.npy'
@@ -78,6 +97,7 @@ class Phoenix14T(torch.utils.data.Dataset):
         self.spatial_dir = self.feat_root / self.mode
         self.spatiotemporal_dir = self.mae_feat_root / self.mode
         self.pose_dir = (self.pose_root / self.mode) if (self.pose_root is not None) else None
+        self.gfslt_dir = (self.gfslt_root / self.mode) if (self.gfslt_root is not None) else None
         
         # Validate that key directories exist
         self._validate_directories()
@@ -93,21 +113,14 @@ class Phoenix14T(torch.utils.data.Dataset):
         if self.pose:
             if self.pose_dir is None or not self.pose_dir.exists():
                 raise FileNotFoundError(f"Pose feature directory not found: {self.pose_dir}")
+                
+        if self.gfslt:
+            if self.gfslt_dir is None or not self.gfslt_dir.exists():
+                raise FileNotFoundError(f"GFSLT feature directory not found: {self.gfslt_dir}")
         
 
     def _load_spatial_features(self, file_id: str) -> torch.Tensor:
-        """
-        Load spatial features for a given file ID.
-        
-        Args:
-            file_id: The file identifier
-            
-        Returns:
-            Tensor containing spatial features
-            
-        Raises:
-            FileNotFoundError: If the feature file doesn't exist
-        """
+        """Load spatial features for a given file ID."""
         feat_path = self.spatial_dir / f"{file_id}{self.spatial_postfix}.npy"
         if not feat_path.exists():
             raise FileNotFoundError(f"Spatial feature file not found: {feat_path}")
@@ -115,18 +128,7 @@ class Phoenix14T(torch.utils.data.Dataset):
         return torch.tensor(np.load(feat_path))
 
     def _load_spatiotemporal_features(self, file_id: str) -> Union[torch.Tensor, List[torch.Tensor]]:
-        """
-        Load spatiotemporal features for a given file ID.
-        
-        Args:
-            file_id: The file identifier
-            
-        Returns:
-            Tensor or list of tensors containing spatiotemporal features
-            
-        Raises:
-            FileNotFoundError: If any feature file doesn't exist
-        """
+        """Load spatiotemporal features for a given file ID."""
         if isinstance(self.spatiotemporal_postfix, str):
             glor_path = self.spatiotemporal_dir / f"{file_id}{self.spatiotemporal_postfix}.npy"
             if not glor_path.exists():
@@ -154,22 +156,26 @@ class Phoenix14T(torch.utils.data.Dataset):
 
         return torch.tensor(np.load(pose_path), dtype=torch.float32)
 
+    def _load_gfslt_features(self, file_id: str) -> torch.Tensor:
+        """Load GFSLT features for a given file ID."""
+        if self.gfslt_dir is None:
+            return torch.tensor([])
+
+        gfslt_path = self.gfslt_dir / f"{file_id}{self.gfslt_postfix}.npy"
+        if not gfslt_path.exists():
+            raise FileNotFoundError(f"GFSLT feature file not found: {gfslt_path}")
+            
+        return torch.tensor(np.load(gfslt_path), dtype=torch.float32)
+
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
-        """
-        Get a dataset item by index.
-        
-        Args:
-            index: The index of the item to retrieve
-            
-        Returns:
-            Dictionary containing all features and metadata for the item
-        """
+        """Get a dataset item by index."""
         data = self.data[index]
         file_id = data['fileid']
         pixel_value = None
         glor_value = None
         pose_value = None
+        gfslt_value = None
         
         # Load spatial features if enabled
         if self.spatial:
@@ -197,17 +203,35 @@ class Phoenix14T(torch.utils.data.Dataset):
             except FileNotFoundError as e:
                 print(f"Warning: {e}. Returning empty tensor.")
                 pose_value = torch.tensor([])
+                
+        # Load gfslt features if enabled
+        if self.gfslt:
+            try:
+                gfslt_value = self._load_gfslt_features(file_id)
+            except FileNotFoundError as e:
+                print(f"Warning: {e}. Returning empty tensor.")
+                gfslt_value = torch.tensor([])
+        
+        # Calculate dynamic frame length based on whatever feature is available
+        num_frames = 0
+        if gfslt_value is not None and len(gfslt_value) > 0:
+            num_frames = len(gfslt_value)
+        elif pixel_value is not None and len(pixel_value) > 0:
+            num_frames = len(pixel_value)
+        elif glor_value is not None and isinstance(glor_value, torch.Tensor) and len(glor_value) > 0:
+            num_frames = len(glor_value)
         
         # Create result dictionary with normalized text
         result = {
             'pixel_value': pixel_value,
             'glor_value': glor_value,
             'pose_value': pose_value,
+            'gfslt_value': gfslt_value,     # <--- NEW
             'bool_mask_pos': None,
             'text': self._normalize_text(data['text']),
             'gloss': data['gloss'],
             'id': file_id,
-            'num_frames': len(pixel_value) if pixel_value is not None else 0,
+            'num_frames': num_frames,
             'vid_path': str(self.vid_root / 'features' / 'fullFrame-256x256px' / data['folder']),
             'lang': 'German'
         }
@@ -223,15 +247,7 @@ class Phoenix14T(torch.utils.data.Dataset):
         return result
 
     def _normalize_text(self, text: str) -> str:
-        """
-        Normalize text by ensuring it ends with a period.
-        
-        Args:
-            text: Input text to normalize
-            
-        Returns:
-            Normalized text
-        """
+        """Normalize text by ensuring it ends with a period."""
         text = text.strip()
         if not text.endswith('.'):
             text = f"{text}."
@@ -244,8 +260,3 @@ class Phoenix14T(torch.utils.data.Dataset):
     @staticmethod
     def collate_fn(batch: List[Dict]) -> List[Dict]:
         return batch
-
-
-
-
-

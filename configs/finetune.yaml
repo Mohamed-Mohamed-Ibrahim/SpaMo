@@ -4,11 +4,12 @@ model:
     lr: 3.0e-4
     monitor: val/bleu4
 
-    model_name: google/flan-t5-large
+    model_name: google/flan-t5-small
     cache_dir: /data3/models
 
     inter_hidden: 1024
     input_size: 2048
+    gfslt_dim: 1024        # <--- Explicit dimension for GFSLT
     beam_size: 5
     max_frame_len: 512
     max_txt_len: 128
@@ -17,9 +18,12 @@ model:
 
     tuning_type: lora
 
+    # --- MASTER TOGGLES FOR THE MODEL ---
+    # Change these to true/false to experiment with different combinations
     use_spatial: true
     use_spatiotemporal: true
     use_pose: false
+    use_gfslt: true
 
     # Reduce model capacity
     lora_r: 32
@@ -44,19 +48,12 @@ model:
 
     use_in_context: false
     num_in_context: 0
-    # NEW AUGMENTATION PARAMETERS
+    
     use_data_augmentation: false
-
-    augmentation_prob: 0.5       # Apply augmentation to 50% of batches
-    aug_frame_prob: 0.1          # Drop 10% of frames
-    aug_span_prob: 0.1           # Mask 10% of spans
-    aug_channel_prob: 0.05       # Drop 5% of feature channels
-    # # Stronger augmentation
-    # use_data_augmentation: true
-    # augmentation_prob: 0.7
-    # aug_frame_prob: 0.15
-    # aug_span_prob: 0.2
-    # aug_channel_prob: 0.1
+    augmentation_prob: 0.5       
+    aug_frame_prob: 0.1          
+    aug_span_prob: 0.1           
+    aug_channel_prob: 0.05       
 
 lightning:
   callback:
@@ -84,17 +81,27 @@ data:
       target: dataset.p14t.Phoenix14T
       params:
         anno_root: ./preprocess/Phoenix14T
+        
+        # --- ALL FEATURE DIRECTORIES ---
         vid_root: ./dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        feat_root: feat_Phoenix14T                                                                       # Spatial
+        mae_feat_root: mae_feat_Phoenix14T                                                               # Spatiotemporal
+        pose_root: pose_Phoenix14T                                                                       # Pose
+        gfslt_root: /kaggle/input/datasets/muhammad5286/phoenix14t-gfslt-1/Phoenix14T-GFSLT-1/train      # GFSLT
+        
         mode: train
+        
+        # --- MASTER TOGGLES FOR THE DATASET ---
+        # Make sure these match the model toggles above!
         spatial: true
         spatiotemporal: true
         pose: false
+        gfslt: true
+        
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
+        gfslt_postfix: ""
         
     validation:
       target: dataset.p14t.Phoenix14T
@@ -104,13 +111,18 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
+        gfslt_root: /kaggle/input/datasets/muhammad5286/phoenix14t-gfslt-1/Phoenix14T-GFSLT-1/dev
+        
         mode: dev
         spatial: true
         spatiotemporal: true
         pose: false
+        gfslt: true
+        
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
+        gfslt_postfix: ""
     
     test:
       target: dataset.p14t.Phoenix14T
@@ -120,10 +132,15 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
+        gfslt_root: /kaggle/input/datasets/muhammad5286/phoenix14t-gfslt-1/Phoenix14T-GFSLT-1/test
+        
         mode: test
         spatial: true
         spatiotemporal: true
         pose: false
+        gfslt: true
+        
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
+        gfslt_postfix: ""
