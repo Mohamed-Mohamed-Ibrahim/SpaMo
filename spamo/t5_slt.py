@@ -35,6 +35,7 @@ class FlanT5SLT(AbstractSLT):
         lr: float = 3e-4,
         input_size: int = 1024,
         pose_input_size: int = 33*3,
+        emotion_input_size: int = 768,
         fusion_mode: str = 'joint',
         inter_hidden: int = 512,
         max_frame_len: int = 512,
@@ -64,12 +65,14 @@ class FlanT5SLT(AbstractSLT):
         use_spatial: bool = True,
         use_spatiotemporal: bool = True,
         use_pose: bool = False,
+        use_emotion: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
         
         self.input_size = input_size
         self.pose_input_size = pose_input_size
+        self.emotion_input_size = emotion_input_size
         self.prompt = prompt
         self.lr = lr
         self.weight_decay = weight_decay
@@ -99,6 +102,7 @@ class FlanT5SLT(AbstractSLT):
         self.use_spatial = use_spatial
         self.use_spatiotemporal = use_spatiotemporal
         self.use_pose = use_pose
+        self.use_emotion = use_emotion
         
         if self.num_in_context == 0:
             self.use_in_context = False
@@ -110,6 +114,7 @@ class FlanT5SLT(AbstractSLT):
         print("==="*40)
         print(f"use_data_augmentation: {use_data_augmentation}")
         print(f"sign_cl_loss: {sign_cl_loss}")
+        print(f"use_emotion: {use_emotion}")
         print("==="*40)
         
         self.save_hyperparameters()
@@ -178,6 +183,9 @@ class FlanT5SLT(AbstractSLT):
         self.spatiotemp_proj = build_vision_projector('linear', 1024, self.inter_hidden)
         self.pose_proj = build_vision_projector('linear', self.pose_input_size, self.inter_hidden)
         self.fusion_proj = build_vision_projector('mlp2x_gelu', self.inter_hidden, self.t5_model.config.hidden_size)
+        
+        if self.use_emotion:
+            self.emotion_proj = build_vision_projector('linear', self.emotion_input_size, self.inter_hidden)
         
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
         
@@ -295,13 +303,22 @@ class FlanT5SLT(AbstractSLT):
                 print(f"[POSE DEBUG] shape={pose_padded.shape}, mean={pose_padded[0].abs().mean():.6f}, zeros={pose_padded[0].abs().sum()==0}")
                 self._pose_printed = True
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
+
+        emotion_mask = None
+        Ze_proj = None
+        if self.use_emotion and len(samples.get('emotion_values', [])) > 0:
+            Ze_padded = pad_sequence(samples['emotion_values'], batch_first=True).to(self.device).float()
+            Ze_proj = self.emotion_proj(Ze_padded)
+            emotion_mask = create_mask(seq_lengths=samples['emotion_lengths'], device=self.device)
         
         if self.fusion_mode == 'joint':
             bs = spatial_outputs.shape[0]
             spatial_length = spatial_mask.sum(1)
             spatiotemporal_length = spatiotemporal_mask.sum(1)
             pose_length = pose_mask.sum(1) if pose else torch.zeros_like(spatial_length)
-            new_length = spatial_length + spatiotemporal_length + pose_length
+            emotion_length = emotion_mask.sum(1) if (self.use_emotion and emotion_mask is not None) else torch.zeros_like(spatial_length)
+            
+            new_length = spatial_length + spatiotemporal_length + pose_length + emotion_length
 
             joint_outputs = []
             for i in range(bs):
@@ -312,6 +329,9 @@ class FlanT5SLT(AbstractSLT):
                     parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
                 if pose:
                     parts.append(pose_outputs[i, :pose_length[i], :])
+                if self.use_emotion and Ze_proj is not None:
+                    parts.append(Ze_proj[i, :emotion_length[i], :])
+                
                 concat_sample = torch.cat(parts, dim=0)
                 joint_outputs.append(concat_sample)
             joint_outputs = pad_sequence(joint_outputs, batch_first=True)
@@ -385,6 +405,7 @@ class FlanT5SLT(AbstractSLT):
     def get_inputs(self, batch: List) -> Dict:
         pixel_values, glor_values, masks, ids = [], [], [], []
         pose_values = []
+        emotion_values, emotion_lengths = [], []
         texts, glosses = [], []
         num_frames, glor_lengths, langs = [], [], []
         ex_lang_translations = []
@@ -433,6 +454,14 @@ class FlanT5SLT(AbstractSLT):
             else:
                 pose_values.append(torch.zeros(1, self.pose_input_size, dtype=torch.float32))
 
+            ev = sample.get('emotion_value')
+            if ev is not None and isinstance(ev, torch.Tensor) and ev.numel() > 0:
+                emotion_values.append(ev.float())
+                emotion_lengths.append(len(ev))
+            else:
+                emotion_values.append(torch.zeros(1, self.emotion_input_size, dtype=torch.float32))
+                emotion_lengths.append(0)
+
             if sample.get('glor_value') is not None:
                 if isinstance(sample['glor_value'], list):
                     glor_values.append(torch.cat(sample['glor_value'], dim=0))
@@ -448,6 +477,8 @@ class FlanT5SLT(AbstractSLT):
             'pixel_values': pixel_values,
             'glor_values': glor_values,
             'pose_values': pose_values,
+            'emotion_values': emotion_values,
+            'emotion_lengths': emotion_lengths,
             'bool_mask_pos': masks,
             'ids': ids,
             'text': texts,

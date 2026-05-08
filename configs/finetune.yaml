@@ -9,6 +9,7 @@ model:
 
     inter_hidden: 1024
     input_size: 2048
+    emotion_input_size: 768      # <--- ADDED: Emotion feature dimension
     beam_size: 5
     max_frame_len: 512
     max_txt_len: 128
@@ -20,6 +21,7 @@ model:
     use_spatial: true
     use_spatiotemporal: true
     use_pose: false
+    use_emotion: true            # <--- ADDED: Enable emotion features
 
     # Reduce model capacity
     lora_r: 32
@@ -88,13 +90,16 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
+        emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features" # <--- ADDED
         mode: train
         spatial: true
         spatiotemporal: true
         pose: false
+        emotion: true            # <--- ADDED
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
+        emotion_postfix: "_Ze"   # <--- ADDED
         
     validation:
       target: dataset.p14t.Phoenix14T
@@ -104,13 +109,16 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
+        emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features" # <--- ADDED
         mode: dev
         spatial: true
         spatiotemporal: true
         pose: false
+        emotion: true            # <--- ADDED
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
+        emotion_postfix: "_Ze"   # <--- ADDED
     
     test:
       target: dataset.p14t.Phoenix14T
@@ -120,10 +128,13 @@ data:
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
         pose_root: pose_Phoenix14T
+        emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features" # <--- ADDED
         mode: test
         spatial: true
         spatiotemporal: true
         pose: false
+        emotion: true            # <--- ADDED
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
+        emotion_postfix: "_Ze"   # <--- ADDED

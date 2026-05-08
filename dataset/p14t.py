@@ -27,7 +27,10 @@ class Phoenix14T(torch.utils.data.Dataset):
         spatial_postfix: str = '',
         spatiotemporal_postfix: Union[str, List[str]] = '',
         pose_postfix: str = '',            # <--- NEW
-        pose: bool = False           # <--- NEW
+        pose: bool = False,           # <--- NEW
+        emotion: bool = False,
+        emotion_postfix: str = '_Ze',
+        emo_feat_root: str = ''
     ):
         """
         Initialize the Phoenix14T dataset.
@@ -55,31 +58,34 @@ class Phoenix14T(torch.utils.data.Dataset):
         self.spatiotemporal = spatiotemporal
         self.spatial_postfix = spatial_postfix
         self.spatiotemporal_postfix = spatiotemporal_postfix
-        # pose_root may be None or empty string if pose features are not used
         self.pose_root = Path(pose_root) if pose_root else None
         self.pose_postfix = pose_postfix
         self.pose = pose
         
-        # Validate inputs
+        self.emotion = emotion
+        self.emotion_postfix = emotion_postfix
+        self.emo_feat_root = Path(emo_feat_root) if emo_feat_root else None
+        
         if not (spatial or spatiotemporal):
             raise ValueError("At least one of 'spatial' or 'spatiotemporal' must be True")
         
-        if  not (pose):
+        if not (pose):
             print("No Pose features will be loaded.")
+
+        if not emotion:
+            print("No emotion features will be loaded.")
  
-        # Load annotations
         anno_path = self.anno_root / f'{mode}_info_ml.npy'
         if not anno_path.exists():
             raise FileNotFoundError(f"Annotation file not found: {anno_path}")
         
         self.data = np.load(anno_path, allow_pickle=True).item()
         
-        # Set up directory paths
         self.spatial_dir = self.feat_root / self.mode
         self.spatiotemporal_dir = self.mae_feat_root / self.mode
         self.pose_dir = (self.pose_root / self.mode) if (self.pose_root is not None) else None
+        self.emotion_dir = (self.emo_feat_root / self.mode) if self.emo_feat_root else None
         
-        # Validate that key directories exist
         self._validate_directories()
 
     def _validate_directories(self) -> None:
@@ -93,8 +99,11 @@ class Phoenix14T(torch.utils.data.Dataset):
         if self.pose:
             if self.pose_dir is None or not self.pose_dir.exists():
                 raise FileNotFoundError(f"Pose feature directory not found: {self.pose_dir}")
-        
 
+        if self.emotion:
+            if self.emotion_dir is None or not self.emotion_dir.exists():
+                raise FileNotFoundError(f"Emotion feature directory not found: {self.emotion_dir}")
+        
     def _load_spatial_features(self, file_id: str) -> torch.Tensor:
         """
         Load spatial features for a given file ID.
@@ -133,7 +142,6 @@ class Phoenix14T(torch.utils.data.Dataset):
                 raise FileNotFoundError(f"Spatiotemporal feature file not found: {glor_path}")
             return torch.tensor(np.load(glor_path))
         else:
-            # Handle multiple spatiotemporal features
             features = []
             for postfix in self.spatiotemporal_postfix:
                 path = self.spatiotemporal_dir / f"{file_id}{postfix}.npy"
@@ -154,6 +162,31 @@ class Phoenix14T(torch.utils.data.Dataset):
 
         return torch.tensor(np.load(pose_path), dtype=torch.float32)
 
+    def _heal_emotion_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+        valid_mask = ~torch.isnan(tensor).any(dim=1) & (tensor.abs().sum(dim=1) > 0)
+        
+        if valid_mask.sum() == 0:
+            return torch.zeros_like(tensor)
+            
+        if valid_mask.all():
+            return tensor
+
+        tensor_np = tensor.numpy()
+        valid_indices = torch.where(valid_mask)[0].numpy()
+        all_indices = np.arange(tensor.shape[0])
+
+        for i in range(tensor.shape[1]):
+            tensor_np[:, i] = np.interp(all_indices, valid_indices, tensor_np[valid_indices, i])
+
+        return torch.tensor(tensor_np, dtype=torch.float32)
+
+    def _load_emotion_features(self, file_id: str) -> torch.Tensor:
+        path = self.emotion_dir / f"{file_id}{self.emotion_postfix}.npy"
+        if not path.exists():
+            raise FileNotFoundError(f"Emotion feature file not found: {path}")
+        
+        raw_tensor = torch.tensor(np.load(path), dtype=torch.float32)
+        return self._heal_emotion_tensor(raw_tensor)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
         """
@@ -170,8 +203,8 @@ class Phoenix14T(torch.utils.data.Dataset):
         pixel_value = None
         glor_value = None
         pose_value = None
+        emotion_value = None
         
-        # Load spatial features if enabled
         if self.spatial:
             try:
                 pixel_value = self._load_spatial_features(file_id)
@@ -179,7 +212,6 @@ class Phoenix14T(torch.utils.data.Dataset):
                 print(f"Warning: {e}. Returning empty tensor.")
                 pixel_value = torch.tensor([])
         
-        # Load spatiotemporal features if enabled
         if self.spatiotemporal:
             try:
                 glor_value = self._load_spatiotemporal_features(file_id)
@@ -190,19 +222,25 @@ class Phoenix14T(torch.utils.data.Dataset):
                 else:
                     glor_value = [torch.tensor([])]
 
-        # Load pose features if enabled
         if self.pose:
             try:
                 pose_value = self._load_pose_features(file_id)
             except FileNotFoundError as e:
                 print(f"Warning: {e}. Returning empty tensor.")
                 pose_value = torch.tensor([])
+
+        if self.emotion:
+            try:
+                emotion_value = self._load_emotion_features(file_id)
+            except FileNotFoundError as e:
+                print(f"Warning: {e}. Returning zero tensor.")
+                emotion_value = torch.zeros(1, 768, dtype=torch.float32)
         
-        # Create result dictionary with normalized text
         result = {
             'pixel_value': pixel_value,
             'glor_value': glor_value,
             'pose_value': pose_value,
+            'emotion_value': emotion_value,
             'bool_mask_pos': None,
             'text': self._normalize_text(data['text']),
             'gloss': data['gloss'],
@@ -212,12 +250,10 @@ class Phoenix14T(torch.utils.data.Dataset):
             'lang': 'German'
         }
         
-        # Add language texts if available
         for lang in ['en', 'es', 'fr']:
             if f'{lang}_text' in data:
                 result[f'{lang}_text'] = data[f'{lang}_text']
         
-        # Store original data for reference
         result['original_info'] = data
         
         return result
@@ -244,8 +280,3 @@ class Phoenix14T(torch.utils.data.Dataset):
     @staticmethod
     def collate_fn(batch: List[Dict]) -> List[Dict]:
         return batch
-
-
-
-
-
