@@ -32,7 +32,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument('-c', '--config', nargs='*', metavar='base_config.yaml', default=list())
     parser.add_argument('-t', '--train', type=str2bool, default=True, nargs='?')
     parser.add_argument('--test', type=bool, default=False)
-    parser.add_argument('-s', '--seed', type=int, default=42)
+    parser.add_argument('-s', '--seed', type=int, default=0)
     parser.add_argument('-f', '--fast_dev_run', action='store_true', default=False)
     parser.add_argument('-n', '--name', type=str, const=True, default='', nargs='?')
     parser.add_argument('--postfix', type=str, default='')
@@ -141,10 +141,6 @@ def main():
 
     seed_value = opt.seed
     pl.seed_everything(seed_value, workers=True)
-    torch.manual_seed(seed_value)
-    torch.cuda.manual_seed_all(seed_value)
-    np.random.seed(seed_value)
-    random.seed(seed_value)
 
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
