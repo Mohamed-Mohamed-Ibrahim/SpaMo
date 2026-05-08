@@ -111,11 +111,6 @@ class FlanT5SLT(AbstractSLT):
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
-        print("==="*40)
-        print(f"use_data_augmentation: {use_data_augmentation}")
-        print(f"sign_cl_loss: {sign_cl_loss}")
-        print(f"use_emotion: {use_emotion}")
-        print("==="*40)
         
         self.save_hyperparameters()
         self.prepare_models(model_name)
@@ -132,16 +127,12 @@ class FlanT5SLT(AbstractSLT):
                 span_mask_prob=aug_span_prob,
                 channel_drop_prob=aug_channel_prob
             )
-            print(
-                f"[AUG] Enabled | frame={aug_frame_prob}, span={aug_span_prob}, channel={aug_channel_prob}"
-            )
 
         self.set_container()
         
     def load_pretrained_weights(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         self.load_state_dict(checkpoint['state_dict'])
-        print(f'Checkpoint is loaded from {checkpoint_path}.')
 
     def _apply_lora(self) -> None:
         lora_config = LoraConfig(
@@ -153,13 +144,11 @@ class FlanT5SLT(AbstractSLT):
             task_type=TaskType.SEQ_2_SEQ_LM
         )
         self.t5_model = get_peft_model(self.t5_model, lora_config)
-        print("LoRA adapter applied to T5 model.")
 
     def _freeze_model(self) -> None:
         self.t5_model.eval()
         for params in self.t5_model.parameters():
             params.requires_grad = False
-        print("T5 model frozen.")
 
     def set_container(self) -> None:
         self.generated = []
@@ -313,10 +302,8 @@ class FlanT5SLT(AbstractSLT):
             emotion_mask = create_mask(seq_lengths=samples['emotion_lengths'], device=self.device)
             Ze_proj = self.emotion_proj(Ze_padded)
             
-            # Pass mask into the Enhancer to protect the global anchor
             Ze_g = self.emotion_enhancer(Ze_proj, emotion_mask)
 
-            # Modulate each active stream dynamically
             if spatial:
                 spatial_outputs = self.emotion_modulator_s(spatial_outputs, Ze_g)
             if spatiotemporal:
@@ -484,7 +471,8 @@ class FlanT5SLT(AbstractSLT):
                     glor_lengths.append(len(sample['glor_value']))
 
         if self.use_in_context and len(ex_lang_translations) > 1:
-            ex_lang_translations = derangement(ex_lang_translations)
+            if self.training:
+                ex_lang_translations = derangement(ex_lang_translations)
 
         return {
             'pixel_values': pixel_values,
@@ -509,10 +497,13 @@ class FlanT5SLT(AbstractSLT):
             return_tensors="pt",
         ).to(self.device)
         
-        text_embeds = self.t5_model.encoder.embed_tokens(output_tokens.input_ids)
+        text_embeds_raw = self.t5_model.encoder.embed_tokens(output_tokens.input_ids)
         
-        image_embeds = visual_outputs.mean(1) 
-        text_embeds = text_embeds.mean(1)
+        mask_v = visual_masks.unsqueeze(-1).float()
+        image_embeds = (visual_outputs * mask_v).sum(1) / mask_v.sum(1).clamp(min=1e-6)
+        
+        mask_t = output_tokens.attention_mask.unsqueeze(-1).float()
+        text_embeds = (text_embeds_raw * mask_t).sum(1) / mask_t.sum(1).clamp(min=1e-6)
         
         image_embeds = F.normalize(image_embeds, dim=-1)
         text_embeds = F.normalize(text_embeds, dim=-1)
@@ -570,14 +561,18 @@ class FlanT5SLT(AbstractSLT):
                     inputs_embeds=input_embeds,
                     attention_mask=input_masks,
                     decoder_attention_mask=output_tokens.attention_mask,
-                    labels=targets,
                     output_hidden_states=True,
                     return_dict=True
                 )
                 
-                t5_loss = outputs.loss
+                t5_loss = torch.nn.functional.cross_entropy(
+                    outputs.logits.view(-1, outputs.logits.size(-1)), 
+                    targets.view(-1), 
+                    ignore_index=-100, 
+                    label_smoothing=0.1
+                )
                 log_dict[f"{split}/loss"] = t5_loss
-                
+                    
                 cont_loss = self.visual_textual_align(visual_outputs, visual_masks, inputs)
                 loss = t5_loss + self.alpha * cont_loss
                 log_dict[f"{split}/contra_loss"] = cont_loss
@@ -602,12 +597,16 @@ class FlanT5SLT(AbstractSLT):
                 inputs_embeds=input_embeds,
                 attention_mask=input_masks,
                 decoder_attention_mask=output_tokens.attention_mask,
-                labels=targets,
                 output_hidden_states=True,
                 return_dict=True
             )
             
-            loss = outputs.loss
+            loss = torch.nn.functional.cross_entropy(
+                outputs.logits.view(-1, outputs.logits.size(-1)), 
+                targets.view(-1), 
+                ignore_index=-100, 
+                label_smoothing=0.1
+            )
             log_dict[f"{split}/loss"] = loss
 
         if split != "train":
@@ -620,8 +619,8 @@ class FlanT5SLT(AbstractSLT):
                 attention_mask=input_masks,
                 num_beams=5,
                 max_length=self.max_txt_len,
-                top_p=0.9,
-                do_sample=True,
+                do_sample=False,
+                early_stopping=True,
             )
             
             generated_strings = self.t5_tokenizer.batch_decode(generated, skip_special_tokens=True)
@@ -636,11 +635,8 @@ class FlanT5SLT(AbstractSLT):
         return loss, log_dict
 
     def on_validation_epoch_end(self) -> None:
-        print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
-            print(f"\033[94mReference: {self.references[i]}\033[0m") 
-            print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
-            print("-" * 50)
+            pass
             
         eval_res = evaluate_results(
             predictions=self.generated,
@@ -653,11 +649,8 @@ class FlanT5SLT(AbstractSLT):
         self.set_container()
 
     def on_test_epoch_end(self) -> None:
-        print("\n===== Validation Examples =====")
         for i in range(min(5, len(self.generated))):
-            print(f"\033[94mReference: {self.references[i]}\033[0m") 
-            print(f"\033[92mGenerated: {self.generated[i]}\033[0m") 
-            print("-" * 50)
+            pass
             
         eval_res = evaluate_results(
             predictions=self.generated,
@@ -697,8 +690,6 @@ class FlanT5SLT(AbstractSLT):
             warmup_steps = self.warm_up_steps
         else:
             warmup_steps = int(total_steps * 0.1)
-
-        print(f"--> Optimizer Setup: Total Steps={total_steps}, Warmup Steps={warmup_steps}")
 
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
