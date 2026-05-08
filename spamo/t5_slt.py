@@ -14,7 +14,7 @@ from peft import LoraConfig, get_peft_model, TaskType
 
 from spamo.tconv import TemporalConv
 from utils.helpers import create_mask, derangement
-from spamo.mm_projector import build_vision_projector, AdaptiveFusion
+from spamo.mm_projector import build_vision_projector, AdaptiveFusion, EmotionEnhancer, EmotionModulator
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
 from spamo.sign_cl import TemporalSignCLLoss
@@ -186,6 +186,10 @@ class FlanT5SLT(AbstractSLT):
         
         if self.use_emotion:
             self.emotion_proj = build_vision_projector('linear', self.emotion_input_size, self.inter_hidden)
+            self.emotion_enhancer = EmotionEnhancer(self.inter_hidden)
+            self.emotion_modulator_s = EmotionModulator(self.inter_hidden)
+            self.emotion_modulator_m = EmotionModulator(self.inter_hidden)
+            self.emotion_modulator_e = EmotionModulator(self.inter_hidden)
         
         self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
         
@@ -299,17 +303,26 @@ class FlanT5SLT(AbstractSLT):
                 pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=torch.float32)
                 pose_lengths = [0] * B
             pose_outputs = self.pose_proj(pose_padded)
-            if not hasattr(self, '_pose_printed'):
-                print(f"[POSE DEBUG] shape={pose_padded.shape}, mean={pose_padded[0].abs().mean():.6f}, zeros={pose_padded[0].abs().sum()==0}")
-                self._pose_printed = True
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
 
         emotion_mask = None
-        Ze_proj = None
+        Ze_mod = None
         if self.use_emotion and len(samples.get('emotion_values', [])) > 0:
             Ze_padded = pad_sequence(samples['emotion_values'], batch_first=True).to(self.device).float()
-            Ze_proj = self.emotion_proj(Ze_padded)
+            
             emotion_mask = create_mask(seq_lengths=samples['emotion_lengths'], device=self.device)
+            Ze_proj = self.emotion_proj(Ze_padded)
+            
+            # Pass mask into the Enhancer to protect the global anchor
+            Ze_g = self.emotion_enhancer(Ze_proj, emotion_mask)
+
+            # Modulate each active stream dynamically
+            if spatial:
+                spatial_outputs = self.emotion_modulator_s(spatial_outputs, Ze_g)
+            if spatiotemporal:
+                spatiotemporal_outputs = self.emotion_modulator_m(spatiotemporal_outputs, Ze_g)
+            
+            Ze_mod = self.emotion_modulator_e(Ze_proj, Ze_g)
         
         if self.fusion_mode == 'joint':
             bs = spatial_outputs.shape[0]
@@ -329,8 +342,8 @@ class FlanT5SLT(AbstractSLT):
                     parts.append(spatiotemporal_outputs[i, :spatiotemporal_length[i], :])
                 if pose:
                     parts.append(pose_outputs[i, :pose_length[i], :])
-                if self.use_emotion and Ze_proj is not None:
-                    parts.append(Ze_proj[i, :emotion_length[i], :])
+                if self.use_emotion and Ze_mod is not None:
+                    parts.append(Ze_mod[i, :emotion_length[i], :])
                 
                 concat_sample = torch.cat(parts, dim=0)
                 joint_outputs.append(concat_sample)
