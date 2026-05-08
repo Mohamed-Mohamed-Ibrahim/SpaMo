@@ -8,45 +8,24 @@ import random
 
 
 class Phoenix14T(torch.utils.data.Dataset):
-    """
-    Dataset class for the Phoenix14T sign language dataset.
-    
-    This class handles loading video features and annotations for sign language translation,
-    supporting both spatial and spatiotemporal feature types.
-    """
     def __init__(
         self,
         anno_root: str,
         vid_root: str,
         feat_root: str,
         mae_feat_root: str,
-        pose_root: str,    # <--- NEW
+        pose_root: str,
         mode: str = 'dev',
         spatial: bool = False,
         spatiotemporal: bool = False,
         spatial_postfix: str = '',
         spatiotemporal_postfix: Union[str, List[str]] = '',
-        pose_postfix: str = '',            # <--- NEW
-        pose: bool = False,           # <--- NEW
+        pose_postfix: str = '',
+        pose: bool = False,
         emotion: bool = False,
         emotion_postfix: str = '_Ze',
         emo_feat_root: str = ''
     ):
-        """
-        Initialize the Phoenix14T dataset.
-        
-        Args:
-            anno_root: Root directory for annotation files
-            vid_root: Root directory for video files
-            feat_root: Root directory for spatial features
-            mae_feat_root: Root directory for spatiotemporal features
-            mode: Dataset split ('train', 'dev', or 'test')
-            spatial: Whether to load spatial features
-            spatiotemporal: Whether to load spatiotemporal features
-            spatial_postfix: Filename postfix for spatial features
-            spatiotemporal_postfix: Filename postfix for spatiotemporal features,
-                                    can be a string or a list of strings
-        """
         super().__init__()
         
         self.anno_root = Path(anno_root)
@@ -81,6 +60,12 @@ class Phoenix14T(torch.utils.data.Dataset):
         
         self.data = np.load(anno_path, allow_pickle=True).item()
         
+        if isinstance(self.data, dict):
+            self.valid_keys = [k for k, v in self.data.items() if isinstance(v, dict) and 'fileid' in v]
+            self.valid_keys.sort()
+        else:
+            self.valid_keys = list(range(len(self.data)))
+        
         self.spatial_dir = self.feat_root / self.mode
         self.spatiotemporal_dir = self.mae_feat_root / self.mode
         self.pose_dir = (self.pose_root / self.mode) if (self.pose_root is not None) else None
@@ -89,7 +74,6 @@ class Phoenix14T(torch.utils.data.Dataset):
         self._validate_directories()
 
     def _validate_directories(self) -> None:
-        """Validate that all necessary directories exist."""
         if self.spatial and not self.spatial_dir.exists():
             raise FileNotFoundError(f"Spatial feature directory not found: {self.spatial_dir}")
         
@@ -105,18 +89,6 @@ class Phoenix14T(torch.utils.data.Dataset):
                 raise FileNotFoundError(f"Emotion feature directory not found: {self.emotion_dir}")
         
     def _load_spatial_features(self, file_id: str) -> torch.Tensor:
-        """
-        Load spatial features for a given file ID.
-        
-        Args:
-            file_id: The file identifier
-            
-        Returns:
-            Tensor containing spatial features
-            
-        Raises:
-            FileNotFoundError: If the feature file doesn't exist
-        """
         feat_path = self.spatial_dir / f"{file_id}{self.spatial_postfix}.npy"
         if not feat_path.exists():
             raise FileNotFoundError(f"Spatial feature file not found: {feat_path}")
@@ -124,18 +96,6 @@ class Phoenix14T(torch.utils.data.Dataset):
         return torch.tensor(np.load(feat_path))
 
     def _load_spatiotemporal_features(self, file_id: str) -> Union[torch.Tensor, List[torch.Tensor]]:
-        """
-        Load spatiotemporal features for a given file ID.
-        
-        Args:
-            file_id: The file identifier
-            
-        Returns:
-            Tensor or list of tensors containing spatiotemporal features
-            
-        Raises:
-            FileNotFoundError: If any feature file doesn't exist
-        """
         if isinstance(self.spatiotemporal_postfix, str):
             glor_path = self.spatiotemporal_dir / f"{file_id}{self.spatiotemporal_postfix}.npy"
             if not glor_path.exists():
@@ -151,7 +111,6 @@ class Phoenix14T(torch.utils.data.Dataset):
             return features
         
     def _load_pose_features(self, file_id: str) -> torch.Tensor:
-        """Load pose (skeletal) features for a given file ID."""
         if self.pose_dir is None:
             return torch.tensor([])
 
@@ -189,16 +148,9 @@ class Phoenix14T(torch.utils.data.Dataset):
         return self._heal_emotion_tensor(raw_tensor)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
-        """
-        Get a dataset item by index.
+        actual_key = self.valid_keys[index]
+        data = self.data[actual_key]
         
-        Args:
-            index: The index of the item to retrieve
-            
-        Returns:
-            Dictionary containing all features and metadata for the item
-        """
-        data = self.data[index]
         file_id = data['fileid']
         pixel_value = None
         glor_value = None
@@ -259,23 +211,13 @@ class Phoenix14T(torch.utils.data.Dataset):
         return result
 
     def _normalize_text(self, text: str) -> str:
-        """
-        Normalize text by ensuring it ends with a period.
-        
-        Args:
-            text: Input text to normalize
-            
-        Returns:
-            Normalized text
-        """
         text = text.strip()
         if not text.endswith('.'):
             text = f"{text}."
         return text
 
     def __len__(self) -> int:
-        """Get the number of items in the dataset."""
-        return len(self.data) - 1
+        return len(self.valid_keys)
 
     @staticmethod
     def collate_fn(batch: List[Dict]) -> List[Dict]:
