@@ -237,8 +237,8 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         self.t5_model = T5ForConditionalGeneration.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
-            torch_dtype=torch.bfloat16,
-            use_safetensors=False 
+            torch_dtype=torch.float32,
+            use_safetensors=True 
         )
         
         self.t5_tokenizer = AutoTokenizer.from_pretrained(
