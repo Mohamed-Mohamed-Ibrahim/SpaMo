@@ -238,7 +238,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
             t5_model, 
             cache_dir=self.cache_dir,
             torch_dtype=torch.float32,
-            use_safetensors=True 
+            use_safetensors=False 
         )
         
         self.t5_tokenizer = AutoTokenizer.from_pretrained(
