@@ -4,7 +4,7 @@ model:
     lr: 6.0e-4
     monitor: val/bleu4
 
-    model_name: google/flan-t5-xl
+    model_name: google/flan-t5-small
     cache_dir: /data3/models
 
     inter_hidden: 1024
@@ -29,7 +29,7 @@ model:
     weight_decay: 0.01
 
     fusion_mode: joint
-    warm_up_steps: 500
+    warm_up_steps: 250
     cross_modal_align: true
     combined_loss: true
 
@@ -61,7 +61,7 @@ lightning:
     accumulate_grad_batches: 1
     accelerator: gpu
     devices: 2
-    max_epochs: 500
+    max_epochs: 250
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: 32
