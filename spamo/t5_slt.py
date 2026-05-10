@@ -16,7 +16,7 @@ from spamo.tconv import TemporalConv
 from utils.helpers import create_mask, derangement
 from spamo.mm_projector import build_vision_projector, AdaptiveFusion
 from utils.evaluate import evaluate_results
-from spamo.clip_loss import clip_loss
+from spamo.clip_loss import siglip_loss
 from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
@@ -198,6 +198,10 @@ class FlanT5SLT(AbstractSLT):
             self.sign_cl = None
 
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
+        # SigLIP bias: initialised to -10.0 as recommended by Zhai et al. (2023).
+        # It is added to every logit before the sigmoid and is learned jointly
+        # with the rest of the model.
+        self.logit_bias = nn.Parameter(torch.tensor(-10.0))
 
     def prepare_inputs(
         self, 
@@ -476,7 +480,7 @@ class FlanT5SLT(AbstractSLT):
         logit_scale = self.logit_scale.exp()
         logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
 
-        loss = clip_loss(logits_per_text)
+        loss = siglip_loss(logits_per_text, self.logit_bias)
         return loss
 
     def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
