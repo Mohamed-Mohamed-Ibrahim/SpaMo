@@ -17,8 +17,8 @@ strategies, controlled by ``alignment_mode``:
   reduction       – independently mean-pool both streams to (B, D) — no length alignment
   attention       – cross-attention: spatiotemporal queries attend to spatial keys/values,
                     then mean-pool the attended output
-  upsample_st     – learnable deconvolution (depthwise ConvTranspose1d) upsamples the
-                    spatiotemporal stream to the spatial length, then element-wise averages
+  upsample_st     – dynamic 1D interpolation upsamples the spatiotemporal stream to the spatial
+                    length, refined by a learnable depthwise Conv1d, then element-wise averages
                     both aligned streams and mean-pools; the spatial resolution is preserved
                     (ST is never downsampled) and the upsample kernel is fully trainable
 
@@ -74,43 +74,32 @@ def _extend_mask(mask: torch.Tensor, target_len: int) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
-# Deconvolution upsampler
+# Dynamic upsampler
 # ---------------------------------------------------------------------------
 
-class DeconvUpsampler(nn.Module):
-    """Learnable temporal upsampler using a depthwise ``ConvTranspose1d``.
+class DynamicUpsampler(nn.Module):
+    """Learnable temporal upsampler using dynamic interpolation + depthwise Conv1d.
 
-    Each feature channel gets its own learnable 1-D transposed-conv kernel
-    (``groups=dim``), keeping the total parameter count to ``dim * kernel_size``.
-
-    The transposed convolution produces an approximate target length; the output is
-    then trimmed (or zero-padded) to the exact ``target`` length requested at
-    forward time, so the module works for any ratio of input to target length.
+    First, it uses 1-D linear interpolation to dynamically match the exact target length.
+    Then, it applies a depthwise ``Conv1d`` to refine the features and keep it learnable.
 
     Parameters
     ----------
     dim : int
         Number of feature channels (= ``inter_hidden`` or ``proj_dim``).
-    upsample_factor : int
-        Nominal stride of the transposed convolution (≈ ``Ts / Tt``).
-        A value of ``kernel_size = upsample_factor`` gives a non-overlapping
-        deconv; overlap can be added by increasing ``kernel_size``.
-    kernel_size : int | None
-        Kernel size for the transposed conv.  Defaults to ``upsample_factor``
-        (non-overlapping).  Use ``upsample_factor * 2`` for smoother output.
+    kernel_size : int
+        Kernel size for the refinement conv. Defaults to 3.
     """
 
-    def __init__(self, dim: int, upsample_factor: int = 6, kernel_size: Optional[int] = None):
+    def __init__(self, dim: int, kernel_size: int = 3):
         super().__init__()
-        if kernel_size is None:
-            kernel_size = upsample_factor
-        self.stride = upsample_factor
-        # Depthwise transposed conv: one kernel per channel
-        self.deconv = nn.ConvTranspose1d(
+        # Depthwise 1D conv: one kernel per channel, keeps it lightweight
+        padding = kernel_size // 2
+        self.conv = nn.Conv1d(
             in_channels=dim,
             out_channels=dim,
             kernel_size=kernel_size,
-            stride=upsample_factor,
+            padding=padding,
             groups=dim,
             bias=False,
         )
@@ -118,13 +107,13 @@ class DeconvUpsampler(nn.Module):
     def forward(self, x: torch.Tensor, target: int) -> torch.Tensor:
         """Upsample ``x`` (B, T, D) to (B, target, D)."""
         x_t = x.permute(0, 2, 1)          # (B, D, T)
-        x_t = self.deconv(x_t)            # (B, D, T_out)  T_out ≈ T * stride
-        T_out = x_t.size(-1)
-        if T_out >= target:
-            x_t = x_t[:, :, :target]      # trim to exact length
-        else:
-            pad = target - T_out
-            x_t = F.pad(x_t, (0, pad))    # zero-pad if deconv undershoots
+        
+        # 1. Dynamic interpolation to match target exactly
+        x_t = F.interpolate(x_t, size=target, mode="linear", align_corners=False)
+        
+        # 2. Refine with learnable depthwise conv
+        x_t = self.conv(x_t)              # (B, D, target)
+        
         return x_t.permute(0, 2, 1)       # (B, target, D)
 
 
@@ -183,9 +172,6 @@ class SpatialTemporalCLLoss(nn.Module):
         Attention heads (only used when ``alignment_mode == "attention"``).
     attn_dropout : float
         Dropout inside the cross-attention module.
-    upsample_factor : int
-        Nominal stride of the depthwise ``ConvTranspose1d`` used in ``upsample_st``
-        mode (≈ ``Ts / Tt``; default 6).  Ignored for all other modes.
     """
 
     VALID_MODES = {"padding", "interp_nearest", "interp_linear", "reduction", "attention", "upsample_st"}
@@ -198,7 +184,6 @@ class SpatialTemporalCLLoss(nn.Module):
         temperature_init: float = 2.6592,
         num_heads: int = 4,
         attn_dropout: float = 0.0,
-        upsample_factor: int = 6,
     ):
         super().__init__()
 
@@ -222,14 +207,13 @@ class SpatialTemporalCLLoss(nn.Module):
         else:
             self.cross_attn = None
 
-        # Learnable deconvolution upsampler (only built when needed)
+        # Learnable dynamic upsampler (only built when needed)
         if alignment_mode == "upsample_st":
-            self.deconv_up = DeconvUpsampler(
+            self.dynamic_up = DynamicUpsampler(
                 dim=self._out_dim,
-                upsample_factor=upsample_factor,
             )
         else:
-            self.deconv_up = None
+            self.dynamic_up = None
 
         self.logit_scale = nn.Parameter(torch.tensor(temperature_init))
 
@@ -298,12 +282,12 @@ class SpatialTemporalCLLoss(nn.Module):
 
         elif mode == "upsample_st":
             # Upsample the short spatiotemporal stream to the spatial length using
-            # a learnable depthwise ConvTranspose1d (deconvolution).
+            # dynamic interpolation followed by a learnable depthwise Conv1d.
             # Only ST is upsampled so the spatial resolution is fully preserved.
-            # After deconv the two aligned streams are element-wise averaged and
+            # After upsampling the two aligned streams are element-wise averaged and
             # then mean-pooled over the spatial mask.
             target = s.size(1)                                           # Ts
-            st_up  = self.deconv_up(st, target)                          # (B, Ts, D')
+            st_up  = self.dynamic_up(st, target)                         # (B, Ts, D')
             fused  = (s + st_up) * 0.5                                   # (B, Ts, D')
             s_emb  = _mean_pool_masked(fused, s_mask)                    # (B, D')
             # For the other side of the CLIP matrix keep a clean ST embedding

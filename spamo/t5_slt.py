@@ -73,7 +73,6 @@ class FlanT5SLT(AbstractSLT):
         st_cl_num_heads: int = 4,
         st_cl_attn_dropout: float = 0.0,
         st_cl_temperature_init: float = 2.6592,
-        st_cl_upsample_factor: int = 6,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -117,7 +116,6 @@ class FlanT5SLT(AbstractSLT):
         self.st_cl_num_heads = st_cl_num_heads
         self.st_cl_attn_dropout = st_cl_attn_dropout
         self.st_cl_temperature_init = st_cl_temperature_init
-        self.st_cl_upsample_factor = st_cl_upsample_factor
         
         if self.num_in_context == 0:
             self.use_in_context = False
@@ -225,12 +223,10 @@ class FlanT5SLT(AbstractSLT):
                 temperature_init=self.st_cl_temperature_init,
                 num_heads=self.st_cl_num_heads,
                 attn_dropout=self.st_cl_attn_dropout,
-                upsample_factor=self.st_cl_upsample_factor,
             )
             print(
                 f"[ST-CL] Enabled | mode={self.st_cl_alignment_mode}, "
-                f"proj_dim={self.st_cl_proj_dim}, alpha={self.st_cl_alpha}, "
-                f"upsample_factor={self.st_cl_upsample_factor}"
+                f"proj_dim={self.st_cl_proj_dim}, alpha={self.st_cl_alpha}"
             )
         else:
             self.st_cl = None
