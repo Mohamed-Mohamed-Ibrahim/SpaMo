@@ -29,7 +29,7 @@ model:
     weight_decay: 0.01
 
     fusion_mode: joint
-    warm_up_steps: 250
+    warm_up_steps: null
     cross_modal_align: true
     combined_loss: true
 
@@ -41,8 +41,8 @@ model:
     sign_cl_temporal_window: 12
     sign_cl_every_n_steps: 1
 
-    use_in_context: true
-    num_in_context: 3
+    use_in_context: false
+    num_in_context: 0
 
     use_data_augmentation: false
     augmentation_prob: 0.0
@@ -56,12 +56,16 @@ lightning:
       target: pytorch_lightning.callbacks.LearningRateMonitor
       params:
         logging_interval: step
+    timer:
+        target: pytorch_lightning.callbacks.Timer
+        params:
+          duration: "00:10:00:00"
   trainer:
     strategy: ddp
     accumulate_grad_batches: 1
     accelerator: gpu
     devices: 2
-    max_epochs: 250
+    max_epochs: 500
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: 32
