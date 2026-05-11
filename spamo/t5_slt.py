@@ -633,13 +633,23 @@ class FlanT5SLT(AbstractSLT):
         if len(trainable_params) == 0:
             raise RuntimeError("No trainable parameters found.")
 
-        optimizer = torch.optim.AdamW(
-            trainable_params,
-            lr=self.hparams.lr,
-            weight_decay=self.hparams.weight_decay,
-            eps=1e-8,
-            betas=(0.9, 0.98)
-        )
+        lora_params = [p for n, p in self.named_parameters()
+                    if p.requires_grad and ('lora_' in n or 'logit_scale' in n)]
+
+        bridge_params = [p for n, p in self.named_parameters()
+                        if p.requires_grad and 'fusion_proj' in n]
+
+        other_params = [p for n, p in self.named_parameters()
+                        if p.requires_grad
+                        and 'lora_' not in n
+                        and 'logit_scale' not in n
+                        and 'fusion_proj' not in n]
+
+        optimizer = torch.optim.AdamW([
+            {'params': lora_params,   'lr': self.hparams.lr},
+            {'params': bridge_params, 'lr': self.hparams.lr * 1.3},
+            {'params': other_params,  'lr': self.hparams.lr * 1.7},
+        ], weight_decay=self.hparams.weight_decay, eps=1e-8, betas=(0.9, 0.98))
 
         if hasattr(self.trainer, 'estimated_stepping_batches'):
             total_steps = int(self.trainer.estimated_stepping_batches)
