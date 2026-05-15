@@ -1,14 +1,15 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 3.0e-4
+    lr: 6.0e-4
     monitor: val/bleu4
 
-    model_name: MBZUAI/LaMini-Flan-T5-783M
+    model_name: google/flan-t5-base
     cache_dir: /data3/models
 
     inter_hidden: 1024
     input_size: 2048
+    emotion_input_size: 768
     beam_size: 5
     max_frame_len: 512
     max_txt_len: 128
@@ -20,17 +21,15 @@ model:
     use_spatial: true
     use_spatiotemporal: true
     use_pose: false
+    use_emotion: true
 
-    # Reduce model capacity
-    lora_r: 32
-    lora_alpha: 64
-
-    # Increase regularization
-    lora_dropout: 0.05
-    weight_decay: 0.05
+    lora_r: 16
+    lora_alpha: 32
+    lora_dropout: 0.1
+    weight_decay: 0.01
 
     fusion_mode: joint
-    warm_up_steps: 1000
+    warm_up_steps: null
     cross_modal_align: true
     combined_loss: true
 
@@ -47,12 +46,12 @@ model:
 
     use_in_context: false
     num_in_context: 0
-    # NEW AUGMENTATION PARAMETERS
+
     use_data_augmentation: false
-    augmentation_prob: 0.1      # Apply augmentation to 50% of batches
-    aug_frame_prob: 0.05          # Drop 10% of frames
-    aug_span_prob: 0.05           # Mask 10% of spans
-    aug_channel_prob: 0.05      # Drop 5% of feature channels
+    augmentation_prob: 0.0
+    aug_frame_prob: 0.0
+    aug_span_prob: 0.0
+    aug_channel_prob: 0.0
 
 
     conv_type: 2
@@ -89,12 +88,16 @@ lightning:
       target: pytorch_lightning.callbacks.LearningRateMonitor
       params:
         logging_interval: step
+    timer:
+        target: pytorch_lightning.callbacks.Timer
+        params:
+          duration: "00:10:00:00"
   trainer:
     strategy: ddp
-    accumulate_grad_batches: 4
+    accumulate_grad_batches: 1
     accelerator: gpu
     devices: 2
-    max_epochs: 200
+    max_epochs: 500
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
     precision: 32
@@ -112,14 +115,17 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: ""
+        emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features"
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: True
+        pose: false
+        emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
+        emotion_postfix: "_Ze"   
         
     validation:
       target: dataset.p14t.Phoenix14T
@@ -128,14 +134,17 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: ""
+        emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features"
         mode: dev
         spatial: true
         spatiotemporal: true
-        pose: True
+        pose: false
+        emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
+        emotion_postfix: "_Ze"   
     
     test:
       target: dataset.p14t.Phoenix14T
@@ -144,14 +153,14 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        pose_root: ""
+        emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features"
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: True
+        pose: false
+        emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
         pose_postfix: ""
-
-
-# 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
+        emotion_postfix: "_Ze"
