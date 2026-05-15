@@ -594,8 +594,8 @@ class FlanT5SLT(AbstractSLT):
                 attention_mask=input_masks,
                 num_beams=5,
                 max_length=self.max_txt_len,
-                do_sample=False,
-                early_stopping=True,
+                top_p=0.9,
+                do_sample=True,
             )
             generated_strings = self.t5_tokenizer.batch_decode(generated, skip_special_tokens=True)
             generated_strings = [g.lower() for g in generated_strings]
