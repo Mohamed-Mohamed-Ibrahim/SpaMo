@@ -38,8 +38,11 @@ model:
     sign_cl_loss: false
     sign_cl_alpha: 0.1
     sign_cl_temperature: 0.3
-    sign_cl_temporal_window: 12
+    sign_cl_temporal_window: 4
     sign_cl_every_n_steps: 1
+
+    use_kt_loss: true
+    kt_lambda: 0.7
 
     use_in_context: false
     num_in_context: 0
@@ -49,6 +52,35 @@ model:
     aug_frame_prob: 0.0
     aug_span_prob: 0.0
     aug_channel_prob: 0.0
+
+
+    conv_type: 2
+    use_ctc: false        # master on/off switch
+    ctc_weight: 0.5      # λ_Txt — weight of L_TxtCTC in total loss
+    ctc_blank_id: -1     # -1 means auto-resolve from tokenizer.pad_token_id
+
+
+    use_hyperbolic: false
+    hyp_dim: 256            # embedding dim on the Poincaré ball
+    hyp_init_c: 1.0         # initial curvature (learnable); set 0.001 for near-Euclidean ablation
+    hyp_alpha: 0.5          # weight of hyp loss in final loss sum
+ 
+
+    # InfoLOOB loss for visual-textual alignment
+    use_infoloob_loss: false
+    infoloob_temperature: 0.03
+    infoloob_weight: 1.0
+
+    # Dynamic Temporal Segmentation and Masking
+    use_dynamic_segmentation: false
+    motion_threshold: 0.8
+    use_adaptive_masking: false
+    mask_prob: 0.15
+    min_mask_len: 5
+    max_mask_len: 20
+    # NEW: Enhanced Segmentation Parameters
+    num_layers: 3                # Depth of motion detection network (2-5 recommended)
+    mask_type: 'noise'           # Masking strategy: 'noise', 'smooth', or 'zero'
 
 lightning:
   callback:
