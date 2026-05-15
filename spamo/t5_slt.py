@@ -15,7 +15,7 @@ from spamo.tconv import TemporalConv
 from utils.helpers import create_mask, derangement
 from spamo.mm_projector import build_vision_projector, AdaptiveFusion, EmotionEnhancer, EmotionModulator
 from utils.evaluate import evaluate_results
-from spamo.clip_loss import clip_loss
+from spamo.clip_loss import siglip_loss
 from spamo.sign_cl import TemporalSignCLLoss
 from spamo.asb import AbstractSLT
 from spamo.data_augmentation import FeatureAugmenter
@@ -196,6 +196,8 @@ class FlanT5SLT(AbstractSLT):
             self.sign_cl = None
 
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
+        self.logit_bias = nn.Parameter(torch.tensor(-10.0))
+
 
     def prepare_inputs(
         self,
@@ -493,7 +495,8 @@ class FlanT5SLT(AbstractSLT):
         logit_scale = self.logit_scale.exp()
         logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
 
-        return clip_loss(logits_per_text)
+        return siglip_loss(logits_per_text, self.logit_bias)
+
 
     def shared_step(self, inputs: Dict, split: str, batch_idx: int) -> Tuple[torch.Tensor, Dict]:
         visual_outputs, visual_masks = self.prepare_visual_inputs(inputs)
@@ -634,7 +637,7 @@ class FlanT5SLT(AbstractSLT):
             raise RuntimeError("No trainable parameters found.")
 
         lora_params = [p for n, p in self.named_parameters()
-                    if p.requires_grad and ('lora_' in n or 'logit_scale' in n)]
+            if p.requires_grad and ('lora_' in n or 'logit_scale' in n or 'logit_bias' in n)]
 
         bridge_params = [p for n, p in self.named_parameters()
                         if p.requires_grad and 'fusion_proj' in n]
@@ -643,6 +646,7 @@ class FlanT5SLT(AbstractSLT):
                         if p.requires_grad
                         and 'lora_' not in n
                         and 'logit_scale' not in n
+                        and 'logit_bias' not in n
                         and 'fusion_proj' not in n]
 
         optimizer = torch.optim.AdamW([
