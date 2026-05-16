@@ -210,14 +210,20 @@ class Phoenix14T(torch.utils.data.Dataset):
         # --- NEW: Reproducible Random Context ---
         # Seed the random number generator using the current index
         # This guarantees the exact same "random" context is chosen every single epoch
+        # --- NEW: Reproducible Random Context ---
         rng = random.Random(index)
-        rand_idx = rng.randint(0, len(self.data) - 2)
         
-        # Make sure we don't accidentally pick the same video
+        # Use valid_keys to ensure we never hit a missing dictionary key
+        max_idx = len(self.valid_keys) - 1
+        rand_idx = rng.randint(0, max_idx)
+        
         while rand_idx == index:
-            rand_idx = rng.randint(0, len(self.data) - 2)
+            rand_idx = rng.randint(0, max_idx)
             
-        rand_data = self.data[rand_idx]
+        # Safely grab the actual key, then grab the data
+        actual_rand_key = self.valid_keys[rand_idx]
+        rand_data = self.data[actual_rand_key]
+        
         result['ctx_text'] = self._normalize_text(rand_data['text'])
         
         for lang in ['en', 'es', 'fr']:
