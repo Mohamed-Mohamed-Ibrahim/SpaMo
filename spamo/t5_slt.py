@@ -207,11 +207,20 @@ class FlanT5SLT(AbstractSLT):
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
         bs = visual_outputs.shape[0]
 
-        prompts = [f'{self.prompt}'] * bs
-        prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
-
-        if self.use_in_context:
-            prompts = [f"{p} {c}" for p, c in zip(prompts, samples['ex_lang_trans'])]
+        prompts = []
+        for i in range(bs):
+            lang  = samples['lang'][i]
+            base_p = self.prompt.format(lang)
+        
+            ctx_list = samples.get('ex_lang_trans', [])
+            if (self.use_in_context
+                    and i < len(ctx_list)
+                    and ctx_list[i]):               # guard: non-empty context string
+                p = f"{base_p} Context: {ctx_list[i]}"
+            else:
+                p = base_p
+        
+            prompts.append(p)
 
         input_tokens = self.t5_tokenizer(
             prompts,
