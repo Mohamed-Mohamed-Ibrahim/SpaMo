@@ -1,0 +1,16 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Mamba-Vision Finetuning — Configuration
+# ═══════════════════════════════════════════════════════════════════════════
+anno_root: ./preprocess/Phoenix14TCompressed
+video_root: /kaggle/input/datasets/mariusschmidtmengin/phoenixweather2014t-3rd-attempt/videos_phoenix/videos
+max_frames: 64  # Mamba loves long sequences!
+
+mamba_model_name: nvidia/mamba-vision-t
+text_model_name: openai/clip-vit-base-patch16
+spatial_input_dim: 640  # Mamba-Vision-T dim
+proj_dim: 512
+
+batch_size: 4
+accumulate_grad_batches: 4
+precision: 16
+log_dir: logs/finetune_mamba
