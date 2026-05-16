@@ -407,14 +407,14 @@ class FlanT5SLT(AbstractSLT):
             glosses.append(sample['gloss'])
             langs.append(sample['lang'])
 
+            # (uses ctx_* keys from the random different sample):
             _ex_lang_trans = []
-            if self.num_in_context > 0:
-                if 'en_text' in sample and 'text' in sample:
-                    _ex_lang_trans = [
-                        f"{sample.get('en_text', '')}={sample['text']}",
-                        f"{sample.get('fr_text', '')}={sample['text']}",
-                        f"{sample.get('es_text', '')}={sample['text']}"
-                    ]
+            if self.num_in_context > 0 and 'ctx_text' in sample:
+                _ex_lang_trans = [
+                    f"{sample.get('ctx_en_text', '')}={sample['ctx_text']}",
+                    f"{sample.get('ctx_fr_text', '')}={sample['ctx_text']}",
+                    f"{sample.get('ctx_es_text', '')}={sample['ctx_text']}"
+                ]
                 trimmed = _ex_lang_trans[:self.num_in_context]
                 ex_lang_translations.append(' '.join(trimmed))
             else:
