@@ -901,8 +901,9 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                 )
                 log_dict[loss_key] = cont_loss
 
-                loss = cont_loss + self.hyp_alpha * hyp_loss
-                log_dict[f"{split}/hyp_loss"] = hyp_loss
+                loss = cont_loss 
+                # + self.hyp_alpha * hyp_loss
+                # log_dict[f"{split}/hyp_loss"] = hyp_loss
 
             # --------------------------------------------------
             # Stage 2: Warm-up (contrastive + hyperbolic + SignCL)
@@ -924,8 +925,9 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                 )
                 log_dict[loss_key] = cont_loss
 
-                loss = cont_loss + self.hyp_alpha * hyp_loss
-                log_dict[f"{split}/hyp_loss"] = hyp_loss
+                loss = cont_loss 
+                # + self.hyp_alpha * hyp_loss
+                # log_dict[f"{split}/hyp_loss"] = hyp_loss
 
                 loss, log_dict = self._apply_sign_cl(
                     visual_outputs, visual_masks, split, log_dict, loss
