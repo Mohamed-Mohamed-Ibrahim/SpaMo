@@ -202,10 +202,30 @@ class Phoenix14T(torch.utils.data.Dataset):
             'lang': 'German'
         }
         
+        # Add language texts if available
         for lang in ['en', 'es', 'fr']:
             if f'{lang}_text' in data:
                 result[f'{lang}_text'] = data[f'{lang}_text']
         
+        # --- NEW: Reproducible Random Context ---
+        # Seed the random number generator using the current index
+        # This guarantees the exact same "random" context is chosen every single epoch
+        rng = random.Random(index)
+        rand_idx = rng.randint(0, len(self.data) - 1)
+        
+        # Make sure we don't accidentally pick the same video
+        while rand_idx == index:
+            rand_idx = rng.randint(0, len(self.data) - 1)
+            
+        rand_data = self.data[rand_idx]
+        result['ctx_text'] = self._normalize_text(rand_data['text'])
+        
+        for lang in ['en', 'es', 'fr']:
+            if f'{lang}_text' in rand_data:
+                result[f'ctx_{lang}_text'] = rand_data[f'{lang}_text']
+        # ----------------------------------------
+
+        # Store original data for reference
         result['original_info'] = data
         
         return result
