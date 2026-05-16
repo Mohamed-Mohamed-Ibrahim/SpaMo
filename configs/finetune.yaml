@@ -41,8 +41,8 @@ model:
     sign_cl_temporal_window: 12
     sign_cl_every_n_steps: 1
 
-    use_in_context: false
-    num_in_context: 0
+    use_in_context: true
+    num_in_context: 1
 
     use_data_augmentation: false
     augmentation_prob: 0.0
