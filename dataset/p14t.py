@@ -211,11 +211,11 @@ class Phoenix14T(torch.utils.data.Dataset):
         # Seed the random number generator using the current index
         # This guarantees the exact same "random" context is chosen every single epoch
         rng = random.Random(index)
-        rand_idx = rng.randint(0, len(self.data) - 1)
+        rand_idx = rng.randint(0, len(self.data) - 2)
         
         # Make sure we don't accidentally pick the same video
         while rand_idx == index:
-            rand_idx = rng.randint(0, len(self.data) - 1)
+            rand_idx = rng.randint(0, len(self.data) - 2)
             
         rand_data = self.data[rand_idx]
         result['ctx_text'] = self._normalize_text(rand_data['text'])
