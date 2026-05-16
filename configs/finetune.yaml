@@ -41,6 +41,23 @@ model:
     sign_cl_temporal_window: 12
     sign_cl_every_n_steps: 1
 
+
+    # Spatial <-> Spatiotemporal contrastive loss 
+    st_cl_loss: true
+    st_cl_alpha: 1
+    # alignment_mode
+    #   padding        
+    #   interp_nearest 
+    #   interp_linear  
+    #   reduction     
+    #   attention   -> st_cl_num_heads, st_cl_attn_dropout
+    #   upsample_st -> (dynamic interpolation + learnable conv)
+    st_cl_alignment_mode: "upsample_st"
+    st_cl_proj_dim: 0
+    st_cl_temperature_init: 2.6592
+    st_cl_num_heads: 4
+    st_cl_attn_dropout: 0.0
+
     use_in_context: false
     num_in_context: 0
 
