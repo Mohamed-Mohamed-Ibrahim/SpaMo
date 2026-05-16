@@ -14,7 +14,7 @@ model:
     max_frame_len: 512
     max_txt_len: 128
     frame_sample_rate: 1
-    prompt: "Translate the given sentence into {}."
+    prompt: "Task: Translate sign language visual features into text.\nDomain: German weather forecast.\nConstraints: Accurately map exact geographical regions, temperatures, and temporal markers. Do not hallucinate external entities.\nTranslate into {}:"
 
     tuning_type: lora
 
