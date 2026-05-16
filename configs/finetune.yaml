@@ -41,7 +41,7 @@ model:
     sign_cl_temporal_window: 4
     sign_cl_every_n_steps: 1
 
-    use_kt_loss: true
+    use_kt_loss: false
     kt_lambda: 0.7
 
     use_in_context: false
@@ -60,7 +60,7 @@ model:
     ctc_blank_id: -1     # -1 means auto-resolve from tokenizer.pad_token_id
 
 
-    use_hyperbolic: false
+    use_hyperbolic: true
     hyp_dim: 256            # embedding dim on the Poincaré ball
     hyp_init_c: 1.0         # initial curvature (learnable); set 0.001 for near-Euclidean ablation
     hyp_alpha: 0.5          # weight of hyp loss in final loss sum
@@ -120,7 +120,7 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: true
         emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
@@ -139,7 +139,7 @@ data:
         mode: dev
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: true
         emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
@@ -158,7 +158,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: false
+        pose: true
         emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
