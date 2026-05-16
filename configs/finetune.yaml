@@ -115,7 +115,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: ""
+        pose_root: pose_Phoenix14T
         emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features"
         mode: train
         spatial: true
@@ -134,7 +134,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: ""
+        pose_root: pose_Phoenix14T
         emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features"
         mode: dev
         spatial: true
@@ -153,7 +153,7 @@ data:
         vid_root: ./dataset/Phoenix14T
         feat_root: feat_Phoenix14T
         mae_feat_root: mae_feat_Phoenix14T
-        pose_root: ""
+        pose_root: pose_Phoenix14T
         emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features"
         mode: test
         spatial: true
