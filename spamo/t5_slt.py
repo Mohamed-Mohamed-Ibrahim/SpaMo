@@ -216,7 +216,7 @@ class FlanT5SLT(AbstractSLT):
             if (self.use_in_context
                     and i < len(ctx_list)
                     and ctx_list[i]):               # guard: non-empty context string
-                p = f"{base_p} Context: {ctx_list[i]}"
+                p = f"{base_p}\nRandom Example: {ctx_list[i]}"
             else:
                 p = base_p
         
