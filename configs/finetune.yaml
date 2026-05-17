@@ -55,7 +55,7 @@ model:
 
 
     conv_type: 2
-    use_ctc: true        # master on/off switch
+    use_ctc: false        # master on/off switch
     ctc_weight: 0.5      # λ_Txt — weight of L_TxtCTC in total loss
     ctc_blank_id: -1     # -1 means auto-resolve from tokenizer.pad_token_id
 
