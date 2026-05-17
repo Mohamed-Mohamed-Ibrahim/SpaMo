@@ -196,6 +196,7 @@ class FlanT5SLT(AbstractSLT):
             self.sign_cl = None
 
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
+        self.visual_prompt_sep = nn.Parameter(torch.zeros(1, self.t5_model.config.hidden_size))
 
     def prepare_inputs(
         self,
@@ -226,13 +227,11 @@ class FlanT5SLT(AbstractSLT):
 
         input_embeds = self.t5_model.encoder.embed_tokens(input_tokens.input_ids)
 
-        fixed_text_sep = torch.zeros(1, visual_outputs.size(-1), device=self.device, dtype=visual_outputs.dtype)
-
         joint_outputs = []
         for i in range(bs):
             vis_out = visual_outputs[i, :visual_lengths[i], :]
             prompt_embeds = input_embeds[i, :prompt_lengths[i], :]
-            concat_sample = torch.cat((vis_out, fixed_text_sep, prompt_embeds), dim=0)
+            concat_sample = torch.cat((vis_out, self.visual_prompt_sep.to(dtype=visual_outputs.dtype), prompt_embeds), dim=0)
             joint_outputs.append(concat_sample)
 
         joint_outputs = pad_sequence(joint_outputs, batch_first=True)
