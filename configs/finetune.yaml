@@ -55,12 +55,12 @@ model:
 
 
     conv_type: 2
-    use_ctc: false        # master on/off switch
+    use_ctc: true        # master on/off switch
     ctc_weight: 0.5      # λ_Txt — weight of L_TxtCTC in total loss
     ctc_blank_id: -1     # -1 means auto-resolve from tokenizer.pad_token_id
 
 
-    use_hyperbolic: true
+    use_hyperbolic: false
     hyp_dim: 256            # embedding dim on the Poincaré ball
     hyp_init_c: 1.0         # initial curvature (learnable); set 0.001 for near-Euclidean ablation
     hyp_alpha: 0.5          # weight of hyp loss in final loss sum
@@ -120,7 +120,7 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
@@ -139,7 +139,7 @@ data:
         mode: dev
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
@@ -158,7 +158,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
