@@ -67,7 +67,7 @@ class FlanT5SLT(AbstractSLT):
         use_spatiotemporal: bool = True,
         use_pose: bool = False,
         use_emotion: bool = True,
-        # --- Spatial <-> Spatiotemporal contrastive loss ---
+        # --- Spatial <-> Spatiotemporal (+ Emotion) contrastive loss ---
         st_cl_loss: bool = False,
         st_cl_alpha: float = 1,
         st_cl_alignment_mode: str = "padding",
@@ -213,7 +213,7 @@ class FlanT5SLT(AbstractSLT):
         else:
             self.sign_cl = None
 
-        # Spatial <-> Spatiotemporal contrastive loss (before merge)
+        # Spatial <-> Spatiotemporal (+ Emotion) contrastive loss (before merge)
         if self.st_cl_loss:
             self.st_cl = SpatialTemporalCLLoss(
                 dim=self.inter_hidden,
@@ -310,21 +310,6 @@ class FlanT5SLT(AbstractSLT):
             spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
             spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
 
-        # ---- Spatial <-> Spatiotemporal contrastive loss (before merge) ----
-        st_cl_loss_val: Optional[torch.Tensor] = None
-        if (
-            self.st_cl_loss
-            and self.st_cl is not None
-            and spatial
-            and spatiotemporal
-        ):
-            st_cl_loss_val = self.st_cl(
-                spatial_outputs,
-                spatial_mask,
-                spatiotemporal_outputs,
-                spatiotemporal_mask,
-            )
-        
         if pose:
             raw_pose_values = samples.get('pose_values', [])
             pose_values_local = [pv if pv.dim() == 2 else pv.view(pv.shape[0], -1) for pv in raw_pose_values]
@@ -338,7 +323,9 @@ class FlanT5SLT(AbstractSLT):
             pose_outputs = self.pose_proj(pose_padded)
             pose_mask = create_mask(seq_lengths=pose_lengths, device=self.device)
 
+        # ---- Emotion modulation (applied BEFORE ST-CL so the loss sees emotion-aware features) ----
         emotion_mask = None
+        Ze_proj = None
         Ze_mod = None
         if self.use_emotion and len(samples.get('emotion_values', [])) > 0:
             Ze_padded = pad_sequence(samples['emotion_values'], batch_first=True).to(self.device).float()
@@ -350,6 +337,24 @@ class FlanT5SLT(AbstractSLT):
             if spatiotemporal:
                 spatiotemporal_outputs = self.emotion_modulator_m(spatiotemporal_outputs, Ze_g)
             Ze_mod = self.emotion_modulator_e(Ze_proj, Ze_g)
+
+        # ---- Spatial <-> Spatiotemporal (<-> Emotion) contrastive loss (before merge) ----
+        # NOTE: computed AFTER emotion modulation so all three streams are emotion-aware.
+        st_cl_loss_val: Optional[torch.Tensor] = None
+        if (
+            self.st_cl_loss
+            and self.st_cl is not None
+            and spatial
+            and spatiotemporal
+        ):
+            st_cl_loss_val = self.st_cl(
+                spatial_outputs,
+                spatial_mask,
+                spatiotemporal_outputs,
+                spatiotemporal_mask,
+                emotion=Ze_proj,
+                emotion_mask=emotion_mask,
+            )
 
         if self.fusion_mode == 'joint':
             bs = spatial_outputs.shape[0]

@@ -1,15 +1,24 @@
 """
-Spatial–Spatiotemporal Contrastive Loss
-========================================
-Computes a CLIP-style contrastive loss between spatial features (high frame-rate,
-~100-300 frames) and spatiotemporal features (low frame-rate, ~20-50 clips) **before**
-they are merged.
+Spatial–Spatiotemporal (–Emotion) Contrastive Loss
+====================================================
+Computes CLIP-style contrastive losses between three feature streams **before** they
+are merged:
 
-Both streams share the same feature dimensionality (``inter_hidden``) after their
-respective linear projections in the main model.
+  * **Spatial**        – high frame-rate ViT features  (~100-300 frames)
+  * **Spatiotemporal** – low frame-rate MAE/GloR features (~20-50 clips)
+  * **Emotion**        – per-frame emotion embeddings  (optional, same ``inter_hidden`` dim
+                         after ``emotion_proj``)
 
-Because the two streams have different temporal lengths we offer six alignment
-strategies, controlled by ``alignment_mode``:
+When ``use_emotion=True`` the module computes three pairwise symmetric CLIP losses:
+
+  L_st   = CLIP(spatial,  spatiotemporal)   # always computed
+  L_se   = CLIP(spatial,  emotion)          # only when use_emotion=True
+  L_ste  = CLIP(spatiotemporal, emotion)    # only when use_emotion=True
+
+  total  = L_st  +  emotion_weight * (L_se + L_ste) / 2
+
+All streams share the same feature dimensionality (``inter_hidden``) and use the
+same alignment strategy controlled by ``alignment_mode``:
 
   padding         – zero-pad the shorter sequence to match the longer one, then mean-pool
   interp_nearest  – 1-D nearest-neighbour interpolation along the time axis, then mean-pool
@@ -22,7 +31,7 @@ strategies, controlled by ``alignment_mode``:
                     both aligned streams and mean-pools; the spatial resolution is preserved
                     (ST is never downsampled) and the upsample kernel is fully trainable
 
-An optional ``proj_dim > 0`` projects both streams into a smaller shared space before
+An optional ``proj_dim > 0`` projects all streams into a smaller shared space before
 computing cosine similarity (useful to decouple the similarity head from the feature dim).
 """
 
@@ -154,17 +163,17 @@ class CrossAttentionAligner(nn.Module):
 # ---------------------------------------------------------------------------
 
 class SpatialTemporalCLLoss(nn.Module):
-    """CLIP-style contrastive loss between spatial and spatiotemporal streams.
+    """CLIP-style contrastive loss between spatial, spatiotemporal, and emotion streams.
 
     Parameters
     ----------
     dim : int
-        Shared feature dimensionality of both streams (= ``inter_hidden``).
+        Shared feature dimensionality of all streams (= ``inter_hidden``).
     alignment_mode : str
         One of ``padding | interp_nearest | interp_linear | reduction | attention |
         upsample_st``.
     proj_dim : int
-        If > 0, both streams are projected to this dim before similarity is computed.
+        If > 0, all streams are projected to this dim before similarity is computed.
         If <= 0, the raw ``dim``-dimensional features are used directly.
     temperature_init : float
         Initial value of the learnable log-temperature (CLIP default ≈ 2.6592 = ln 14).
@@ -172,6 +181,11 @@ class SpatialTemporalCLLoss(nn.Module):
         Attention heads (only used when ``alignment_mode == "attention"``).
     attn_dropout : float
         Dropout inside the cross-attention module.
+
+    When ``emotion`` and ``emotion_mask`` are supplied to ``forward()``, the loss
+    automatically adds two extra CLIP pairs (spatial↔emotion, spatiotemporal↔emotion)::
+
+        L = L_st + (L_se + L_ste) / 2
     """
 
     VALID_MODES = {"padding", "interp_nearest", "interp_linear", "reduction", "attention", "upsample_st"}
@@ -193,7 +207,7 @@ class SpatialTemporalCLLoss(nn.Module):
             )
         self.alignment_mode = alignment_mode
 
-        # Single shared projection (same weights applied to both streams)
+        # Single shared projection (same weights applied to ALL streams)
         self.feat_proj = nn.Linear(dim, proj_dim, bias=False) if proj_dim > 0 else nn.Identity()
         self._out_dim  = proj_dim if proj_dim > 0 else dim
 
@@ -223,13 +237,23 @@ class SpatialTemporalCLLoss(nn.Module):
 
     def forward(
         self,
-        spatial: torch.Tensor,               # (B, Ts, D)
-        spatial_mask: torch.Tensor,          # (B, Ts) bool – True = valid
-        spatiotemporal: torch.Tensor,        # (B, Tt, D)
-        spatiotemporal_mask: torch.Tensor,   # (B, Tt) bool
+        spatial: torch.Tensor,                        # (B, Ts, D)
+        spatial_mask: torch.Tensor,                   # (B, Ts) bool – True = valid
+        spatiotemporal: torch.Tensor,                 # (B, Tt, D)
+        spatiotemporal_mask: torch.Tensor,            # (B, Tt) bool
+        emotion: Optional[torch.Tensor] = None,       # (B, Te, D)  – passed when emotion is available
+        emotion_mask: Optional[torch.Tensor] = None,  # (B, Te) bool
     ) -> torch.Tensor:
-        """Return the scalar symmetric CLIP loss."""
-        # 1. (Optional) shared projection
+        """Return the scalar symmetric CLIP loss.
+
+        When ``emotion`` and ``emotion_mask`` are provided the loss becomes
+        a 3-way pairwise sum::
+
+            L = L_st + (L_se + L_ste) / 2
+        """
+        scale = self.logit_scale.exp()
+
+        # 1. Shared projection for all streams
         s  = self.feat_proj(spatial)        # (B, Ts, D')
         st = self.feat_proj(spatiotemporal) # (B, Tt, D')
 
@@ -240,9 +264,26 @@ class SpatialTemporalCLLoss(nn.Module):
         s_emb  = F.normalize(s_emb,  dim=-1)
         st_emb = F.normalize(st_emb, dim=-1)
 
-        # 4. Scaled cosine-similarity matrix + symmetric CLIP loss
-        logits = torch.matmul(s_emb, st_emb.t()) * self.logit_scale.exp()  # (B, B)
-        return clip_loss(logits)
+        # 4. Spatial ↔ Spatiotemporal CLIP loss (always computed)
+        logits_st = torch.matmul(s_emb, st_emb.t()) * scale  # (B, B)
+        loss = clip_loss(logits_st)
+
+        # 5. Emotion arms — active whenever emotion tensors are supplied
+        if emotion is not None and emotion_mask is not None:
+            e     = self.feat_proj(emotion)               # (B, Te, D')
+            # Emotion stream always uses masked mean-pooling so its global vector
+            # is independent of the alignment_mode chosen for the S↔ST pair.
+            e_emb = _mean_pool_masked(e, emotion_mask)    # (B, D')
+            e_emb = F.normalize(e_emb, dim=-1)
+
+            # spatial ↔ emotion
+            loss_se  = clip_loss(torch.matmul(s_emb,  e_emb.t()) * scale)
+            # spatiotemporal ↔ emotion
+            loss_ste = clip_loss(torch.matmul(st_emb, e_emb.t()) * scale)
+
+            loss = loss + (loss_se + loss_ste) / 2.0
+
+        return loss
 
     # ------------------------------------------------------------------
     # internal helpers
