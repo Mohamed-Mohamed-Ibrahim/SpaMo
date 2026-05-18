@@ -222,7 +222,7 @@ def get_iterator(args, mode):
 
 
 def main():
-    mode = ["train", "dev", "test"]
+    mode = ["train"]
     for m in mode:
         parser = get_parser()
         args = parser.parse_args()
