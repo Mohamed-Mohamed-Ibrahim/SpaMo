@@ -50,6 +50,17 @@ model:
     aug_span_prob: 0.0
     aug_channel_prob: 0.0
 
+    # Dynamic Temporal Segmentation and Masking
+    use_dynamic_segmentation: false
+    motion_threshold: 0.8
+    use_adaptive_masking: true
+    mask_prob: 0.45
+    min_mask_len: 5
+    max_mask_len: 20
+    # NEW: Enhanced Segmentation Parameters
+    num_layers: 5                # Depth of motion detection network (2-5 recommended)
+    mask_type: 'noise'           # Masking strategy: 'noise', 'smooth', or 'zero'
+
 lightning:
   callback:
     learning_rate_logger:
