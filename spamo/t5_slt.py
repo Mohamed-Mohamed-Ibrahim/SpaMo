@@ -12,7 +12,7 @@ from transformers import AutoTokenizer, T5ForConditionalGeneration, get_cosine_s
 from peft import LoraConfig, get_peft_model, TaskType
 
 from spamo.tconv import TemporalConv
-from utils.helpers import create_mask, derangement
+from utils.helpers import create_mask
 from spamo.mm_projector import build_vision_projector, AdaptiveFusion, EmotionEnhancer, EmotionModulator
 from utils.evaluate import evaluate_results
 from spamo.clip_loss import clip_loss
@@ -461,9 +461,6 @@ class FlanT5SLT(AbstractSLT):
                     glor_values.append(sample['glor_value'].float())
                     glor_lengths.append(len(sample['glor_value']))
 
-        if self.use_in_context and len(ex_lang_translations) > 1:
-            if self.training:
-                ex_lang_translations = derangement(ex_lang_translations)
 
         return {
             'pixel_values': pixel_values,
