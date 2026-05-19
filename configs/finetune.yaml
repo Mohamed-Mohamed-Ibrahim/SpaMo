@@ -36,7 +36,7 @@ model:
     alpha: 1.0
 
     sign_cl_loss: false
-    sign_cl_alpha: 0.1
+    sign_cl_alpha: 0.2
     sign_cl_temperature: 0.3
     sign_cl_temporal_window: 12
     sign_cl_every_n_steps: 1
