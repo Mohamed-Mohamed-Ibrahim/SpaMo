@@ -20,7 +20,7 @@ model:
 
     use_spatial: true
     use_spatiotemporal: true
-    use_pose: true
+    use_pose: false
     use_emotion: true
 
     lora_r: 16
@@ -115,7 +115,7 @@ data:
         mode: train
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
@@ -134,7 +134,7 @@ data:
         mode: dev
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
@@ -153,7 +153,7 @@ data:
         mode: test
         spatial: true
         spatiotemporal: true
-        pose: true
+        pose: false
         emotion: true            
         spatial_postfix: ""
         spatiotemporal_postfix: ""
