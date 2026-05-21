@@ -75,10 +75,11 @@ class ViTFeatureReader(object):
         self.scales = scales
         self.nth_layer = nth_layer
 
-        self.model = (
-            CLIPVisionModel.from_pretrained(
-                model_name, output_hidden_states=True, cache_dir=cache_dir
-            )
+        self.model = CLIPVisionModel.from_pretrained(
+            model_name,
+            output_hidden_states=True,
+            cache_dir=cache_dir,
+            torch_dtype=torch.float16,  # load in fp16 to halve VRAM usage
         )
 
         # ── Load LoRA adapter (if provided) ──────────────────────────
@@ -103,10 +104,10 @@ class ViTFeatureReader(object):
             self.model = torch.nn.DataParallel(self.model)
 
         # Optimization: PyTorch 2.0+ Graph Compilation (Speed boost after first batch)
-        try:
-            self.model = torch.compile(self.model)
-        except Exception:
-            print("Torch compile not supported; skipping.")
+        # try:
+        #     self.model = torch.compile(self.model)
+        # except Exception:
+        #     print("Torch compile not supported; skipping.")
 
         self.image_processor = AutoImageProcessor.from_pretrained(model_name)
 
@@ -207,10 +208,10 @@ def get_iterator(args, mode):
                 feats = reader.extract_features(batch)
                 video_feats.append(feats)
 
-            final_feats = np.concatenate(video_feats, axis=0), file_id, str(start_time)
-            yield final_feats
-
+            final_feats = np.concatenate(video_feats, axis=0)
             del video_feats
+            yield final_feats, file_id, str(start_time)
+
             del final_feats
             del loader
             del dataset
