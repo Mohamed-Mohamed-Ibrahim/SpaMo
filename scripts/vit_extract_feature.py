@@ -104,10 +104,10 @@ class ViTFeatureReader(object):
             self.model = torch.nn.DataParallel(self.model)
 
         # Optimization: PyTorch 2.0+ Graph Compilation (Speed boost after first batch)
-        # try:
-        #     self.model = torch.compile(self.model)
-        # except Exception:
-        #     print("Torch compile not supported; skipping.")
+        try:
+            self.model = torch.compile(self.model)
+        except Exception:
+            print("Torch compile not supported; skipping.")
 
         self.image_processor = AutoImageProcessor.from_pretrained(model_name)
 
