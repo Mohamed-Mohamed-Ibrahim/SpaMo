@@ -210,10 +210,11 @@ class AdaptiveMasker(nn.Module):
                 
                 if self.mask_type == 'noise':
                     # Add Gaussian noise instead of zeroing
+                    shape = masked[b, mask_start:mask_end].shape
                     if self.generator is not None:
-                        noise = torch.randn_like(masked[b, mask_start:mask_end], generator=self.generator) * 0.1
+                        noise = torch.randn(shape, device=masked.device, dtype=masked.dtype, generator=self.generator) * 0.1
                     else:
-                        noise = torch.randn_like(masked[b, mask_start:mask_end]) * 0.1
+                        noise = torch.randn(shape, device=masked.device, dtype=masked.dtype) * 0.1
                     masked[b, mask_start:mask_end] = masked[b, mask_start:mask_end] + noise
                 elif self.mask_type == 'smooth':
                     # Smooth masking with fade-in/fade-out
