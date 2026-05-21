@@ -149,9 +149,7 @@ class AdaptiveMasker(nn.Module):
         self.mask_type = mask_type  # 'zero', 'noise', or 'smooth'
         self.seed = seed
         self.rng = random.Random(seed) if seed is not None else None
-        self.generator = torch.Generator() if seed is not None else None
-        if seed is not None:
-            self.generator.manual_seed(seed)
+        self.generator = None
     
     def forward(self, features, importance_scores, lengths, training=True):
         """
@@ -211,7 +209,11 @@ class AdaptiveMasker(nn.Module):
                 if self.mask_type == 'noise':
                     # Add Gaussian noise instead of zeroing
                     shape = masked[b, mask_start:mask_end].shape
-                    if self.generator is not None:
+                    if self.seed is not None:
+                        # Ensure generator matches the feature device
+                        if self.generator is None or self.generator.device != masked.device:
+                            self.generator = torch.Generator(device=masked.device)
+                            self.generator.manual_seed(self.seed)
                         noise = torch.randn(shape, device=masked.device, dtype=masked.dtype, generator=self.generator) * 0.1
                     else:
                         noise = torch.randn(shape, device=masked.device, dtype=masked.dtype) * 0.1
