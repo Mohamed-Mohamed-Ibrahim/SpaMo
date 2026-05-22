@@ -221,13 +221,17 @@ class SpatialTemporalCLLoss(nn.Module):
         else:
             self.cross_attn = None
 
-        # Learnable dynamic upsampler (only built when needed)
+        # Learnable dynamic upsampler for S↔ST alignment (only built when needed)
         if alignment_mode == "upsample_st":
             self.dynamic_up = DynamicUpsampler(
                 dim=self._out_dim,
             )
         else:
             self.dynamic_up = None
+
+        # Dedicated upsampler for the emotion arm (always built; used in forward
+        # to align emotion → spatial length before fusing with the spatial stream)
+        self.emotion_up = DynamicUpsampler(dim=self._out_dim)
 
         self.logit_scale = nn.Parameter(torch.tensor(temperature_init))
 
@@ -270,10 +274,13 @@ class SpatialTemporalCLLoss(nn.Module):
 
         # 5. Emotion arms — active whenever emotion tensors are supplied
         if emotion is not None and emotion_mask is not None:
-            e     = self.feat_proj(emotion)               # (B, Te, D')
-            # Emotion stream always uses masked mean-pooling so its global vector
-            # is independent of the alignment_mode chosen for the S↔ST pair.
-            e_emb = _mean_pool_masked(e, emotion_mask)    # (B, D')
+            e = self.feat_proj(emotion)                   # (B, Te, D')
+            # Upsample emotion to spatial length, fuse with spatial, then pool.
+            # This mirrors the upsample_st strategy so both spatial and emotion
+            # are brought to the same temporal resolution before aggregation.
+            e_up  = self.emotion_up(e, s.size(1))         # (B, Ts, D')
+            fused_se = (s + e_up) * 0.5                   # (B, Ts, D')
+            e_emb = _mean_pool_masked(fused_se, spatial_mask)  # (B, D')
             e_emb = F.normalize(e_emb, dim=-1)
 
             # spatial ↔ emotion
