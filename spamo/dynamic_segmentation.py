@@ -137,19 +137,13 @@ class AdaptiveMasker(nn.Module):
     """
     Applies adaptive masking to variable-length segments based on frame importance.
     Uses smooth masking (noise injection) instead of hard zeroing for better robustness.
-
-    The optional `seed` parameter enables deterministic masking behavior for
-    reproducible training and evaluation.
     """
-    def __init__(self, mask_prob=0.15, min_mask_len=5, max_mask_len=20, mask_type='noise', seed=None):
+    def __init__(self, mask_prob=0.15, min_mask_len=5, max_mask_len=20, mask_type='noise'):
         super().__init__()
         self.mask_prob = mask_prob
         self.min_len = min_mask_len
         self.max_len = max_mask_len
         self.mask_type = mask_type  # 'zero', 'noise', or 'smooth'
-        self.seed = seed
-        self.rng = random.Random(seed) if seed is not None else None
-        self.generator = None
     
     def forward(self, features, importance_scores, lengths, training=True):
         """
@@ -161,7 +155,7 @@ class AdaptiveMasker(nn.Module):
         Returns:
             masked_features: (B, T, C) tensor with adaptive masking applied
         """
-        if not training or (self.rng.random() if self.rng is not None else random.random()) > self.mask_prob:
+        if not training or random.random() > self.mask_prob:
             return features
         
         masked = features.clone()
@@ -198,25 +192,14 @@ class AdaptiveMasker(nn.Module):
             
             # Randomly select one region to mask
             if mask_starts:
-                if self.rng is not None:
-                    start, end = self.rng.choice(mask_starts)
-                else:
-                    start, end = random.choice(mask_starts)
+                start, end = random.choice(mask_starts)
                 mask_len = min(end - start, self.max_len)
                 mask_start = max(0, start)
                 mask_end = min(seq_len, mask_start + mask_len)
                 
                 if self.mask_type == 'noise':
                     # Add Gaussian noise instead of zeroing
-                    shape = masked[b, mask_start:mask_end].shape
-                    if self.seed is not None:
-                        # Ensure generator matches the feature device
-                        if self.generator is None or self.generator.device != masked.device:
-                            self.generator = torch.Generator(device=masked.device)
-                            self.generator.manual_seed(self.seed)
-                        noise = torch.randn(shape, device=masked.device, dtype=masked.dtype, generator=self.generator) * 0.1
-                    else:
-                        noise = torch.randn(shape, device=masked.device, dtype=masked.dtype) * 0.1
+                    noise = torch.randn_like(masked[b, mask_start:mask_end]) * 0.1
                     masked[b, mask_start:mask_end] = masked[b, mask_start:mask_end] + noise
                 elif self.mask_type == 'smooth':
                     # Smooth masking with fade-in/fade-out

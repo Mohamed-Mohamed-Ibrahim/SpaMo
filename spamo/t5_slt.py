@@ -108,7 +108,6 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         max_mask_len: int = 20,
         num_layers: int = 3,
         mask_type: str = 'noise',
-        adaptive_mask_seed: Optional[int] = 42,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -189,7 +188,6 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         self.max_mask_len = max_mask_len
         self.num_layers = num_layers
         self.mask_type = mask_type
-        self.adaptive_mask_seed = adaptive_mask_seed
 
         # Disable segmentation for first N epochs (warmup strategy)
         self.segmentation_warmup_epochs = 5
@@ -343,8 +341,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                 mask_prob=self.mask_prob,
                 min_mask_len=self.min_mask_len,
                 max_mask_len=self.max_mask_len,
-                mask_type=self.mask_type,
-                seed=self.adaptive_mask_seed
+                mask_type=self.mask_type
             )
 
     # ------------------------------------------------------------------
