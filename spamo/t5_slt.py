@@ -384,7 +384,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
 
         visual_lengths = visual_mask.sum(1)
         prompt_lengths = input_tokens.attention_mask.sum(1)
-        new_lengths = visual_lengths + prompt_lengths
+        new_lengths = visual_lengths + prompt_lengths + 1
 
         input_embeds = self.t5_model.encoder.embed_tokens(input_tokens.input_ids)
 
@@ -392,7 +392,8 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         for i in range(bs):
             vis_out = visual_outputs[i, :visual_lengths[i], :]
             prompt_embeds = input_embeds[i, :prompt_lengths[i], :]
-            joint_outputs.append(torch.cat((vis_out, prompt_embeds), dim=0))
+            concat_sample = torch.cat((vis_out, self.text_sep.to(dtype=vis_out.dtype), prompt_embeds), dim=0)
+            joint_outputs.append(concat_sample)
 
         joint_outputs = pad_sequence(joint_outputs, batch_first=True)
         joint_mask = create_mask(seq_lengths=new_lengths.tolist(), device=self.device)
@@ -1104,7 +1105,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
 
         lora_params = [
             p for n, p in self.named_parameters()
-            if p.requires_grad and ('lora_' in n or 'logit_scale' in n)
+            if p.requires_grad and ('lora_' in n or 'logit_scale' in n or 'text_sep' in n)]
         ]
         bridge_params = [
             p for n, p in self.named_parameters()
@@ -1115,6 +1116,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
             if p.requires_grad
             and 'lora_' not in n
             and 'logit_scale' not in n
+            and 'text_sep' not in n
             and 'fusion_proj' not in n
         ]
 
