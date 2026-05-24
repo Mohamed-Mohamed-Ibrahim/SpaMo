@@ -1106,7 +1106,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
 
         lora_params = [
             p for n, p in self.named_parameters()
-            if p.requires_grad and ('lora_' in n or 'logit_scale' in n or 'text_sep' in n)]
+            if p.requires_grad and ('lora_' in n or 'logit_scale' in n or 'text_sep' in n)
         ]
         bridge_params = [
             p for n, p in self.named_parameters()
