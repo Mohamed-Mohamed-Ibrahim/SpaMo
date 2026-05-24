@@ -165,7 +165,10 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
-
+        
+        if self.num_in_context == 0:
+            self.use_in_context = False
+            
         self.conv_type = conv_type
         self._ctc_use = use_ctc
         self._ctc_weight = ctc_weight
@@ -191,7 +194,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
 
         # Disable segmentation for first N epochs (warmup strategy)
         self.segmentation_warmup_epochs = 5
-
+        
         self.save_hyperparameters()
         self.prepare_models(model_name)
 
@@ -358,12 +361,20 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
         bs = visual_outputs.shape[0]
 
-        prompts = [f'{self.prompt}'] * bs
-        prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
+        prompts = []
+        for i in range(bs):
+            lang  = samples['lang'][i]
+            base_p = self.prompt.format(lang)
 
-        if self.use_in_context:
-            prompts = [f"{p} {c}" for p, c in zip(prompts, samples['ex_lang_trans'])]
+            ctx_list = samples.get('ex_lang_trans', [])
+            if (self.use_in_context
+                    and i < len(ctx_list)
+                    and ctx_list[i]):
+                p = f"{base_p}\nRandom Example: {ctx_list[i]}"
+            else:
+                p = base_p
 
+            prompts.append(p)
         input_tokens = self.t5_tokenizer(
             prompts,
             padding="longest",
@@ -643,13 +654,12 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
             langs.append(sample['lang'])
 
             _ex_lang_trans = []
-            if self.num_in_context > 0:
-                if 'en_text' in sample and 'text' in sample:
-                    _ex_lang_trans = [
-                        f"{sample.get('en_text', '')}={sample['text']}",
-                        f"{sample.get('fr_text', '')}={sample['text']}",
-                        f"{sample.get('es_text', '')}={sample['text']}"
-                    ]
+            if self.num_in_context > 0 and 'ctx_text' in sample:
+                _ex_lang_trans = [
+                    f"{sample.get('ctx_en_text', '')}={sample['ctx_text']}",
+                    f"{sample.get('ctx_fr_text', '')}={sample['ctx_text']}",
+                    f"{sample.get('ctx_es_text', '')}={sample['ctx_text']}"
+                ]
                 trimmed = _ex_lang_trans[:self.num_in_context]
                 ex_lang_translations.append(' '.join(trimmed))
             else:
