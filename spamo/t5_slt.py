@@ -166,8 +166,6 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
         
-        if self.num_in_context == 0:
-            self.use_in_context = False
             
         self.conv_type = conv_type
         self._ctc_use = use_ctc
