@@ -45,8 +45,8 @@ model:
     num_in_context: 1
 
     # Spatial <-> Spatiotemporal contrastive loss 
-    st_cl_loss: false
-    st_cl_alpha: 0
+    st_cl_loss: true
+    st_cl_alpha: 1
     # alignment_mode
     #   padding        
     #   interp_nearest 
