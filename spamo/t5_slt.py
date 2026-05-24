@@ -314,6 +314,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         )
 
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
+        self.text_sep = nn.Parameter(torch.zeros(1, self.t5_model.config.hidden_size))
 
         # CTC head via mixin
         self.init_ctc(
