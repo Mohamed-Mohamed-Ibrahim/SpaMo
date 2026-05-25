@@ -91,7 +91,7 @@ lightning:
     timer:
         target: pytorch_lightning.callbacks.Timer
         params:
-          duration: "00:10:00:00"
+          duration: "00:11:45:00"
   trainer:
     strategy: ddp
     accumulate_grad_batches: 1
