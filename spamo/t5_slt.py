@@ -56,6 +56,7 @@ class FlanT5SLT(AbstractSLT):
         lora_r: int = 16,
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
+        use_gradient_checkpointing: bool = False,
         use_data_augmentation: bool = True,
         augmentation_prob: float = 0.5,
         aug_frame_prob: float = 0.1,
@@ -96,6 +97,7 @@ class FlanT5SLT(AbstractSLT):
         self.use_in_context = use_in_context
         self.num_in_context = num_in_context
         
+        self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_spatial = use_spatial
         self.use_spatiotemporal = use_spatiotemporal
         self.use_pose = use_pose
@@ -108,6 +110,7 @@ class FlanT5SLT(AbstractSLT):
         self.lora_dropout = lora_dropout
         self.use_data_augmentation = use_data_augmentation
         print("==="*40)
+        print(f"use_gradient_checkpointing: {use_gradient_checkpointing}")
         print(f"use_data_augmentation: {use_data_augmentation}")
         print(f"sign_cl_loss: {sign_cl_loss}")
         print("==="*40)
@@ -119,6 +122,16 @@ class FlanT5SLT(AbstractSLT):
             self._freeze_model()
         elif tuning_type == 'lora':
             self._apply_lora()
+        # ---------------------------------------------------------
+        if self.use_gradient_checkpointing:
+            self.t5_model.gradient_checkpointing_enable()
+            
+            # CRITICAL: Because LoRA freezes the base model, we must force 
+            # the engine to track gradients for the inputs, or it will silently crash!
+            if hasattr(self.t5_model, "enable_input_require_grads"):
+                self.t5_model.enable_input_require_grads()
+            print("Gradient Checkpointing ENABLED for memory savings.")
+        # ---------------------------------------------------------
 
         if self.use_data_augmentation:
             self.augmenter = FeatureAugmenter(
@@ -164,7 +177,7 @@ class FlanT5SLT(AbstractSLT):
         self.t5_model = T5ForConditionalGeneration.from_pretrained(
             t5_model, 
             cache_dir=self.cache_dir,
-            torch_dtype=torch.float32,
+            torch_dtype=torch.bfloat16,
             use_safetensors=True 
         )
         

@@ -1,13 +1,13 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
   params:
-    lr: 3.0e-4
+    lr: 6.0e-4
     monitor: val/bleu4
 
-    model_name: google/flan-t5-large
-    cache_dir: /data3/models
+    model_name: google/flan-t5-xl
+    cache_dir: /home/omar_bishr/spamo_workspace/huggingface_cache
 
-    inter_hidden: 1024
+    inter_hidden: 2048
     input_size: 2048
     beam_size: 5
     max_frame_len: 512
@@ -44,6 +44,8 @@ model:
 
     use_in_context: false
     num_in_context: 0
+
+    use_gradient_checkpointing: true
     # NEW AUGMENTATION PARAMETERS
     use_data_augmentation: false
 
@@ -65,19 +67,19 @@ lightning:
       params:
         logging_interval: step
   trainer:
-    strategy: ddp
+    #strategy: ddp
     accumulate_grad_batches: 4
     accelerator: gpu
-    devices: 2
+    devices: 1
     max_epochs: 200
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
-    precision: 32
+    precision: bf16
 
 data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
-    batch_size: 8
+    batch_size: 16
     num_workers: 4
   
     train:
@@ -85,9 +87,9 @@ data:
       params:
         anno_root: ./preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
+        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
+        pose_root: /home/omar_bishr/spamo_workspace/phoenix/pose_Phoenix14T
         mode: train
         spatial: true
         spatiotemporal: true
@@ -101,9 +103,9 @@ data:
       params:
         anno_root: ./preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
+        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
+        pose_root: /home/omar_bishr/spamo_workspace/phoenix/pose_Phoenix14T
         mode: dev
         spatial: true
         spatiotemporal: true
@@ -117,9 +119,9 @@ data:
       params:
         anno_root: ./preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
-        pose_root: pose_Phoenix14T
+        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
+        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
+        pose_root: /home/omar_bishr/spamo_workspace/phoenix/pose_Phoenix14T
         mode: test
         spatial: true
         spatiotemporal: true
