@@ -24,6 +24,7 @@ from spamo.geo_sign_hyp import HyperbolicRegulariser
 from sentence_transformers import SentenceTransformer
 from spamo.dynamic_segmentation import DynamicSegmenter, AdaptiveMasker
 
+from spamo.spatial_temporal_cl import SpatialTemporalCLLoss
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_float32_matmul_precision('high')
@@ -108,6 +109,14 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         max_mask_len: int = 20,
         num_layers: int = 3,
         mask_type: str = 'noise',
+        # --- Spatial <-> Spatiotemporal contrastive loss ---
+        st_cl_loss: bool = False,
+        st_cl_alpha: float = 1,
+        st_cl_alignment_mode: str = "padding",
+        st_cl_proj_dim: int = 0,
+        st_cl_num_heads: int = 4,
+        st_cl_attn_dropout: float = 0.0,
+        st_cl_temperature_init: float = 2.6592,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -161,6 +170,14 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         if self.num_in_context == 0:
             self.use_in_context = False
 
+        self.st_cl_loss = st_cl_loss
+        self.st_cl_alpha = st_cl_alpha
+        self.st_cl_alignment_mode = st_cl_alignment_mode
+        self.st_cl_proj_dim = st_cl_proj_dim
+        self.st_cl_num_heads = st_cl_num_heads
+        self.st_cl_attn_dropout = st_cl_attn_dropout
+        self.st_cl_temperature_init = st_cl_temperature_init
+        
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
@@ -309,6 +326,22 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
             nn.GELU(),
             nn.Linear(proj_dim, proj_dim),
         )
+        # Spatial <-> Spatiotemporal contrastive loss (before merge)
+        if self.st_cl_loss:
+            self.st_cl = SpatialTemporalCLLoss(
+                dim=self.inter_hidden,
+                alignment_mode=self.st_cl_alignment_mode,
+                proj_dim=self.st_cl_proj_dim,
+                temperature_init=self.st_cl_temperature_init,
+                num_heads=self.st_cl_num_heads,
+                attn_dropout=self.st_cl_attn_dropout,
+            )
+            print(
+                f"[ST-CL] Enabled | mode={self.st_cl_alignment_mode}, "
+                f"proj_dim={self.st_cl_proj_dim}, alpha={self.st_cl_alpha}"
+            )
+        else:
+            self.st_cl = None
 
         self.logit_scale = nn.Parameter(torch.tensor(2.6592))
 
@@ -398,7 +431,9 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
 
         return joint_outputs, joint_mask, output_tokens, targets
 
-    def prepare_visual_inputs(self, samples: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
+    def prepare_visual_inputs(
+        self, samples: Dict
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         if self.fusion_mode == 'joint':
             spatial = self.use_spatial
             spatiotemporal = self.use_spatiotemporal
@@ -425,6 +460,21 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
             spatiotemporal_outputs = self.spatiotemp_proj(spatiotemporal_outputs)
             spatiotemporal_mask = create_mask(seq_lengths=samples['glor_lengths'], device=self.device)
 
+        # ---- Spatial <-> Spatiotemporal contrastive loss (before merge) ----
+        st_cl_loss_val: Optional[torch.Tensor] = None
+        if (
+            self.st_cl_loss
+            and self.st_cl is not None
+            and spatial
+            and spatiotemporal
+        ):
+            st_cl_loss_val = self.st_cl(
+                spatial_outputs,
+                spatial_mask,
+                spatiotemporal_outputs,
+                spatiotemporal_mask,
+            )
+        
         if pose:
             raw_pose_values = samples.get('pose_values', [])
             pose_values_local = [
@@ -432,11 +482,11 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                 for pv in raw_pose_values
             ]
             if len(pose_values_local) > 0:
-                pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.device).float()
+                pose_padded = pad_sequence(pose_values_local, batch_first=True).to(self.dtype)
                 pose_lengths = [int(p.size(0)) for p in pose_values_local]
             else:
                 B = len(samples['pixel_values'])
-                pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=torch.float32)
+                pose_padded = torch.zeros((B, 1, self.pose_input_size), device=self.device, dtype=self.dtype)
                 pose_lengths = [0] * B
 
             pose_outputs = self.pose_proj(pose_padded)
@@ -614,7 +664,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                     device=self.device
                 )
 
-        return visual_outputs, visual_masks
+        return visual_outputs, visual_masks, st_cl_loss_val
 
     # ------------------------------------------------------------------
     # Batch collation
@@ -869,12 +919,10 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         batch_idx: int
     ) -> Tuple[torch.Tensor, Dict]:
 
-        visual_outputs, visual_masks = self.prepare_visual_inputs(inputs)
-
+        visual_outputs, visual_masks, st_cl_loss_val = self.prepare_visual_inputs(inputs)
         # Geo-Sign Hyperbolic Regularisation
         hyp_loss = self._compute_hyp_loss(inputs)
 
-        # Project to T5 hidden size
         visual_outputs = self.fusion_proj(visual_outputs)
 
         log_dict = {}
@@ -882,6 +930,10 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
         # ==================================================
         # Cross-modal alignment branch
         # ==================================================
+        # ---- Spatial <-> Spatiotemporal contrastive loss (before merge) ----
+        if st_cl_loss_val is not None:
+            log_dict[f"{split}/st_cl_loss"] = st_cl_loss_val
+
         if self.cross_modal_align:
 
             # --------------------------------------------------
@@ -985,6 +1037,18 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                 # Hyperbolic
                 loss = loss + self.hyp_alpha * hyp_loss
                 log_dict[f"{split}/hyp_loss"] = hyp_loss
+                if st_cl_loss_val is not None:
+                    loss = loss + self.st_cl_alpha * st_cl_loss_val
+
+                if (
+                    self.sign_cl_loss
+                    and self.sign_cl is not None
+                    and (self.sign_cl_every_n_steps <= 1 or (self.global_step % self.sign_cl_every_n_steps) == 0)
+                ):
+                    sign_cl_loss_val = self.sign_cl(visual_outputs, visual_masks)
+                    if sign_cl_loss_val is not None and sign_cl_loss_val > 0:
+                        loss = loss + self.sign_cl_alpha * sign_cl_loss_val
+                        log_dict[f"{split}/sign_cl_loss"] = sign_cl_loss_val
 
                 log_dict[f"{split}/combined_loss"] = loss
 
