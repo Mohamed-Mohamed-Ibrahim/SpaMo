@@ -26,7 +26,9 @@ from spamo.dynamic_segmentation import DynamicSegmenter, AdaptiveMasker
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-torch.set_float32_matmul_precision('high')
+torch.backends.cudnn.allow_tf32 = False
+torch.backends.cuda.matmul.allow_tf32 = False
+#torch.set_float32_matmul_precision('high')
 
 
 class FlanT5SLT(CTCMixin, AbstractSLT):

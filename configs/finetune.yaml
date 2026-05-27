@@ -5,7 +5,7 @@ model:
     monitor: val/bleu4
 
     model_name: google/flan-t5-base
-    cache_dir: /data3/models
+    cache_dir: /home/omar_bishr/spamo_workspace/huggingface_cache
 
     inter_hidden: 1024
     input_size: 2048
@@ -93,10 +93,10 @@ lightning:
         params:
           duration: "00:10:00:00"
   trainer:
-    strategy: ddp
+    #strategy: ddp
     accumulate_grad_batches: 1
     accelerator: gpu
-    devices: 2
+    devices: 1
     max_epochs: 500
     gradient_clip_val: 1.0
     check_val_every_n_epoch: 1
@@ -105,18 +105,18 @@ lightning:
 data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
-    batch_size: 8
+    batch_size: 16
     num_workers: 4
   
     train:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: ./preprocess/Phoenix14T
+        anno_root: /home/omar_bishr/spamo_workspace/SpaMo_clean/preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
+        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
+        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
         pose_root: ""
-        emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features"
+        emo_feat_root: /home/omar_bishr/spamo_workspace/phoenix/emotion_features
         mode: train
         spatial: true
         spatiotemporal: true
@@ -130,12 +130,12 @@ data:
     validation:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: ./preprocess/Phoenix14T
+        anno_root: /home/omar_bishr/spamo_workspace/SpaMo_clean/preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
+        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
+        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
         pose_root: ""
-        emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features"
+        emo_feat_root: /home/omar_bishr/spamo_workspace/phoenix/emotion_features
         mode: dev
         spatial: true
         spatiotemporal: true
@@ -149,12 +149,12 @@ data:
     test:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: ./preprocess/Phoenix14T
+        anno_root: /home/omar_bishr/spamo_workspace/SpaMo_clean/preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: feat_Phoenix14T
-        mae_feat_root: mae_feat_Phoenix14T
+        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
+        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
         pose_root: ""
-        emo_feat_root: "/kaggle/input/notebooks/muhammad5286/emotion-feature-extraction/emotion_features"
+        emo_feat_root: /home/omar_bishr/spamo_workspace/phoenix/emotion_features
         mode: test
         spatial: true
         spatiotemporal: true
