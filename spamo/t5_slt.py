@@ -360,21 +360,15 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
     ) -> Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]:
         bs = visual_outputs.shape[0]
 
-        prompts = []
-        for i in range(bs):
-            lang  = samples['lang'][i]
-            base_p = self.prompt.format(lang)
+        # 1. Create the base prompts
+        prompts = [f'{self.prompt}'] * bs
+        prompts = [p.format(l) for p, l in zip(prompts, samples['lang'])]
 
-            ctx_list = samples.get('ex_lang_trans', [])
-            if (self.use_in_context
-                    and i < len(ctx_list)
-                    and ctx_list[i]):
-                p = f"{base_p}\nRandom Example: {ctx_list[i]}"
-            else:
-                p = base_p
+        # 2. Append context if enabled
+        if self.use_in_context:
+            prompts = [f"{p} {c}" for p, c in zip(prompts, samples['ex_lang_trans'])]
 
-            prompts.append(p)
-
+        # 3. Tokenize
         input_tokens = self.t5_tokenizer(
             prompts,
             padding="longest",
@@ -654,14 +648,21 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
             langs.append(sample['lang'])
 
             _ex_lang_trans = []
-            if self.num_in_context > 0 and 'ctx_text' in sample:
-                _ex_lang_trans = [
-                    f"{sample.get('ctx_en_text', '')}={sample['ctx_text']}",
-                    f"{sample.get('ctx_fr_text', '')}={sample['ctx_text']}",
-                    f"{sample.get('ctx_es_text', '')}={sample['ctx_text']}"
-                ]
-                trimmed = _ex_lang_trans[:self.num_in_context]
-                ex_lang_translations.append(' '.join(trimmed))
+            if self.num_in_context > 0:
+                if self.training:
+                    # TRAINING: Pull the video's own text (which will be shuffled away by derangement later)
+                    if 'en_text' in sample and 'text' in sample:
+                        _ex_lang_trans = [
+                            f"{sample.get('en_text', '')}={sample['text']}",
+                            f"{sample.get('fr_text', '')}={sample['text']}",
+                            f"{sample.get('es_text', '')}={sample['text']}"
+                        ]
+                    trimmed = _ex_lang_trans[:self.num_in_context]
+                    ex_lang_translations.append(' '.join(trimmed))
+                else:
+                    # INFERENCE: Hard-code the fixed examples from the EASLT paper (Table 8)
+                    hard_coded_ctx = "It can occasionally thunderstorms.=vereinzelt kann es gewittern. Ocasionalmente puede tormentas eléctricas.=vereinzelt kann es gewittern. Il peut parfois les orages.=vereinzelt kann es gewittern."
+                    ex_lang_translations.append(hard_coded_ctx)
             else:
                 ex_lang_translations.append("")
 
