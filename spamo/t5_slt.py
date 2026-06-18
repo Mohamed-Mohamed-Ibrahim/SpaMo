@@ -661,7 +661,7 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                     ex_lang_translations.append(' '.join(trimmed))
                 else:
                     # INFERENCE: Hard-code the fixed examples from the EASLT paper (Table 8)
-                    hard_coded_ctx = "It can occasionally thunderstorms.=vereinzelt kann es gewittern. Ocasionalmente puede tormentas eléctricas.=vereinzelt kann es gewittern. Il peut parfois les orages.=vereinzelt kann es gewittern."
+                    hard_coded_ctx = "It can occasionally thunderstorms.=vereinzelt kann es gewittern."
                     ex_lang_translations.append(hard_coded_ctx)
             else:
                 ex_lang_translations.append("")
