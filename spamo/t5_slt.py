@@ -660,8 +660,8 @@ class FlanT5SLT(CTCMixin, AbstractSLT):
                     trimmed = _ex_lang_trans[:self.num_in_context]
                     ex_lang_translations.append(' '.join(trimmed))
                 else:
-                    # INFERENCE: Hard-code the fixed examples from the EASLT paper (Table 8)
-                    hard_coded_ctx = "It can occasionally thunderstorms.=vereinzelt kann es gewittern."
+                    # INFERENCE: Hard-code the fixed examples from the SpaMo paper
+                    hard_coded_ctx = "Soil frost is possible there and in the southern low mountain ranges.=dort sowie in den südlichen mittelgebirgen ist bodenfrost möglich."
                     ex_lang_translations.append(hard_coded_ctx)
             else:
                 ex_lang_translations.append("")
