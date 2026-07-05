@@ -37,10 +37,13 @@ class TemporalConv(nn.Module):
         for layer_idx, ks in enumerate(self.kernel_size):
             input_sz = self.input_size if layer_idx == 0 or self.conv_type == 6 and layer_idx == 1 or self.conv_type == 7 and layer_idx == 1 or self.conv_type == 8 and layer_idx == 2 else self.hidden_size
             if ks[0] == 'P':
-                modules.append(nn.MaxPool1d(kernel_size=int(ks[1]), ceil_mode=False))
+                modules.append(nn.MaxPool1d(kernel_size=int(ks[1]), ceil_mode=True))
             elif ks[0] == 'K':
+                kernel_size = int(ks[1])
+                # Add padding to preserve sequence length: padding = (kernel_size - 1) // 2
+                padding = (kernel_size - 1) // 2
                 modules.append(
-                    nn.Conv1d(input_sz, self.hidden_size, kernel_size=int(ks[1]), stride=1, padding=0)
+                    nn.Conv1d(input_sz, self.hidden_size, kernel_size=kernel_size, stride=1, padding=padding)
                     #MultiScale_TemporalConv(input_sz, self.hidden_size)
                 )
                 modules.append(nn.BatchNorm1d(self.hidden_size))
@@ -54,10 +57,11 @@ class TemporalConv(nn.Module):
         feat_len = copy.deepcopy(lgt)
         for ks in self.kernel_size:
             if ks[0] == 'P':
-                feat_len = torch.div(feat_len, 2)
+                # Use ceil_mode behavior for length calculation
+                feat_len = torch.ceil(feat_len / int(ks[1]))
             else:
-                feat_len -= int(ks[1]) - 1
-                #pass
+                # With padding, conv layers preserve sequence length
+                pass
         return feat_len
 
     def forward(self, frame_feat, lgt):

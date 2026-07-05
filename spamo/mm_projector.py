@@ -1,11 +1,8 @@
 import torch
 import torch.nn as nn
 import re
-import math
 import torch.nn.functional as F
 
-
-# Credit by https://github1s.com/haotian-liu/LLaVA/blob/main/llava/model/multimodal_projector/builder.py
 class IdentityMap(nn.Module):
     def __init__(self):
         super().__init__()
@@ -16,7 +13,6 @@ class IdentityMap(nn.Module):
     @property
     def config(self):
         return {"mm_projector_type": 'identity'}
-
 
 class SimpleResBlock(nn.Module):
     def __init__(self, channels):
@@ -31,6 +27,54 @@ class SimpleResBlock(nn.Module):
     def forward(self, x):
         x = self.pre_norm(x)
         return x + self.proj(x)
+
+class AdaptiveFusion(nn.Module):
+    """
+    Adaptive Fusion Mechanism inspired by AVRET (Updated for 3 Inputs).
+    
+    Formula: fused = (I1 + I2 + I3) + (λ1*I1 + λ2*I2 + λ3*I3)
+    """
+    def __init__(self, input_size_1=512, input_size_2=512, input_size_3=512, output_size=3, bias=False):
+        super(AdaptiveFusion, self).__init__()
+        self.sigmoid = nn.Sigmoid()
+        self.weight_input_1 = nn.Linear(input_size_1, output_size, bias=bias)
+        self.weight_input_2 = nn.Linear(input_size_2, output_size, bias=bias)
+        self.weight_input_3 = nn.Linear(input_size_3, output_size, bias=bias)
+        self.layer_norm = nn.LayerNorm(input_size_1, eps=1e-5)
+        
+    def forward(self, input_1, input_2, input_3):
+        weight_sum = (self.weight_input_1(input_1) + 
+                      self.weight_input_2(input_2) + 
+                      self.weight_input_3(input_3))
+        
+        fm_sigmoid = self.sigmoid(weight_sum)
+        
+        lambda1 = fm_sigmoid.clone().detach()[:, :, 0].unsqueeze(-1)
+        lambda2 = fm_sigmoid.clone().detach()[:, :, 1].unsqueeze(-1)
+        lambda3 = fm_sigmoid.clone().detach()[:, :, 2].unsqueeze(-1)
+        
+        fused_output = (input_1 + input_2 + input_3) + \
+                       torch.mul(lambda1, input_1) + \
+                       torch.mul(lambda2, input_2) + \
+                       torch.mul(lambda3, input_3)
+                       
+        fused_output = self.layer_norm(fused_output)
+        return fused_output
+
+class AdaptiveFusionWithProjection(nn.Module):
+    """
+    Adaptive Fusion with projection for inputs of different dimensions.
+    """
+    def __init__(self, input_size_1, input_size_2, hidden_size, output_size=2, bias=False):
+        super(AdaptiveFusionWithProjection, self).__init__()
+        self.proj_1 = nn.Linear(input_size_1, hidden_size)
+        self.proj_2 = nn.Linear(input_size_2, hidden_size)
+        self.adaptive_fusion = AdaptiveFusion(hidden_size, hidden_size, output_size, bias)
+        
+    def forward(self, input_1, input_2):
+        proj_1 = self.proj_1(input_1)
+        proj_2 = self.proj_2(input_2)
+        return self.adaptive_fusion(proj_1, proj_2)
 
 def build_vision_projector(mm_projector_type='linear', mm_hidden_size=512, hidden_size=768, mlp_depth=1):
     if mm_projector_type == 'linear':
@@ -50,16 +94,8 @@ def build_vision_projector(mm_projector_type='linear', mm_hidden_size=512, hidde
 
     raise ValueError(f'Unknown projector type: {mm_projector_type}')
 
-
-# https://github1s.com/facebookresearch/jepa/blob/main/src/models/utils/modules.py
 class CrossAttention(nn.Module):
-    def __init__(
-        self,
-        dim,
-        num_heads=12,
-        qkv_bias=False,
-        use_sdpa=True
-    ):
+    def __init__(self, dim, num_heads=12, qkv_bias=False, use_sdpa=True):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -75,14 +111,14 @@ class CrossAttention(nn.Module):
 
         B, N, C = x.shape
         kv = self.kv(x).reshape(B, N, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        k, v = kv[0], kv[1]  # (batch_size, num_heads, seq_len, feature_dim_per_head)
+        k, v = kv[0], kv[1]
 
         if self.use_sdpa:
             with torch.backends.cuda.sdp_kernel():
                 q = F.scaled_dot_product_attention(q, k, v)
         else:
             xattn = (q @ k.transpose(-2, -1)) * self.scale
-            xattn = xattn.softmax(dim=-1)  # (batch_size, num_heads, query_len, seq_len)
+            xattn = xattn.softmax(dim=-1)
             q = (xattn @ v)
 
         q = q.transpose(1, 2).reshape(B, n, C)
@@ -90,16 +126,8 @@ class CrossAttention(nn.Module):
     
         return q
 
-
 class MLP(nn.Module):
-    def __init__(
-        self,
-        in_features,
-        hidden_features=None,
-        out_features=None,
-        act_layer=nn.GELU,
-        drop=0.
-    ):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
@@ -116,17 +144,8 @@ class MLP(nn.Module):
         x = self.drop(x)
         return x
 
-
 class CrossAttentionBlock(nn.Module):
-    def __init__(
-        self,
-        dim,
-        num_heads,
-        mlp_ratio=4.,
-        qkv_bias=False,
-        act_layer=nn.GELU,
-        norm_layer=nn.LayerNorm
-    ):
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.xattn = CrossAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias)
@@ -139,3 +158,50 @@ class CrossAttentionBlock(nn.Module):
         q = q + y
         q = q + self.mlp(self.norm2(q))
         return q
+
+class EmotionEnhancer(nn.Module):
+    def __init__(self, feat_size: int):
+        super().__init__()
+        self.channel_gate = nn.Sequential(
+            nn.Linear(feat_size, feat_size),
+            nn.Sigmoid()
+        )
+        self.quality_predictor = nn.Linear(feat_size, 1)
+
+    def forward(self, Ze: torch.Tensor, emotion_mask: torch.Tensor) -> torch.Tensor:
+        Ze_prime = Ze * self.channel_gate(Ze)
+        q = self.quality_predictor(Ze_prime)
+        # Protect against padding zeros corrupting the anchor
+        q = q.masked_fill(~emotion_mask.bool().unsqueeze(-1), 0.0)
+        q = q / (q.sum(dim=1, keepdim=True) + 1e-6)
+        Ze_g = (q * Ze_prime).sum(dim=1)
+        return Ze_g
+
+class EmotionModulator(nn.Module):
+    def __init__(self, feat_size: int):
+        super().__init__()
+        self.mlp_param = nn.Sequential(
+            nn.Linear(feat_size * 2, feat_size * 2),
+            nn.GELU(),
+            nn.Linear(feat_size * 2, feat_size * 2)
+        )
+        self.mlp_gate = nn.Sequential(
+            nn.Linear(feat_size * 2, feat_size),
+            nn.GELU(),
+            nn.Linear(feat_size, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, Zq: torch.Tensor, Ze_g: torch.Tensor) -> torch.Tensor:
+        T = Zq.shape[1]
+        Za = Ze_g.unsqueeze(1).expand(-1, T, -1)
+        concat = torch.cat([Zq, Za], dim=-1)
+
+        params = self.mlp_param(concat)
+        d = Zq.shape[-1]
+        delta_s = params[..., :d]
+        delta_b = params[..., d:]
+
+        g = self.mlp_gate(concat)
+        Zq_mod = Zq * (1.0 + torch.tanh(delta_s) * g) + (delta_b * g)
+        return Zq_mod

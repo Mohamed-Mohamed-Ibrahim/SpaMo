@@ -3,31 +3,21 @@ import datetime
 import glob
 import os
 import sys
+import random
+import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Any
 
 import pytorch_lightning as pl
+import torch
 from omegaconf import OmegaConf
-from pytorch_lightning import seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.trainer import Trainer
 
 from utils.helpers import instantiate_from_config
-from spamo.callbacks import SetupCallback
-
+from spamo.callbacks import SetupCallback, MetricsTableCallback
 
 def str2bool(v: Any) -> bool:
-    """Convert string representation to boolean.
-    
-    Args:
-        v: Input value to convert
-        
-    Returns:
-        Boolean representation of input
-        
-    Raises:
-        ArgumentTypeError: If input cannot be interpreted as boolean
-    """
     if isinstance(v, bool):
         return v
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -37,90 +27,27 @@ def str2bool(v: Any) -> bool:
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
-
 def get_parser() -> argparse.ArgumentParser:
-    """Create argument parser with all required CLI options.
-    
-    Returns:
-        Configured argument parser
-    """
     parser = argparse.ArgumentParser(description='SpaMo training and evaluation')
-    parser.add_argument(
-        '-c', '--config', nargs='*', metavar='base_config.yaml', default=list(),
-        help='Configuration files to load'
-    )
-    parser.add_argument(
-        '-t', '--train', type=str2bool, default=True, nargs='?',
-        help='Run in training mode'
-    )
-    parser.add_argument(
-        '--test', type=bool, default=False,
-        help='Run in testing mode'
-    )
-    parser.add_argument(
-        '-s', '--seed', type=int, default=0,
-        help='Seed for random number generators'
-    )
-    parser.add_argument(
-        '-f', '--fast_dev_run', action='store_true', default=False,
-        help='Run a test batch for debugging'
-    )
-    parser.add_argument(
-        '-n', '--name', type=str, const=True, default='', nargs='?',
-        help='Postfix for log directory'
-    )
-    parser.add_argument(
-        '--postfix', type=str, default='',
-        help='Additional postfix for log directory'
-    )
-    parser.add_argument(
-        '-l', '--logdir', type=str, default='logs',
-        help='Base directory for logging'
-    )
-    parser.add_argument(
-        '-r', '--resume', default=None,
-        help='Resume training from checkpoint directory'
-    )
-    parser.add_argument(
-        '--no_test', type=bool, default=True,
-        help='Skip test phase after training'
-    )
-    parser.add_argument(
-        '--ckpt', type=str, default=None,
-        help='Checkpoint file for resuming or testing'
-    )
-    parser.add_argument(
-        '-e', '--evaluation', type=str, default='mse',
-        help='Evaluation metric to use'
-    )
+    parser.add_argument('-c', '--config', nargs='*', metavar='base_config.yaml', default=list())
+    parser.add_argument('-t', '--train', type=str2bool, default=True, nargs='?')
+    parser.add_argument('--test', type=bool, default=False)
+    parser.add_argument('-s', '--seed', type=int, default=0)
+    parser.add_argument('-f', '--fast_dev_run', action='store_true', default=False)
+    parser.add_argument('-n', '--name', type=str, const=True, default='', nargs='?')
+    parser.add_argument('--postfix', type=str, default='')
+    parser.add_argument('-l', '--logdir', type=str, default='logs')
+    parser.add_argument('-r', '--resume', default=None)
+    parser.add_argument('--no_test', type=bool, default=True)
+    parser.add_argument('--ckpt', type=str, default=None)
+    parser.add_argument('-e', '--evaluation', type=str, default='mse')
     return parser
 
-
 def load_configs(config_paths: List[str]) -> OmegaConf:
-    """Load and merge multiple configuration files.
-    
-    Args:
-        config_paths: List of paths to configuration files
-        
-    Returns:
-        Merged configuration
-    """
     configs = [OmegaConf.load(cfg) for cfg in config_paths]
     return OmegaConf.merge(*configs)
 
-
 def setup_logging_dirs(opt: argparse.Namespace) -> tuple:
-    """Set up logging directories and determine checkpoint path.
-    
-    Args:
-        opt: Command line arguments
-        
-    Returns:
-        Tuple of (logdir, checkpoint_path, nowname)
-        
-    Raises:
-        ValueError: If resuming from a non-existent directory
-    """
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     
     if opt.resume:
@@ -145,36 +72,10 @@ def setup_logging_dirs(opt: argparse.Namespace) -> tuple:
     
     return logdir, ckpt, nowname
 
+def configure_callbacks(opt: argparse.Namespace, model: pl.LightningModule, ckptdir: str, lightning_config: OmegaConf, logdir: str, now: str, config: OmegaConf) -> List:
+    callbacks = [instantiate_from_config(lightning_config.callback[callback]) for callback in lightning_config.callback.keys()]
+    callbacks.append(MetricsTableCallback())
 
-def configure_callbacks(
-    opt: argparse.Namespace, 
-    model: pl.LightningModule, 
-    ckptdir: str, 
-    lightning_config: OmegaConf,
-    logdir: str,
-    now: str,
-    config: OmegaConf
-) -> List:
-    """Configure training callbacks.
-    
-    Args:
-        opt: Command line arguments
-        model: Lightning module
-        ckptdir: Directory for checkpoints
-        lightning_config: Lightning configuration
-        logdir: Directory for logs
-        now: Current timestamp
-        config: Full configuration
-        
-    Returns:
-        List of callbacks
-    """
-    callbacks = [
-        instantiate_from_config(lightning_config.callback[callback]) 
-        for callback in lightning_config.callback.keys()
-    ]
-    
-    # Add checkpointing and early stopping based on metric type
     if opt.evaluation == "bleu":
         callbacks.append(ModelCheckpoint(
             dirpath=ckptdir, 
@@ -200,7 +101,6 @@ def configure_callbacks(
             monitor=model.monitor, verbose=True, patience=50, mode="min"
         ))
     
-    # Setup callback for logging configuration
     callbacks.append(SetupCallback(
         resume=opt.resume, 
         now=now, 
@@ -213,41 +113,11 @@ def configure_callbacks(
     
     return callbacks
 
-
 def configure_logger(logger_type: str, logdir: str, nowname: str) -> Dict:
-    """Configure the logger.
-    
-    Args:
-        logger_type: Type of logger to use
-        logdir: Directory for logs
-        nowname: Name for the current run
-        
-    Returns:
-        Logger configuration
-    """
     logger_configs = {
-        "wandb": {
-            "target": "pytorch_lightning.loggers.WandbLogger",
-            "params": {
-                "name": nowname,
-                "save_dir": logdir,
-                "id": nowname,
-            }
-        },
-        "testtube": {
-            "target": "pytorch_lightning.loggers.TestTubeLogger",
-            "params": {
-                "name": "testtube",
-                "save_dir": logdir,
-            }
-        },
-        "tensorboard": {
-            "target": "pytorch_lightning.loggers.TensorBoardLogger",
-            "params": {
-                "version": nowname,
-                "save_dir": logdir
-            }
-        }
+        "wandb": {"target": "pytorch_lightning.loggers.WandbLogger", "params": {"name": nowname, "save_dir": logdir, "id": nowname}},
+        "testtube": {"target": "pytorch_lightning.loggers.TestTubeLogger", "params": {"name": "testtube", "save_dir": logdir}},
+        "tensorboard": {"target": "pytorch_lightning.loggers.TensorBoardLogger", "params": {"name": nowname, "save_dir": logdir}}
     }
     
     if logger_type not in logger_configs:
@@ -255,33 +125,26 @@ def configure_logger(logger_type: str, logdir: str, nowname: str) -> Dict:
         
     return logger_configs[logger_type]
 
-
 def main():
-    """Main entry point for training and testing."""
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     sys.path.append(os.getcwd())
     
-    # Parse arguments
     parser = get_parser()
     opt, _ = parser.parse_known_args()
     
-    # Validate arguments
     if opt.name and opt.resume:
-        raise ValueError(
-            "-n/--name and -r/--resume cannot be specified both. "
-            "If you want to resume training in a new log folder, "
-            "use -n/--name in combination with --resume_from_checkpoint"
-        )
+        raise ValueError("-n/--name and -r/--resume cannot be specified both.")
     
-    # Set up directories and checkpoint path
     logdir, ckpt, nowname = setup_logging_dirs(opt)
     ckptdir = os.path.join(logdir, "checkpoints")
     cfgdir = os.path.join(logdir, "configs")
 
-    # Set random seed for reproducibility
-    seed_everything(opt.seed)
+    seed_value = opt.seed
+    pl.seed_everything(seed_value, workers=True)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     
-    # Load configuration files
     if opt.resume or opt.test:
         base_configs = sorted(glob.glob(os.path.join(logdir, "configs/*.yaml")))
         opt.config = base_configs + opt.config
@@ -289,48 +152,44 @@ def main():
     config = load_configs(opt.config)
     lightning_config = config.pop("lightning", OmegaConf.create())
     
-    # Configure trainer
     trainer_config = lightning_config.get("trainer", OmegaConf.create())
     if opt.fast_dev_run:
         trainer_config["fast_dev_run"] = True
     trainer_opt = argparse.Namespace(**trainer_config)
+    
+    from pytorch_lightning.strategies import DDPStrategy
+    if not hasattr(trainer_opt, "strategy") or trainer_opt.strategy is None:
+        trainer_opt.strategy = DDPStrategy(find_unused_parameters=True)
+
     lightning_config.trainer = trainer_config
     
-    # Instantiate data module
     data = instantiate_from_config(config.data)
     data.setup()
     
-    # Instantiate model
     model = instantiate_from_config(config.model)
     
-    # Configure trainer with callbacks and logger for non-dev runs
     if not opt.fast_dev_run:
-        logger_cfg = configure_logger("wandb", logdir, nowname)
+        logger_cfg = configure_logger("tensorboard", logdir, nowname)
         trainer_opt.logger = instantiate_from_config(logger_cfg)
-        
-        trainer_opt.callbacks = configure_callbacks(
-            opt, model, ckptdir, lightning_config, logdir, now, config
-        )
+        trainer_opt.callbacks = configure_callbacks(opt, model, ckptdir, lightning_config, logdir, now, config)
     
-    # Create trainer
     trainer = Trainer(**vars(trainer_opt))
     
-    # Run training or testing
     if opt.train:
         if opt.resume is not None:
             trainer.fit(model, data, ckpt_path=ckpt)
         else:
             if ckpt is not None:
                 model.load_pretrained_weights(ckpt)
-                trainer.fit(model, data)
-            else:
-                trainer.fit(model, data)
+            trainer.fit(model, data)
             
             if not opt.no_test:
                 trainer.test(model, data)
     elif opt.test:
+        train_loader = data.train_dataloader()
+        trainer.test(model, dataloaders=train_loader, ckpt_path=ckpt)
+        trainer.validate(model, data, ckpt_path=ckpt) 
         trainer.test(model, data, ckpt_path=ckpt)
-
 
 if __name__ == '__main__':
     main()

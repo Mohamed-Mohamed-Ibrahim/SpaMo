@@ -1,29 +1,86 @@
 model:
   target: spamo.t5_slt.FlanT5SLT
-  
-  params:     
+  params:
     lr: 6.0e-4
     monitor: val/bleu4
-    model_name: google/flan-t5-xl
-    cache_dir: /data3/models
-    inter_hidden: 768
+
+    model_name: google/flan-t5-base
+    cache_dir: /home/omar_bishr/spamo_workspace/huggingface_cache
+
+    inter_hidden: 1024
     input_size: 2048
+    emotion_input_size: 768
     beam_size: 5
     max_frame_len: 512
-    max_txt_len: 64
+    max_txt_len: 128
     frame_sample_rate: 1
     prompt: "Translate the given sentence into {}."
+
     tuning_type: lora
+
+    use_spatial: true
+    use_spatiotemporal: true
+    use_pose: false
+    use_emotion: true
+
     lora_r: 16
     lora_alpha: 32
     lora_dropout: 0.1
+    weight_decay: 0.01
+
     fusion_mode: joint
-    warm_up_steps: 0
+    warm_up_steps: null
     cross_modal_align: true
     combined_loss: true
+
     alpha: 1.0
-    use_in_context: true
-    num_in_context: 3
+
+    sign_cl_loss: false
+    sign_cl_alpha: 0.1
+    sign_cl_temperature: 0.3
+    sign_cl_temporal_window: 4
+    sign_cl_every_n_steps: 1
+
+    use_kt_loss: false
+    kt_lambda: 0.69
+
+    use_in_context: false
+    num_in_context: 0
+
+    use_data_augmentation: false
+    augmentation_prob: 0.0
+    aug_frame_prob: 0.0
+    aug_span_prob: 0.0
+    aug_channel_prob: 0.0
+
+
+    conv_type: 2
+    use_ctc: false        # master on/off switch
+    ctc_weight: 0.5      # λ_Txt — weight of L_TxtCTC in total loss
+    ctc_blank_id: -1     # -1 means auto-resolve from tokenizer.pad_token_id
+
+
+    use_hyperbolic: false
+    hyp_dim: 256            # embedding dim on the Poincaré ball
+    hyp_init_c: 1.0         # initial curvature (learnable); set 0.001 for near-Euclidean ablation
+    hyp_alpha: 0.5          # weight of hyp loss in final loss sum
+ 
+
+    # InfoLOOB loss for visual-textual alignment
+    use_infoloob_loss: false
+    infoloob_temperature: 0.03
+    infoloob_weight: 1.0
+
+    # Dynamic Temporal Segmentation and Masking
+    use_dynamic_segmentation: false
+    motion_threshold: 0.8
+    use_adaptive_masking: true
+    mask_prob: 0.45
+    min_mask_len: 5
+    max_mask_len: 20
+    # NEW: Enhanced Segmentation Parameters
+    num_layers: 5                # Depth of motion detection network (2-5 recommended)
+    mask_type: 'noise'           # Masking strategy: 'noise', 'smooth', or 'zero'
 
 lightning:
   callback:
@@ -31,56 +88,79 @@ lightning:
       target: pytorch_lightning.callbacks.LearningRateMonitor
       params:
         logging_interval: step
+    timer:
+        target: pytorch_lightning.callbacks.Timer
+        params:
+          duration: "00:10:00:00"
   trainer:
-    accumulate_grad_batches: 2
+    #strategy: ddp
+    accumulate_grad_batches: 1
     accelerator: gpu
     devices: 1
     max_epochs: 500
     gradient_clip_val: 1.0
-    check_val_every_n_epoch: 2
-    precision: bf16
+    check_val_every_n_epoch: 1
+    precision: 32
 
 data:
   target: dataset.datamodule.DataModuleFromConfig
   params:
-    batch_size: 8
+    batch_size: 16
     num_workers: 4
   
     train:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: ./preprocess/Phoenix14T
+        anno_root: /home/omar_bishr/spamo_workspace/SpaMo_clean/preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: /data2/sl_datasets/vit_feat_Phoenix14T
-        mae_feat_root: /data2/sl_datasets/mae_feat_Phoenix14T
+        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
+        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
+        pose_root: ""
+        emo_feat_root: /home/omar_bishr/spamo_workspace/phoenix/emotion_features
         mode: train
         spatial: true
         spatiotemporal: true
-        spatial_postfix: _s2wrapping
-        spatiotemporal_postfix: _overlap-8-pretrained
+        pose: false
+        emotion: true            
+        spatial_postfix: ""
+        spatiotemporal_postfix: ""
+        pose_postfix: ""
+        emotion_postfix: "_Ze"   
         
     validation:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: ./preprocess/Phoenix14T
+        anno_root: /home/omar_bishr/spamo_workspace/SpaMo_clean/preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: /data2/sl_datasets/vit_feat_Phoenix14T
-        mae_feat_root: /data2/sl_datasets/mae_feat_Phoenix14T
-        mode: dev         # normally `val`, but Phoenix14T  is `dev`
+        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
+        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
+        pose_root: ""
+        emo_feat_root: /home/omar_bishr/spamo_workspace/phoenix/emotion_features
+        mode: dev
         spatial: true
         spatiotemporal: true
-        spatial_postfix: _s2wrapping
-        spatiotemporal_postfix: _overlap-8-pretrained
+        pose: false
+        emotion: true            
+        spatial_postfix: ""
+        spatiotemporal_postfix: ""
+        pose_postfix: ""
+        emotion_postfix: "_Ze"   
     
     test:
       target: dataset.p14t.Phoenix14T
       params:
-        anno_root: ./preprocess/Phoenix14T
+        anno_root: /home/omar_bishr/spamo_workspace/SpaMo_clean/preprocess/Phoenix14T
         vid_root: ./dataset/Phoenix14T
-        feat_root: /data2/sl_datasets/vit_feat_Phoenix14T
-        mae_feat_root: /data2/sl_datasets/mae_feat_Phoenix14T
+        feat_root: /home/omar_bishr/spamo_workspace/phoenix/feat_Phoenix14T
+        mae_feat_root: /home/omar_bishr/spamo_workspace/phoenix/mae_feat_Phoenix14T
+        pose_root: ""
+        emo_feat_root: /home/omar_bishr/spamo_workspace/phoenix/emotion_features
         mode: test
         spatial: true
         spatiotemporal: true
-        spatial_postfix: _s2wrapping
-        spatiotemporal_postfix: _overlap-8-pretrained
+        pose: false
+        emotion: true            
+        spatial_postfix: ""
+        spatiotemporal_postfix: ""
+        pose_postfix: ""
+        emotion_postfix: "_Ze"
