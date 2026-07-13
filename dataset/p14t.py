@@ -1,11 +1,8 @@
 import torch
-import os
 import numpy as np
-from typing import Dict, List, Optional, Union, Any, Tuple
+from typing import Dict, List, Union, Any
 from pathlib import Path
 from spamo.constants import *
-import random
-
 
 class Phoenix14T(torch.utils.data.Dataset):
     def __init__(
@@ -14,14 +11,11 @@ class Phoenix14T(torch.utils.data.Dataset):
         vid_root: str,
         feat_root: str,
         mae_feat_root: str,
-        pose_root: str,
         mode: str = 'dev',
         spatial: bool = False,
         spatiotemporal: bool = False,
         spatial_postfix: str = '',
         spatiotemporal_postfix: Union[str, List[str]] = '',
-        pose_postfix: str = '',
-        pose: bool = False,
         emotion: bool = False,
         emotion_postfix: str = '_Ze',
         emo_feat_root: str = ''
@@ -37,9 +31,6 @@ class Phoenix14T(torch.utils.data.Dataset):
         self.spatiotemporal = spatiotemporal
         self.spatial_postfix = spatial_postfix
         self.spatiotemporal_postfix = spatiotemporal_postfix
-        self.pose_root = Path(pose_root) if pose_root else None
-        self.pose_postfix = pose_postfix
-        self.pose = pose
         
         self.emotion = emotion
         self.emotion_postfix = emotion_postfix
@@ -48,9 +39,6 @@ class Phoenix14T(torch.utils.data.Dataset):
         if not (spatial or spatiotemporal):
             raise ValueError("At least one of 'spatial' or 'spatiotemporal' must be True")
         
-        if not (pose):
-            print("No Pose features will be loaded.")
-
         if not emotion:
             print("No emotion features will be loaded.")
  
@@ -68,7 +56,6 @@ class Phoenix14T(torch.utils.data.Dataset):
         
         self.spatial_dir = self.feat_root / self.mode
         self.spatiotemporal_dir = self.mae_feat_root / self.mode
-        self.pose_dir = (self.pose_root / self.mode) if (self.pose_root is not None) else None
         self.emotion_dir = (self.emo_feat_root / self.mode) if self.emo_feat_root else None
         
         self._validate_directories()
@@ -80,10 +67,6 @@ class Phoenix14T(torch.utils.data.Dataset):
         if self.spatiotemporal and not self.spatiotemporal_dir.exists():
             raise FileNotFoundError(f"Spatiotemporal feature directory not found: {self.spatiotemporal_dir}")
         
-        if self.pose:
-            if self.pose_dir is None or not self.pose_dir.exists():
-                raise FileNotFoundError(f"Pose feature directory not found: {self.pose_dir}")
-
         if self.emotion:
             if self.emotion_dir is None or not self.emotion_dir.exists():
                 raise FileNotFoundError(f"Emotion feature directory not found: {self.emotion_dir}")
@@ -109,17 +92,6 @@ class Phoenix14T(torch.utils.data.Dataset):
                     raise FileNotFoundError(f"Spatiotemporal feature file not found: {path}")
                 features.append(torch.tensor(np.load(path)))
             return features
-        
-    def _load_pose_features(self, file_id: str) -> torch.Tensor:
-        if self.pose_dir is None:
-            return torch.tensor([])
-
-        pose_path = self.pose_dir / f"{file_id}{self.pose_postfix}.npy"
-        if not pose_path.exists():
-            print(f"Warning: Pose feature file not found: {pose_path}")
-            return torch.tensor([])
-
-        return torch.tensor(np.load(pose_path), dtype=torch.float32)
 
     def _heal_emotion_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
         valid_mask = ~torch.isnan(tensor).any(dim=1) & (tensor.abs().sum(dim=1) > 0)
@@ -154,7 +126,6 @@ class Phoenix14T(torch.utils.data.Dataset):
         file_id = data['fileid']
         pixel_value = None
         glor_value = None
-        pose_value = None
         emotion_value = None
         
         if self.spatial:
@@ -169,29 +140,19 @@ class Phoenix14T(torch.utils.data.Dataset):
                 glor_value = self._load_spatiotemporal_features(file_id)
             except FileNotFoundError as e:
                 print(f"Warning: {e}. Returning empty tensor.")
-                if isinstance(self.spatiotemporal_postfix, str):
-                    glor_value = torch.tensor([])
-                else:
-                    glor_value = [torch.tensor([])]
-
-        if self.pose:
-            try:
-                pose_value = self._load_pose_features(file_id)
-            except FileNotFoundError as e:
-                print(f"Warning: {e}. Returning empty tensor.")
-                pose_value = torch.tensor([])
+                glor_value = torch.tensor([]) if isinstance(self.spatiotemporal_postfix, str) else [torch.tensor([])]
 
         if self.emotion:
             try:
                 emotion_value = self._load_emotion_features(file_id)
             except FileNotFoundError as e:
                 print(f"Warning: {e}. Returning zero tensor.")
-                emotion_value = torch.zeros(1, 768, dtype=torch.float32)
+                # This 768 fallback correctly matches your model's emotion_input_size configuration
+                emotion_value = torch.zeros(1, 768, dtype=torch.float32) 
         
         result = {
             'pixel_value': pixel_value,
             'glor_value': glor_value,
-            'pose_value': pose_value,
             'emotion_value': emotion_value,
             'bool_mask_pos': None,
             'text': self._normalize_text(data['text']),

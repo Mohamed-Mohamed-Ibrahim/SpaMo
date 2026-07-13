@@ -3,16 +3,14 @@ import datetime
 import glob
 import os
 import sys
-import random
-import numpy as np
-from pathlib import Path
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Any
 
 import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.trainer import Trainer
+from pytorch_lightning.strategies import DDPStrategy
 
 from utils.helpers import instantiate_from_config
 from spamo.callbacks import SetupCallback, MetricsTableCallback
@@ -28,7 +26,7 @@ def str2bool(v: Any) -> bool:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def get_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description='SpaMo training and evaluation')
+    parser = argparse.ArgumentParser(description='SpaMo/EASLT training and evaluation')
     parser.add_argument('-c', '--config', nargs='*', metavar='base_config.yaml', default=list())
     parser.add_argument('-t', '--train', type=str2bool, default=True, nargs='?')
     parser.add_argument('--test', type=bool, default=False)
@@ -137,7 +135,6 @@ def main():
     
     logdir, ckpt, nowname = setup_logging_dirs(opt)
     ckptdir = os.path.join(logdir, "checkpoints")
-    cfgdir = os.path.join(logdir, "configs")
 
     seed_value = opt.seed
     pl.seed_everything(seed_value, workers=True)
@@ -157,7 +154,6 @@ def main():
         trainer_config["fast_dev_run"] = True
     trainer_opt = argparse.Namespace(**trainer_config)
     
-    from pytorch_lightning.strategies import DDPStrategy
     if not hasattr(trainer_opt, "strategy") or trainer_opt.strategy is None:
         trainer_opt.strategy = DDPStrategy(find_unused_parameters=True)
 

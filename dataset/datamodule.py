@@ -1,7 +1,6 @@
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 from utils.helpers import instantiate_from_config
-import os
 
 class DataModuleFromConfig(pl.LightningDataModule):
 
@@ -10,8 +9,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
         
         self.batch_size = batch_size
         self.dataset_configs = dict()
-        # Ensure default is safe (4 is standard)
-        self.num_workers = num_workers if num_workers is not None else 4
+        self.num_workers = num_workers if num_workers is not None else 4   # Ensure default is safe (4 is standard)
         
         if train is not None:
             self.dataset_configs['train'] = train
@@ -34,7 +32,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             dataset=self.datasets['train'], 
             batch_size=self.batch_size,
             pin_memory=True,
-            num_workers=self.num_workers, # <--- FIXED: Uses YAML value
+            num_workers=self.num_workers,
             persistent_workers=True,
             shuffle=True,
             collate_fn=self.datasets['train'].collate_fn
@@ -45,7 +43,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             dataset=self.datasets['valid'], 
             pin_memory=True,
             batch_size=self.batch_size,
-            num_workers=self.num_workers, # <--- FIXED: Uses YAML value
+            num_workers=self.num_workers,
             persistent_workers=True,
             shuffle=False,
             collate_fn=self.datasets['valid'].collate_fn
@@ -56,7 +54,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             dataset=self.datasets['test'], 
             batch_size=self.batch_size,
             pin_memory=True,
-            num_workers=self.num_workers, # <--- FIXED: Uses YAML value
+            num_workers=self.num_workers,
             persistent_workers=True,
             shuffle=False,
             collate_fn=self.datasets['test'].collate_fn

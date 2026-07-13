@@ -1,1 +1,0 @@
-!git clone -b Pose_feature https://Hossam-Osama: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@github.com/Mohamed-Mohamed-Ibrahim/SpaMo.git

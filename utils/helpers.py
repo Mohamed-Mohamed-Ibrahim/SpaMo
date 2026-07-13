@@ -4,7 +4,6 @@ import random
 import os
 import glob
 
-
 def derangement(lst):
     assert len(lst) > 1, "List must have at least two elements."
     
@@ -13,11 +12,6 @@ def derangement(lst):
         random.shuffle(shuffled)
         if all(original != shuffled[i] for i, original in enumerate(lst)):
             return shuffled
-
-
-def normalize(x):
-    return x / x.norm(dim=-1, keepdim=True)
-
 
 def instantiate_from_config(config):
     """
@@ -32,7 +26,6 @@ def instantiate_from_config(config):
     if 'target' not in config:
         raise KeyError('Expected key "target" to instantiate.')
     return get_obj_from_str(config["target"])(**config.get("params", dict()))
-
 
 def get_obj_from_str(string, reload=False):
     """
@@ -51,7 +44,6 @@ def get_obj_from_str(string, reload=False):
         importlib.reload(module_imp)
     return getattr(importlib.import_module(module, package=None), cls)
 
-
 def create_mask(seq_lengths: list, device="cpu"):
     """
     Creates a mask tensor based on sequence lengths.
@@ -67,7 +59,6 @@ def create_mask(seq_lengths: list, device="cpu"):
     mask = torch.arange(max_len, device=device)[None, :] < torch.tensor(seq_lengths, device=device)[:, None]
     return mask.to(torch.bool)
 
-
 def get_img_list(ds_name, vid_root, path):
     # Handling for different datasets
     if ds_name == 'Phoenix14T':
@@ -77,49 +68,6 @@ def get_img_list(ds_name, vid_root, path):
     else:
         raise ValueError(f"Dataset {ds_name} is not supported.")
     return sorted(glob.glob(img_path))
-
-
-# Credit by https://stackoverflow.com/questions/77782599/how-can-i-extract-all-the-frames-from-a-particular-time-interval-in-a-video
-def read_video(fname, start_time=None, end_time=None):
-    """
-    Extracts frames from a video, optionally bounded by start and end times.
-
-    Args:
-        video_path (str): Path to the video file.
-        start_time (float or None): Start time in seconds, or None to start from the beginning.
-        end_time (float or None): End time in seconds, or None to go until the end of the video.
-
-    Returns:
-        list: A list of frames extracted from the specified time range.
-    """
-    try:
-        container = av.open(fname)
-        duration = container.duration * (1 / av.time_base)
-        if start_time is None:
-            start_time = 0
-        if end_time is None:
-            end_time = duration
-        if start_time >= end_time:
-            print("Start time must be less than end time")
-            return []
-        if end_time > duration:
-            print("End time exceeds video duration")
-            return []
-        stream = container.streams.video[0]
-        container.seek(int(start_time / stream.time_base), stream=stream)
-        frames = []
-        for frame in container.decode(stream):
-            if frame.time > end_time:
-                break
-            elif frame.time < start_time:
-                continue
-            else:
-                frames.append(frame.to_image())
-        return frames
-    except Exception as e:
-        print(e)
-        return []
-
 
 def sliding_window_for_list(data_list, window_size, overlap_size):
     """
