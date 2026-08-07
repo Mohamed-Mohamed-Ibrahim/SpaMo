@@ -46,15 +46,12 @@ class FlanT5SLT(AbstractSLT):
         warm_up_steps: Optional[int] = None,
         combined_loss: bool = False,
         alpha: float = 0.1,
-        use_resampler: bool = False,
-        sampling_length: int = 64,
         cache_dir: str = "/data/models",
         use_in_context: bool = True,
         num_in_context: int = 3,
         lora_r: int = 16,
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
-        conv_type: int = 2,
         use_spatial: bool = True,
         use_spatiotemporal: bool = True,
         use_emotion: bool = True,
@@ -87,8 +84,6 @@ class FlanT5SLT(AbstractSLT):
         self.warm_up_steps = warm_up_steps
         self.combined_loss = combined_loss
         self.alpha = alpha
-        self.use_resampler = use_resampler
-        self.sampling_length = sampling_length
         self.cache_dir = cache_dir
 
         self.use_in_context = use_in_context
@@ -103,8 +98,6 @@ class FlanT5SLT(AbstractSLT):
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
-
-        self.conv_type = conv_type
 
         # Dynamic Temporal Segmentation and Masking
         self.use_dynamic_segmentation = use_dynamic_segmentation
@@ -164,7 +157,6 @@ class FlanT5SLT(AbstractSLT):
             t5_model,
             cache_dir=self.cache_dir,
             torch_dtype=torch.float32,
-            use_safetensors=True
         )
 
         self.t5_tokenizer = AutoTokenizer.from_pretrained(
@@ -184,7 +176,7 @@ class FlanT5SLT(AbstractSLT):
             self.emotion_modulator_m = EmotionModulator(self.inter_hidden)
             self.emotion_modulator_e = EmotionModulator(self.inter_hidden)
 
-        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden, conv_type=self.conv_type)
+        self.temporal_encoder = TemporalConv(self.inter_hidden, self.inter_hidden)
 
         if self.fusion_mode == 'adaptive':
             self.adaptive_fusion = AdaptiveFusion(
@@ -780,3 +772,4 @@ class FlanT5SLT(AbstractSLT):
                 "frequency": 1,
             },
         }
+    

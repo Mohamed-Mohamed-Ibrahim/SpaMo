@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from typing import Dict, List, Union, Any
 from pathlib import Path
-from spamo.constants import *
+from adaptive_easlt.constants import *
 
 class Phoenix14T(torch.utils.data.Dataset):
     def __init__(

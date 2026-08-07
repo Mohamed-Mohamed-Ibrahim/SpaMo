@@ -47,3 +47,4 @@ class TemporalConv(nn.Module):
             "visual_feat": visual_feat.permute(2, 0, 1),
             "feat_len": lgt.cpu(),
         }
+    

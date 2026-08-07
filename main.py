@@ -13,7 +13,7 @@ from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.strategies import DDPStrategy
 
 from utils.helpers import instantiate_from_config
-from spamo.callbacks import SetupCallback, MetricsTableCallback
+from adaptive_easlt.callbacks import SetupCallback, MetricsTableCallback
 
 def str2bool(v: Any) -> bool:
     if isinstance(v, bool):
@@ -26,7 +26,7 @@ def str2bool(v: Any) -> bool:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def get_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description='SpaMo/EASLT training and evaluation')
+    parser = argparse.ArgumentParser(description='Adaptive-EASLT training and evaluation')
     parser.add_argument('-c', '--config', nargs='*', metavar='base_config.yaml', default=list())
     parser.add_argument('-t', '--train', type=str2bool, default=True, nargs='?')
     parser.add_argument('--test', type=bool, default=False)
