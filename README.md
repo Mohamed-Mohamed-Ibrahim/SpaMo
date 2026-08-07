@@ -1,15 +1,8 @@
-# An Efficient Gloss-Free Sign Language Translation Using Spatial Configurations and Motion Dynamics with LLMs
-
-Official implementation for the NAACL 2025 [paper](https://aclanthology.org/2025.naacl-long.197.pdf): An Efficient Gloss-Free Sign Language Translation Using Spatial Configurations and Motion Dynamics with LLMs
-
+# Adaptive EASLT
 
 ## Introduction
 
-![model architecture](images/overview.png)
-
-We introduce a novel gloss-free framework, **Spa**tial and **Mo**tion-based Sign Language Translation (**SpaMo**). 
-SpaMo is designed to fully exploit the spatial configurations and motion dynamics in sign videos using off-the-shelf visual encoders, without requiring domain-specific fine-tuning.
-As shown in the figure above, the core idea is simple: We extract spatial features (representing spatial configurations) and motion features (capturing motion dynamics) using two different visual encoders, then feed these into an LLM with a language prompt.
+This repository adds two components on top of the published EASLT architecture — dynamic temporal segmentation with adaptive masking, and discriminative learning-rate groups for optimization.
 
 
 ## Environment
@@ -22,17 +15,17 @@ pip install -r requirements.txt
 
 ## Data Preparation
 
-We validate our method on three datasets:
+We validate our method on Phoenix-2014T dataset:
 - [Phoenix-2014T](https://www-i6.informatik.rwth-aachen.de/~koller/RWTH-PHOENIX-2014-T/)
-- [CSL-Daily](http://home.ustc.edu.cn/~zhouh156/dataset/csl-daily/)
-- [How2Sign](https://how2sign.github.io/)
+
 
 ### Spatial and Motion Features
 
-SpaMo utilizes two complementary feature types:
-1. **Spatial Features**: Extracted with ViT models to capture static visual information
-2. **Motion Features**: Extracted with VideoMAE models to capture temporal dynamics
-
+Adaptive EASLT utilizes three complementary feature streams:
+1. **Spatial Features**: Extracted with a CLIP ViT model to capture static visual configuration (hand shapes, body posture).
+2. **Motion Features**: Extracted with VideoMAE to capture temporal kinematic dynamics.
+3. **Emotion Features**: Extracted with a ViT fine-tuned on FER2013 over detected facial ROIs, to capture continuous affective state.
+    
 #### Extracting Spatial Features
 
 To extract spatial features using the CLIP ViT model:
@@ -71,14 +64,31 @@ python scripts/mae_extract_feature.py \
     --device cuda:0
 ```
 
-For convenience, you can download our pre-extracted features from [here](https://www.dropbox.com/scl/fo/vgbws4cftewpoc6kudoap/AOtWs7adP4AvK0iT7KkWaJk?rlkey=nf3wp64zenqx3t2z695ndzcy7&st=9ydialet&dl=0).
+#### Extracting Emotion Features
+
+To extract emotion features using a ViT pretrained on the FER2013 dataset:
+
+```bash
+python ./scripts/emotion_feature_extractor.py \
+  --input_dir /path/to/input_videos \
+  --output_dir /path/to/output_features \
+  --batch_size 32 \
+  --stride 8
+```
+
+
+For convenience, you can download our pre-extracted features from [here](https://www.kaggle.com/datasets/muhammad5286/adaptive-easlt-phoenix14t).
+
+You can access the extracted How2Sign spatial and motion features from here:
+* **[Spatial Features](https://www.kaggle.com/datasets/mohamedmoibrahim/spamo-how2sign-spatial-features)**
+* **[Motion Features](https://www.kaggle.com/datasets/muhammad5286/spamo-how2sign-motion-features)**
 
 
 ## Model Training and Evaluation
 
 ### Training
 
-Train the SpaMo model with:
+Train the Adaptive EASLT model with:
 
 ```bash
 python main.py -c configs/finetune.yaml -e bleu
@@ -93,12 +103,15 @@ python main.py -c configs/finetune.yaml -e bleu --train False --test True --ckpt
 ```
 
 Replace `/PATH/TO/CHECKPOINT` with your model checkpoint path.
-Pre-trained checkpoints are available for download [here](https://www.dropbox.com/scl/fi/c9khflgxgl96lx919p6oq/spamo.ckpt?rlkey=gp3zmk6jwg9cnf3e2hpw268ih&st=u103orvs&dl=0).
+Pre-trained checkpoints are available for download [here](https://www.kaggle.com/datasets/muhammad5286/adaptive-easlt-phoenix14t).
+
+
+## 📄 Project Report
+
+For an in-depth look at the architecture, methodology, and results, please read the full [Graduation Project Report](./docs/Sign%20Language%20Translation%20Graduation%20Project%20Report.pdf).
 
 
 ## Citation
-
-Please cite our works if you find this repo is helpful.
 
 ```bash
 @inproceedings{hwang2025efficient,
