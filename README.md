@@ -19,7 +19,7 @@ We validate our method on Phoenix-2014T dataset:
 - [Phoenix-2014T](https://www-i6.informatik.rwth-aachen.de/~koller/RWTH-PHOENIX-2014-T/)
 
 
-### Spatial and Motion Features
+### Feature Streams
 
 Adaptive EASLT utilizes three complementary feature streams:
 1. **Spatial Features**: Extracted with a CLIP ViT model to capture static visual configuration (hand shapes, body posture).
